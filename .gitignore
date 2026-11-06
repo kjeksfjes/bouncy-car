@@ -5,3 +5,6 @@ playwright-report/
 blob-report/
 playwright/.cache/
 .DS_Store
+
+# Beads issue tracking stays local
+.beads/
