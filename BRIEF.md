@@ -1,0 +1,55 @@
+# Bouncy Car – Brief
+
+_Work name. Drafted 2026-11-06._
+
+## Pitch
+
+Drive a big, floaty, indestructible-ish car down an endless procedurally generated snowy
+mountain. Hit bumps, catch air, land hard, lose a bumper, keep going. The fun is in the
+**feel**: soft suspension, body roll, big jumps and satisfying crunches.
+
+## Pillars
+
+1. **Feel first.** Driver-style (1999) handling: soft, bouncy suspension, visible body roll and
+   pitch, forgiving arcade grip, controllable slides. If it isn't fun to drive on flat ground,
+   nothing else matters.
+2. **Terrain made for jumping.** Mostly downhill, bumpy, with rolling hills, moguls and natural
+   kicker ridges running across the slope.
+3. **Crunchy, but robust.** Cars dent and shed parts, but they're tougher than real cars, so a
+   session lasts.
+4. **Low-poly, nicely lit.** Flat-shaded geometry, soft sun shadows, fog for depth, a coherent
+   palette. Polish comes from lighting and atmosphere, not polygon count.
+
+## Scope – first playable (v0.1)
+
+| Area | Decision |
+|---|---|
+| Stack | TypeScript + Vite + Three.js (rendering) + Rapier (`@dimforge/rapier3d-compat`, physics). Runs in the browser. |
+| Mode | **Sandbox**: free roam, no fail state, respawn anytime. Goals/scoring come later. |
+| World | Endless chunk-streamed terrain from seeded noise. Downhill along −Z. **Snowy mountain** biome: snow on gentle slopes, rock on steep ones, snowy pines, rocks. |
+| Car | One car: **boxy 70s sedan** (soft, floaty, lots of body roll, RWD). Cars are data-driven configs, so more can be added. |
+| Physics | Custom raycast suspension (spring + damper per wheel, bump stops), arcade tire model (lateral grip, friction circle, handbrake slides), mild air control. |
+| Damage | Mesh **deformation** at impact points plus **detachable parts** (bumpers, hood, trunk lid, doors, wheels). Losing a wheel changes handling. Low integrity kills the engine; press N for a new car. |
+| Camera | Smoothed chase cam that stays above the terrain. |
+| Controls | Keyboard: W/S or ↑/↓ for throttle and brake/reverse, A/D or ←/→ to steer, Space for handbrake, R to reset upright (keeps damage), N for a new car. In the air, the throttle and steer keys pitch and roll. |
+| HUD | Speed, car integrity, airtime, controls hint. |
+
+## Later (not v0.1)
+
+- More cars: pickup truck, dune buggy, compact hatchback (weight, suspension, grip and
+  toughness differ per car).
+- More biomes, including biomes that change along the descent (snow → forest → grassland).
+- Gamepad support (analog steering and throttle).
+- Goals: trick/airtime scoring, runs with a finish line.
+- Juice: snow spray, sparks, smoke and fire, screen shake, audio (engine, crunch, landing).
+- Post-processing (ambient occlusion, bloom), additional camera modes.
+- Smashable props (trees that snap, fences).
+
+## Technical notes
+
+- Fixed 60 Hz physics step with render interpolation.
+- Terrain height is an analytic function `h(x, z)`, so props, camera clamping and spawning can
+  all query it without raycasts.
+- Terrain colliders are trimeshes built from the same vertices as the render mesh.
+- Impact detection uses Rapier contact-force events on the chassis. Damage scales with the
+  impact's Δv above a per-car toughness threshold.

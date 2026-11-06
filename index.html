@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bouncy Car</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        --ink: #1d2733;
+        --panel: rgb(255 255 255 / 0.72);
+        --ok: #4caf7a;
+        --warn: #e0a526;
+        --bad: #d9443b;
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #d6e2ee; }
+      body { font: 600 14px/1.3 system-ui, -apple-system, sans-serif; color: var(--ink); }
+      #app canvas { display: block; }
+      #loading { position: fixed; inset: 0; display: grid; place-items: center; font-size: 18px; }
+
+      #hud { position: fixed; inset: 0; pointer-events: none; }
+      .hint {
+        position: absolute; top: 16px; left: 16px; padding: 8px 12px; border-radius: 8px;
+        background: var(--panel); font-weight: 500; font-size: 13px;
+      }
+      .hint kbd { font: inherit; font-weight: 700; }
+      .panel {
+        position: absolute; right: 16px; bottom: 16px; min-width: 200px; padding: 12px 14px;
+        border-radius: 10px; background: var(--panel);
+      }
+      .speed { font-size: 36px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; }
+      .speed small { font-size: 14px; font-weight: 600; opacity: 0.6; }
+      .bar { margin-top: 10px; height: 8px; border-radius: 4px; background: rgb(0 0 0 / 0.12); overflow: hidden; }
+      #integrity { height: 100%; width: 100%; background: var(--ok); transition: width 0.2s, background 0.2s; }
+      #integrity[data-level='warn'] { background: var(--warn); }
+      #integrity[data-level='bad'] { background: var(--bad); }
+      #status { margin-top: 6px; font-size: 12px; min-height: 1em; }
+      #air {
+        position: absolute; top: 18%; left: 50%; transform: translateX(-50%) scale(0.9);
+        font-size: 40px; font-weight: 900; letter-spacing: 0.04em; color: #fff;
+        text-shadow: 0 2px 12px rgb(0 30 60 / 0.45); opacity: 0; transition: opacity 0.25s, transform 0.25s;
+      }
+      #air.visible { opacity: 1; transform: translateX(-50%) scale(1); }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="loading">Building mountain…</div>
+    <div id="hud">
+      <div class="hint">
+        <kbd>W</kbd>/<kbd>S</kbd> drive · <kbd>A</kbd>/<kbd>D</kbd> steer · <kbd>Space</kbd> handbrake ·
+        <kbd>R</kbd> reset · <kbd>N</kbd> new car
+      </div>
+      <div id="air"></div>
+      <div class="panel">
+        <div class="speed"><span id="speed">0</span> <small>km/h</small></div>
+        <div class="bar"><div id="integrity"></div></div>
+        <div id="status"></div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
