@@ -220,6 +220,48 @@ function hingesFor(cfg: CarConfig): Record<string, HingeSpec> {
   };
 }
 
+/**
+ * A 5-spoke chrome hubcap: rolled outer lip, twisted spokes dished toward a raised centre cap,
+ * open between the spokes so the steel wheel and lug nuts show through. Built around +Y, then
+ * turned so its face points out along the axle (+X on the right, −X on the left). The spokes
+ * sit between the lug nuts (which are at 0°, 72°, … around the axle).
+ */
+function hubcapGeometry(radius: number, side: number): THREE.BufferGeometry {
+  const r = radius;
+  const parts: THREE.BufferGeometry[] = [];
+  // Rolled lip: (radius, height) profile swept around the axle.
+  const lip = [[1, 0], [1.03, 0.04], [0.98, 0.08], [0.84, 0.085], [0.8, 0.05]].map(([u, h]) => new THREE.Vector2(u * r, h * r));
+  parts.push(new THREE.LatheGeometry(lip, 15));
+  // Spokes: tapered slats, widening toward the lip, twisted about their length and dished.
+  const slat = new THREE.Shape([
+    new THREE.Vector2(0.2 * r, -0.07 * r),
+    new THREE.Vector2(0.85 * r, -0.15 * r),
+    new THREE.Vector2(0.85 * r, 0.15 * r),
+    new THREE.Vector2(0.2 * r, 0.07 * r),
+  ]);
+  // Lug nuts sit at 0°, 72°, …; the frame turns differently per side, so the offset differs.
+  const offset = side > 0 ? 0 : Math.PI / 5;
+  for (let i = 0; i < 5; i++) {
+    parts.push(
+      new THREE.ExtrudeGeometry(slat, { depth: 0.06 * r, bevelEnabled: false })
+        .rotateX(Math.PI / 2) // shape's width onto Z, thickness along −Y
+        .rotateX(0.35) // twist: facets catch the light
+        .rotateZ(-0.14) // dish: the hub end stands proud of the lip
+        .translate(0, 0.14 * r, 0)
+        .rotateY(offset + (i * 2 * Math.PI) / 5),
+    );
+  }
+  // Raised centre cap.
+  parts.push(new THREE.CylinderGeometry(0.2 * r, 0.24 * r, 0.1 * r, 10).translate(0, 0.17 * r, 0));
+  const merged = mergeGeometries(parts.map((g) => (g.index ? g.toNonIndexed() : g)).map((g) => {
+    g.deleteAttribute('uv');
+    return g;
+  }));
+  parts.forEach((g) => g.dispose());
+  if (!merged) throw new Error('Hubcap failed to merge');
+  return merged.rotateZ(side > 0 ? -Math.PI / 2 : Math.PI / 2);
+}
+
 /** Builds the car from its blueprint: lofted body parts plus lights, grille, bumpers and wheels. */
 export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   const mat = materialsFor(cfg, paint);
@@ -434,8 +476,9 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
         spin.add(lug);
       }
       // Its own geometry centred on the mesh, so it flies off spinning about its middle.
-      const hubcap = new THREE.Mesh(new THREE.CylinderGeometry(W.radius * 0.62, W.radius * 0.62, 0.03, 12).rotateZ(Math.PI / 2), mat.chrome);
-      hubcap.position.x = side * (W.width / 2 + 0.02);
+      const hubcap = new THREE.Mesh(hubcapGeometry(W.radius * 0.62, side), mat.chrome);
+      // Its base sits against the tyre face; the spokes and cap stand out from there.
+      hubcap.position.x = side * (W.width / 2 + 0.002);
       spin.add(hubcap);
       spin.traverse((o) => (o.castShadow = true));
       pivot.add(spin);
