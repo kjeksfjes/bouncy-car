@@ -675,7 +675,7 @@ export class Car {
       w.visual.pivot.rotation.y = w.front ? this.steer : 0;
       w.visual.spin.rotation.x -= w.spinSpeed * frameDt;
     }
-    this.panels.sync();
+    this.panels.sync(alpha);
     this.emitEngineSmoke(frameDt);
   }
 

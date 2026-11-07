@@ -16,6 +16,11 @@ interface HingedPanel {
   piece: CarPiece;
   body: RAPIER.RigidBody;
   joint: RAPIER.ImpulseJoint;
+  /** Physics poses of the last two steps, interpolated for rendering like the car body. */
+  prevPos: THREE.Vector3;
+  prevQuat: THREE.Quaternion;
+  currPos: THREE.Vector3;
+  currQuat: THREE.Quaternion;
 }
 
 const _m = new THREE.Matrix4();
@@ -81,7 +86,9 @@ export class HingedPanels {
     swing.applyQuaternion(_q.set(r.x, r.y, r.z, r.w)).normalize().multiplyScalar(hinge.max > 0 ? 1 : -1);
     body.applyImpulse(swing.multiplyScalar(hinge.mass * 2), true);
 
-    this.panels.push({ piece, body, joint });
+    const pos = mesh.position.clone();
+    const quat = mesh.quaternion.clone();
+    this.panels.push({ piece, body, joint, prevPos: pos.clone(), prevQuat: quat.clone(), currPos: pos, currQuat: quat });
     this.bodies.add(body.handle);
   }
 
@@ -102,15 +109,19 @@ export class HingedPanels {
       const a = p.body.angvel();
       const swing = Math.hypot(a.x - w.x, a.y - w.y, a.z - w.z);
       if (p.piece.hp <= -this.tuning.tearHp || swing > this.tuning.tearSwingSpeed) this.tear(i);
+      else capture(p);
     }
   }
 
-  sync(): void {
-    for (const { piece, body } of this.panels) {
-      const t = body.translation();
-      const r = body.rotation();
-      piece.mesh.position.set(t.x, t.y, t.z);
-      piece.mesh.quaternion.set(r.x, r.y, r.z, r.w);
+  /**
+   * Places panel meshes between their last two physics poses. Must use the same `alpha`
+   * as the car body: a raw physics pose against an interpolated car jumps by up to a
+   * whole step's travel every frame, which reads as fast vibration at speed.
+   */
+  sync(alpha: number): void {
+    for (const p of this.panels) {
+      p.piece.mesh.position.lerpVectors(p.prevPos, p.currPos, alpha);
+      p.piece.mesh.quaternion.slerpQuaternions(p.prevQuat, p.currQuat, alpha);
     }
   }
 
@@ -127,6 +138,11 @@ export class HingedPanels {
       body.setRotation(_q, true);
       body.setLinvel({ x: 0, y: 0, z: 0 }, true);
       body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    }
+    // A teleport is a cut: no interpolating across it.
+    for (const p of this.panels) {
+      capture(p);
+      capture(p);
     }
   }
 
@@ -148,6 +164,16 @@ export class HingedPanels {
     this.debris.adopt(piece.mesh, body);
     this.onTear?.(piece);
   }
+}
+
+/** Shifts the panel's current physics pose into `prev` and reads the new one. */
+function capture(p: HingedPanel): void {
+  p.prevPos.copy(p.currPos);
+  p.prevQuat.copy(p.currQuat);
+  const t = p.body.translation();
+  const r = p.body.rotation();
+  p.currPos.set(t.x, t.y, t.z);
+  p.currQuat.set(r.x, r.y, r.z, r.w);
 }
 
 /** Dynamic body for a panel mesh already in world space, with a box collider from its bounds. */
