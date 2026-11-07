@@ -96,6 +96,7 @@ export class Car {
     private readonly debris: Debris,
     spawn: THREE.Vector3,
     yaw: number,
+    paint = cfg.look.paint,
   ) {
     const [cx, cy, cz] = cfg.centerOfMass;
     const [ix, iy, iz] = cfg.inertia;
@@ -135,7 +136,7 @@ export class Car {
     this.hullCenter = new THREE.Vector3(0, C.height / 2, 0);
     this.hullHalf = new THREE.Vector3(B.width / 2, B.height / 2 + C.height / 2, B.length / 2 + 0.1);
 
-    this.model = buildCarModel(cfg);
+    this.model = buildCarModel(cfg, paint);
     scene.add(this.model.root);
 
     const W = cfg.wheels;

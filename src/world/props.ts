@@ -1,8 +1,7 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { hash2 } from './noise';
-import type { TerrainField } from './terrainField';
+import { TREE_CELL, TREE_RADIUS, type TreeLayout } from './trees';
 
 const COLORS = {
   trunk: new THREE.Color('#5b4636'),
@@ -11,7 +10,6 @@ const COLORS = {
   snow: new THREE.Color('#f3f6fa'),
 };
 
-const TREE_CELL = 9;
 
 /** Writes one flat colour per triangle into a non-indexed geometry. */
 function paintFaces(
@@ -75,13 +73,11 @@ export class PropScatter {
   });
 
   constructor(
-    private readonly field: TerrainField,
+    private readonly trees: TreeLayout,
     private readonly world: RAPIER.World,
   ) {}
 
   populate(x0: number, z0: number, size: number, body: RAPIER.RigidBody): ChunkProps {
-    const seed = this.field.seed;
-    const n = new THREE.Vector3();
     const q = new THREE.Quaternion();
     const s = new THREE.Vector3();
     const p = new THREE.Vector3();
@@ -91,22 +87,14 @@ export class PropScatter {
     // Cells don't align with chunk edges (64 / 9), so scan one extra and keep what falls inside.
     for (let gz = 0; gz <= size / TREE_CELL; gz++) {
       for (let gx = 0; gx <= size / TREE_CELL; gx++) {
-        const cellX = Math.floor(x0 / TREE_CELL) + gx;
-        const cellZ = Math.floor(z0 / TREE_CELL) + gz;
-        const x = (cellX + hash2(cellX, cellZ, seed + 11)) * TREE_CELL;
-        const z = (cellZ + hash2(cellX, cellZ, seed + 12)) * TREE_CELL;
-        if (x < x0 || x >= x0 + size || z < z0 || z >= z0 + size) continue;
-        if (hash2(cellX, cellZ, seed + 13) >= this.field.treeDensity(x, z)) continue;
-        if (this.field.normal(x, z, n).y < 0.82) continue;
+        const t = this.trees.inCell(Math.floor(x0 / TREE_CELL) + gx, Math.floor(z0 / TREE_CELL) + gz);
+        if (!t || t.x < x0 || t.x >= x0 + size || t.z < z0 || t.z >= z0 + size) continue;
 
-        const scale = (0.8 + hash2(cellX, cellZ, seed + 14) * 0.8) * this.field.treeScale(z);
-        const y = this.field.height(x, z) - 0.2;
-        q.setFromAxisAngle(up, hash2(cellX, cellZ, seed + 15) * Math.PI * 2);
-        matrices.push(new THREE.Matrix4().compose(p.set(x, y, z), q, s.setScalar(scale)));
-
-        const halfHeight = 2.2 * scale;
+        q.setFromAxisAngle(up, t.yaw);
+        matrices.push(new THREE.Matrix4().compose(p.set(t.x, t.y, t.z), q, s.setScalar(t.scale)));
+        const halfHeight = 2.2 * t.scale;
         this.world.createCollider(
-          RAPIER.ColliderDesc.cylinder(halfHeight, 0.45 * scale).setTranslation(x, y + halfHeight, z),
+          RAPIER.ColliderDesc.cylinder(halfHeight, TREE_RADIUS * t.scale).setTranslation(t.x, t.y + halfHeight, t.z),
           body,
         );
       }

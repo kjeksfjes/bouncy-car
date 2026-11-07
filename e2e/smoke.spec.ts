@@ -29,3 +29,17 @@ test('game boots, car settles on its wheels and drives', async ({ page }) => {
   expect(settled.z - driven).toBeGreaterThan(20); // moved downhill (−Z)
   expect(errors).toEqual([]);
 });
+
+test('autopilot takes over and drives downhill', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  await page.goto('/');
+  await page.waitForFunction(() => window.__bouncy !== undefined);
+  await page.waitForTimeout(1000);
+  const z0 = await page.evaluate(() => window.__bouncy!.car.body.translation().z);
+  await page.keyboard.press('KeyP');
+  await page.waitForTimeout(4000);
+  const z1 = await page.evaluate(() => window.__bouncy!.car.body.translation().z);
+  expect(z0 - z1).toBeGreaterThan(20);
+  expect(errors).toEqual([]);
+});

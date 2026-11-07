@@ -8,10 +8,12 @@ export class Hud {
   private readonly integrity = document.getElementById('integrity')!;
   private readonly status = document.getElementById('status')!;
   private readonly air = document.getElementById('air')!;
+  private readonly autopilot = document.getElementById('autopilot')!;
   private seenJumps = 0;
   private airTimer = 0;
 
-  update(dt: number, car: Car): void {
+  update(dt: number, car: Car, autopilot: boolean): void {
+    this.autopilot.classList.toggle('visible', autopilot);
     this.speed.textContent = Math.round(Math.abs(car.forwardSpeed) * 3.6).toString();
     const pct = Math.round(car.integrity * 100);
     this.integrity.style.width = `${pct}%`;

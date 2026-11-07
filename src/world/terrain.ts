@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { hash2, smoothstep } from './noise';
 import { PropScatter, type ChunkProps } from './props';
 import type { TerrainField } from './terrainField';
+import type { TreeLayout } from './trees';
 
 export const CHUNK_SIZE = 64;
 const CHUNK_RES = 32; // cells per side → 2 m grid
@@ -12,6 +13,13 @@ export const LOAD_RADIUS = 4;
 const SNOW = new THREE.Color('#eef3f9');
 const SNOW_SHADE = new THREE.Color('#dde6f0');
 const ROCK = new THREE.Color('#646872');
+
+/** A point the terrain must exist around, e.g. the player (full view) or an AI car (physics only). */
+export interface StreamCenter {
+  position: THREE.Vector3;
+  /** In chunks. */
+  radius: number;
+}
 
 interface Chunk {
   mesh: THREE.Mesh;
@@ -33,27 +41,42 @@ export class Terrain {
     private readonly field: TerrainField,
     private readonly scene: THREE.Scene,
     private readonly world: RAPIER.World,
+    trees: TreeLayout,
   ) {
-    this.props = new PropScatter(field, world);
+    this.props = new PropScatter(trees, world);
   }
 
-  /** Builds up to `budget` missing chunks (nearest first) and unloads distant ones. */
-  update(center: THREE.Vector3, budget: number): void {
-    const ccx = Math.floor(center.x / CHUNK_SIZE);
-    const ccz = Math.floor(center.z / CHUNK_SIZE);
+  /**
+   * Keeps chunks loaded within `radius` chunks of each center: builds up to
+   * `budget` missing ones (nearest to any center first) and unloads chunks
+   * more than radius + 1 from every center.
+   */
+  update(centers: StreamCenter[], budget: number): void {
+    const cells = centers.map((c) => ({
+      cx: Math.floor(c.position.x / CHUNK_SIZE),
+      cz: Math.floor(c.position.z / CHUNK_SIZE),
+      radius: c.radius,
+    }));
 
-    const missing: [number, number, number][] = [];
-    for (let dz = -LOAD_RADIUS; dz <= LOAD_RADIUS; dz++) {
-      for (let dx = -LOAD_RADIUS; dx <= LOAD_RADIUS; dx++) {
-        if (!this.chunks.has(key(ccx + dx, ccz + dz))) missing.push([ccx + dx, ccz + dz, dx * dx + dz * dz]);
+    const missing = new Map<string, [number, number, number]>();
+    for (const c of cells) {
+      for (let dz = -c.radius; dz <= c.radius; dz++) {
+        for (let dx = -c.radius; dx <= c.radius; dx++) {
+          const k = key(c.cx + dx, c.cz + dz);
+          if (this.chunks.has(k)) continue;
+          const dist = dx * dx + dz * dz;
+          const prev = missing.get(k);
+          if (!prev || dist < prev[2]) missing.set(k, [c.cx + dx, c.cz + dz, dist]);
+        }
       }
     }
-    missing.sort((a, b) => a[2] - b[2]);
-    for (const [cx, cz] of missing.slice(0, budget)) this.chunks.set(key(cx, cz), this.build(cx, cz));
+    const queue = [...missing.values()].sort((a, b) => a[2] - b[2]);
+    for (const [cx, cz] of queue.slice(0, budget)) this.chunks.set(key(cx, cz), this.build(cx, cz));
 
     for (const [k, chunk] of this.chunks) {
       const [cx, cz] = k.split(',').map(Number);
-      if (Math.max(Math.abs(cx - ccx), Math.abs(cz - ccz)) > LOAD_RADIUS + 1) {
+      const keep = cells.some((c) => Math.max(Math.abs(cx - c.cx), Math.abs(cz - c.cz)) <= c.radius + 1);
+      if (!keep) {
         this.dispose(chunk);
         this.chunks.delete(k);
       }

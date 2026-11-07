@@ -38,17 +38,19 @@ interface CarMaterials {
   taillight: THREE.Material;
 }
 
-// Materials are shared between every car built from the same config (and their debris),
-// so they are never disposed with an individual car.
-const materialCache = new WeakMap<CarConfig, CarMaterials>();
+// Materials are shared between every car built from the same config and paint (and their
+// debris), so they are never disposed with an individual car.
+const materialCache = new WeakMap<CarConfig, Map<string, CarMaterials>>();
 
-function materialsFor(cfg: CarConfig): CarMaterials {
-  let m = materialCache.get(cfg);
+function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
+  let byPaint = materialCache.get(cfg);
+  if (!byPaint) materialCache.set(cfg, (byPaint = new Map()));
+  let m = byPaint.get(paint);
   if (!m) {
     const std = (color: string, extra: THREE.MeshStandardMaterialParameters = {}) =>
       new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.55, metalness: 0.1, ...extra });
     m = {
-      paint: std(cfg.look.paint, { roughness: 0.4, metalness: 0.25 }),
+      paint: std(paint, { roughness: 0.4, metalness: 0.25 }),
       roof: std(cfg.look.roof, { roughness: 0.85 }),
       glass: std('#1e2a33', { roughness: 0.08, metalness: 0.4 }),
       chrome: std('#d9dde2', { roughness: 0.2, metalness: 0.9 }),
@@ -57,14 +59,14 @@ function materialsFor(cfg: CarConfig): CarMaterials {
       headlight: std('#fff6d8', { emissive: '#fff1c4', emissiveIntensity: 0.6 }),
       taillight: std('#a3121b', { emissive: '#7a0a10', emissiveIntensity: 0.5 }),
     };
-    materialCache.set(cfg, m);
+    byPaint.set(paint, m);
   }
   return m;
 }
 
 /** Procedural boxy 70s sedan. Boxes are subdivided so dents have vertices to push. */
-export function buildCarModel(cfg: CarConfig): CarModel {
-  const mat = materialsFor(cfg);
+export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
+  const mat = materialsFor(cfg, paint);
   const root = new THREE.Group();
   const pieces: CarPiece[] = [];
   const B = cfg.body;

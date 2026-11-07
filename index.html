@@ -42,6 +42,11 @@
         text-shadow: 0 2px 12px rgb(0 30 60 / 0.45); opacity: 0; transition: opacity 0.25s, transform 0.25s;
       }
       #air.visible { opacity: 1; transform: translateX(-50%) scale(1); }
+      #autopilot {
+        position: absolute; top: 16px; right: 16px; padding: 6px 12px; border-radius: 8px;
+        background: #2b7de9; color: #fff; font-weight: 800; letter-spacing: 0.08em; display: none;
+      }
+      #autopilot.visible { display: block; }
     </style>
   </head>
   <body>
@@ -50,9 +55,10 @@
     <div id="hud">
       <div class="hint">
         <kbd>W</kbd>/<kbd>S</kbd> drive · <kbd>A</kbd>/<kbd>D</kbd> steer · <kbd>Space</kbd> handbrake ·
-        <kbd>R</kbd> reset · <kbd>N</kbd> new car
+        <kbd>R</kbd> reset · <kbd>N</kbd> new car · <kbd>P</kbd> autopilot
       </div>
       <div id="air"></div>
+      <div id="autopilot">AUTOPILOT</div>
       <div class="panel">
         <div class="speed"><span id="speed">0</span> <small>km/h</small></div>
         <div class="bar"><div id="integrity"></div></div>
