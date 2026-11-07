@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { buildPanels, sample, type PanelMaterial } from './blueprint';
+import { buildPanels, sample, type CarBlueprint, type PanelMaterial, type Panels } from './blueprint';
 import type { CarConfig } from './carConfig';
 
 /** A dentable mesh on the car. Detachable pieces can be knocked off. */
@@ -55,10 +55,21 @@ interface CarMaterials {
   headlight: THREE.Material;
   taillight: THREE.Material;
   marker: THREE.Material;
+  engine: THREE.Material;
+  upholstery: THREE.Material;
 }
 
 /** Body parts that can be knocked off. Everything else stays on and only dents. */
 const DETACHABLE = new Set(['hood', 'trunk', 'door-left', 'door-right', 'bumper-front', 'bumper-rear']);
+
+// The lofted, solidified body is identical for every car of a blueprint, so it's built once.
+// Each car still gets its own geometry buffers (copied from these arrays) to dent.
+const panelCache = new WeakMap<CarBlueprint, Panels>();
+function panelsFor(bp: CarBlueprint): Panels {
+  let panels = panelCache.get(bp);
+  if (!panels) panelCache.set(bp, (panels = buildPanels(bp)));
+  return panels;
+}
 
 // Materials are shared between every car built from the same config and paint (and their
 // debris), so they are never disposed with an individual car.
@@ -71,18 +82,18 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
   if (!m) {
     const std = (color: string, extra: THREE.MeshStandardMaterialParameters = {}) =>
       new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.55, metalness: 0.1, ...extra });
-    // Body panels are double-sided so a missing door or hood never reveals see-through holes.
-    // Shadows come from back faces only; double-sided casting causes acne on the panels.
-    const twoSided = { side: THREE.DoubleSide, shadowSide: THREE.BackSide } as const;
+    // Panels are solid (see solidify), so ordinary front-face rendering is enough.
     m = {
-      paint: std(paint, { roughness: 0.4, metalness: 0.25, ...twoSided }),
-      glass: std('#1e2a33', { roughness: 0.08, metalness: 0.4, ...twoSided }),
+      paint: std(paint, { roughness: 0.4, metalness: 0.25 }),
+      glass: std('#1e2a33', { roughness: 0.08, metalness: 0.4 }),
       chrome: std('#d9dde2', { roughness: 0.2, metalness: 0.9 }),
-      dark: std('#1c1d20', { roughness: 0.7, ...twoSided }),
+      dark: std('#1c1d20', { roughness: 0.7 }),
       tire: std('#1a1a1c', { roughness: 0.9 }),
       headlight: std('#fff6d8', { emissive: '#fff1c4', emissiveIntensity: 0.6 }),
       taillight: std('#a3121b', { emissive: '#7a0a10', emissiveIntensity: 0.5 }),
       marker: std('#e08a1e', { emissive: '#7a4208', emissiveIntensity: 0.4 }),
+      engine: std('#c0502d', { roughness: 0.5, metalness: 0.3 }),
+      upholstery: std('#5a2e24', { roughness: 0.75 }),
     };
     byPaint.set(paint, m);
   }
@@ -93,6 +104,10 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
  * Hinges along the blueprint's cut lines: doors at their front edge (swing out),
  * hood at the windshield and trunk at the rear glass (open upward), bumpers at
  * one end (dangle). Masses and friction are feel values.
+ *
+ * A hanging panel doesn't collide with its own car, so its closed-side limit stops
+ * a little short of fully shut (`ajar`); otherwise airflow or gravity pressing it
+ * against the limit pushes it slightly into the body.
  */
 function hingesFor(cfg: CarConfig): Record<string, HingeSpec> {
   const bp = cfg.blueprint;
@@ -103,14 +118,15 @@ function hingesFor(cfg: CarConfig): Record<string, HingeSpec> {
   const doorZ = bp.door[0];
   const doorX = sample(bp.halfWidth, doorZ);
   const doorH = (sample(bp.rocker, doorZ) + sample(bp.deck, doorZ)) / 2;
+  const ajar = 0.05;
   const door = { axis: Y, mass: 35, damping: 4 };
   const lid = { axis: X, damping: 3 };
-  const bumper = { axis: Z, min: 0, max: 1.4, mass: 15, damping: 1, mirrorable: true };
+  const bumper = { axis: Z, min: ajar, max: 1.4, mass: 15, damping: 1, mirrorable: true };
   return {
-    'door-right': { ...door, anchor: v(doorX, doorH, doorZ), min: 0, max: 1.2 },
-    'door-left': { ...door, anchor: v(-doorX, doorH, doorZ), min: -1.2, max: 0 },
-    hood: { ...lid, anchor: v(0, sample(bp.deck, bp.hood[1]), bp.hood[1]), min: 0, max: 1.25, mass: 25 },
-    trunk: { ...lid, anchor: v(0, sample(bp.deck, bp.trunk[0]), bp.trunk[0]), min: -1.25, max: 0, mass: 20 },
+    'door-right': { ...door, anchor: v(doorX, doorH, doorZ), min: ajar, max: 1.2 },
+    'door-left': { ...door, anchor: v(-doorX, doorH, doorZ), min: -1.2, max: -ajar },
+    hood: { ...lid, anchor: v(0, sample(bp.deck, bp.hood[1]), bp.hood[1]), min: ajar, max: 1.25, mass: 25 },
+    trunk: { ...lid, anchor: v(0, sample(bp.deck, bp.trunk[0]), bp.trunk[0]), min: -1.25, max: -ajar, mass: 20 },
     'bumper-front': { ...bumper, anchor: v(0.95, 0.5, bp.front - 0.06) },
     'bumper-rear': { ...bumper, anchor: v(0.95, 0.56, bp.rear + 0.06) },
   };
@@ -155,7 +171,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   };
 
   // Lofted body parts, one mesh per part with a material group per surface type.
-  for (const [part, byMaterial] of buildPanels(bp)) {
+  for (const [part, byMaterial] of panelsFor(bp)) {
     const geos: THREE.BufferGeometry[] = [];
     const materials: THREE.Material[] = [];
     for (const [m, positions] of byMaterial) {
@@ -192,6 +208,52 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     add(`marker-front-${side}`, box(0.02, 0.05, 0.14), mat.marker, at(side * (sample(bp.halfWidth, zf) + 0.01), 0.72, zf));
     add(`marker-rear-${side}`, box(0.02, 0.05, 0.14), mat.taillight, at(side * (sample(bp.halfWidth, zr) + 0.01), 0.74, zr));
   }
+
+  /** Merges positioned primitives into one dentable piece with a material group each. */
+  const assemble = (name: string, parts: [THREE.BufferGeometry, THREE.Material][]) => {
+    const merged = mergeGeometries(parts.map(([g]) => g), true);
+    if (!merged) throw new Error(`Piece "${name}" failed to merge`);
+    parts.forEach(([g]) => g.dispose());
+    add(name, merged, parts.map(([, m]) => m));
+  };
+  /** Primitive placed at (x, height above ground, z), optionally tilted about X then Z. */
+  const put = (geo: THREE.BufferGeometry, x: number, h: number, z: number, tiltX = 0, tiltZ = 0) =>
+    geo.rotateX(tiltX).rotateZ(tiltZ).translate(x, h + gy, z);
+
+  // Cabin: bucket seats, rear bench, dashboard and a left-hand-drive steering wheel.
+  const cabin: [THREE.BufferGeometry, THREE.Material][] = [];
+  for (const x of [-0.42, 0.42]) {
+    cabin.push(
+      [put(new THREE.BoxGeometry(0.5, 0.14, 0.5), x, 0.47, 0.05), mat.upholstery],
+      [put(new THREE.BoxGeometry(0.5, 0.6, 0.12), x, 0.82, 0.33, 0.2), mat.upholstery],
+      [put(new THREE.BoxGeometry(0.3, 0.16, 0.1), x, 1.2, 0.42, 0.2), mat.upholstery],
+    );
+  }
+  cabin.push(
+    [put(new THREE.BoxGeometry(1.24, 0.14, 0.45), 0, 0.47, 0.95), mat.upholstery],
+    [put(new THREE.BoxGeometry(1.24, 0.5, 0.12), 0, 0.78, 1.22, 0.35), mat.upholstery],
+    [put(new THREE.BoxGeometry(1.5, 0.16, 0.3), 0, 0.92, -0.62), mat.dark],
+    [put(new THREE.TorusGeometry(0.17, 0.022, 6, 14), -0.42, 0.88, -0.38, -0.45), mat.dark],
+    [put(new THREE.CylinderGeometry(0.025, 0.025, 0.35, 6), -0.42, 0.9, -0.52, Math.PI / 2 - 0.45), mat.dark],
+  );
+  assemble('interior', cabin);
+
+  // Engine bay: V8 block with valve covers and air cleaner, radiator, battery.
+  assemble('engine', [
+    [put(new THREE.BoxGeometry(0.55, 0.38, 0.8), 0, 0.62, -1.45), mat.engine],
+    [put(new THREE.BoxGeometry(0.16, 0.08, 0.7), -0.26, 0.86, -1.45, 0, 0.5), mat.chrome],
+    [put(new THREE.BoxGeometry(0.16, 0.08, 0.7), 0.26, 0.86, -1.45, 0, -0.5), mat.chrome],
+    [put(new THREE.CylinderGeometry(0.2, 0.2, 0.06, 12), 0, 0.88, -1.45), mat.chrome],
+    [put(new THREE.BoxGeometry(1.1, 0.4, 0.08), 0, 0.66, -2.18), mat.dark],
+    [put(new THREE.BoxGeometry(0.24, 0.2, 0.18), 0.55, 0.62, -2.0), mat.dark],
+    [put(new THREE.BoxGeometry(0.04, 0.03, 0.04), 0.6, 0.735, -2.04), mat.taillight],
+  ]);
+
+  // Spare wheel lying in the trunk.
+  assemble('spare', [
+    [put(new THREE.CylinderGeometry(0.32, 0.32, 0.2, 14), 0.35, 0.5, 2.0), mat.tire],
+    [put(new THREE.CylinderGeometry(0.19, 0.19, 0.21, 10), 0.35, 0.5, 2.0), mat.chrome],
+  ]);
 
   // Wheels: tyre, chrome rim and five lug nuts on the outer face.
   const W = cfg.wheels;

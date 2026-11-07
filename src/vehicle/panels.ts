@@ -67,9 +67,9 @@ export class HingedPanels {
 
     const body = createPanelBody(this.world, mesh, hinge.mass, velocityAt(mesh.position));
     const params = RAPIER.JointData.revolute(hinge.anchor, anchorOnPanel, hinge.axis);
-    params.limitsEnabled = true;
-    params.limits = [hinge.min, hinge.max];
     const joint = this.world.createImpulseJoint(params, this.carBody, body, true) as RAPIER.RevoluteImpulseJoint;
+    // Limits must be set on the created joint: JointData.limits is ignored for revolute joints.
+    joint.setLimits(hinge.min, hinge.max);
     joint.setContactsEnabled(false);
     // A motor holding zero speed acts as hinge friction, so panels don't flap forever.
     joint.configureMotorVelocity(0, hinge.damping);

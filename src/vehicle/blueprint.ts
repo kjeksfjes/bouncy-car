@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { solidify } from './solidify';
 
 /** Piecewise-linear profile: [z, value] pairs sorted by z (front = −Z). */
 export type Curve = readonly (readonly [number, number])[];
@@ -61,8 +62,10 @@ export type PanelMaterial = 'paint' | 'dark' | 'glass';
 /** Body triangles (flat position arrays, car-local) grouped by part, then material. */
 export type Panels = Map<string, Map<PanelMaterial, number[]>>;
 
-/** Gap between greenhouse and deck surfaces (m); see `upper` in buildPanels. */
-const GREENHOUSE_LIFT = 0.012;
+/** Wall thickness per surface type (m): sheet metal reads as a visible edge, glass is thin. */
+const THICKNESS: Record<PanelMaterial, number> = { paint: 0.03, dark: 0.03, glass: 0.01 };
+/** Firewall and rear bulkhead are scaled down by this much to sit inside the skin. */
+const INNER_WALL_SCALE = 0.93;
 
 const within = (z: number, range: readonly [number, number]) => z >= range[0] && z <= range[1];
 const sideName = (side: number) => (side > 0 ? 'right' : 'left');
@@ -74,14 +77,17 @@ const _c = new THREE.Vector3();
 
 /**
  * Lofts the body from the blueprint: a lower body (floor, wheel wells,
- * sides, deck) and a greenhouse (glass, pillars, roof), sampled at stations
- * along Z. Every quad is assigned to a part by where it sits, so panels split
- * exactly along the blueprint's cut lines.
+ * sides, deck), bulkheads around an open cabin, and a greenhouse (glass,
+ * pillars, roof), sampled at stations along Z. Every quad is assigned to a
+ * part by where it sits, so panels split exactly along the blueprint's cut
+ * lines. Finally every surface is solidified to a real wall thickness.
  */
 export function buildPanels(bp: CarBlueprint): Panels {
+  const loft: Panels = new Map();
   const panels: Panels = new Map();
-  const target = (part: string, mat: PanelMaterial) => {
-    let mats = panels.get(part);
+  const target = (into: Panels, part: string, mat: PanelMaterial) => {
+    let mats = into.get(part);
+    if (!mats) into.set(part, (mats = new Map()));
     if (!mats) panels.set(part, (mats = new Map()));
     let arr = mats.get(mat);
     if (!arr) mats.set(mat, (arr = []));
@@ -93,16 +99,18 @@ export function buildPanels(bp: CarBlueprint): Panels {
     if (_n.lengthSq() < 1e-10) return;
     _c.copy(a).add(b).add(c).divideScalar(3).sub(ref);
     const [p, q] = _n.dot(_c) >= 0 ? [b, c] : [c, b];
-    target(part, mat).push(a.x, a.y, a.z, p.x, p.y, p.z, q.x, q.y, q.z);
+    target(loft, part, mat).push(a.x, a.y, a.z, p.x, p.y, p.z, q.x, q.y, q.z);
   };
   const quad = (part: string, mat: PanelMaterial, a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, ref: THREE.Vector3) => {
     tri(part, mat, a, b, c, ref);
     tri(part, mat, a, c, d, ref);
   };
-  const addBox = (part: string, mat: PanelMaterial, size: readonly [number, number, number], center: THREE.Vector3) => {
-    const geo = new THREE.BoxGeometry(...size).toNonIndexed();
-    geo.translate(center.x, center.y, center.z);
-    target(part, mat).push(...geo.getAttribute('position').array);
+  // Closed boxes are already solid, so they skip the loft and go straight to the output.
+  const addBox = (part: string, mat: PanelMaterial, geo: THREE.BufferGeometry, center: THREE.Vector3) => {
+    const flat = geo.toNonIndexed();
+    flat.translate(center.x, center.y, center.z);
+    target(panels, part, mat).push(...flat.getAttribute('position').array);
+    flat.dispose();
     geo.dispose();
   };
 
@@ -147,14 +155,18 @@ export function buildPanels(bp: CarBlueprint): Panels {
       [hw, deck - 0.1], // 5 shoulder crease
       [hw * 0.97, deck - 0.02], // 6 rounded top edge
       [hw * 0.92, deck], // 7 deck edge
-      [0, deck + bp.crown], // 8 deck centre
+      [gh.sillHalf, deck + bp.crown * (1 - gh.sillHalf / (hw * 0.92))], // 8 window sill line
+      [0, deck + bp.crown], // 9 deck centre
     ];
   };
-  const lowerPart = (zm: number, seg: number, side: number): [string, PanelMaterial] => {
+  /** Part and material for lower-body segment `seg`, or null where the cabin is open. */
+  const lowerPart = (zm: number, seg: number, side: number): [string, PanelMaterial] | null => {
     if (seg <= 2) return ['shell', 'dark']; // floor and wheel wells
     if (seg <= 5) return within(zm, bp.door) ? [`door-${sideName(side)}`, 'paint'] : ['shell', 'paint'];
-    if (seg === 7 && within(zm, bp.hood)) return ['hood', 'paint'];
-    if (seg === 7 && within(zm, bp.trunk)) return ['trunk', 'paint'];
+    if (seg >= 7 && within(zm, bp.hood)) return ['hood', 'paint'];
+    if (seg >= 7 && within(zm, bp.trunk)) return ['trunk', 'paint'];
+    // Between the sills the cabin opens up into the greenhouse; only a beltline ledge remains.
+    if (seg === 8 && zm > ghFrom && zm < ghTo) return null;
     return ['shell', 'paint'];
   };
 
@@ -170,9 +182,10 @@ export function buildPanels(bp: CarBlueprint): Panels {
     const ref = v(0, (sample(bp.rocker, zm) + sample(bp.deck, zm)) / 2, refZ);
     for (let j = 0; j < s0.length - 1; j++) {
       for (const side of [1, -1]) {
-        const [part, mat] = lowerPart(zm, j, side);
+        const slot = lowerPart(zm, j, side);
+        if (!slot) continue;
         quad(
-          part, mat,
+          slot[0], slot[1],
           v(side * s0[j][0], s0[j][1], z0), v(side * s1[j][0], s1[j][1], z1),
           v(side * s1[j + 1][0], s1[j + 1][1], z1), v(side * s0[j + 1][0], s0[j + 1][1], z0),
           ref,
@@ -181,24 +194,34 @@ export function buildPanels(bp: CarBlueprint): Panels {
     }
   }
 
-  // Nose and tail caps: fan over the full cross-section.
-  for (const [z, inward] of [[bp.front, 1], [bp.rear, -1]] as const) {
+  // Nose and tail caps (paint), firewall and rear-seat bulkhead (dark): fans over the
+  // full cross-section, closing the engine bay, cabin and trunk off from each other.
+  const walls = [
+    { z: bp.front, inward: 1, mat: 'paint' },
+    { z: bp.rear, inward: -1, mat: 'paint' },
+    { z: ghFrom, inward: 1, mat: 'dark' },
+    { z: ghTo, inward: -1, mat: 'dark' },
+  ] as const;
+  for (const { z, inward, mat } of walls) {
     const s = lower(z);
-    const ring = [...s.map(([x, h]) => v(x, h, z)), ...s.slice(1, -1).reverse().map(([x, h]) => v(-x, h, z))];
     const mid = (sample(bp.rocker, z) + sample(bp.deck, z)) / 2;
+    // Interior walls shrink toward their centre so their edges stay inside the skin
+    // (an edge lying in the outer surface flickers against the paint).
+    const k = mat === 'dark' ? INNER_WALL_SCALE : 1;
+    const at = (x: number, h: number) => v(x * k, mid + (h - mid) * k, z);
+    const ring = [...s.map(([x, h]) => at(x, h)), ...s.slice(1, -1).reverse().map(([x, h]) => at(-x, h))];
     const center = v(0, mid, z);
     const ref = v(0, mid, z + inward * 0.2);
-    for (let k = 0; k < ring.length; k++) tri('shell', 'paint', center, ring[k], ring[(k + 1) % ring.length], ref);
+    for (let k = 0; k < ring.length; k++) tri('shell', mat, center, ring[k], ring[(k + 1) % ring.length], ref);
   }
 
   // Greenhouse cross-section (right half): sill → window top → roof edge → roof centre.
-  // It sits a hair above the deck so the two never share a plane (which flickers).
   // The inward lean (tumblehome) scales with the greenhouse's height, so where the roof
   // slopes down to the deck the panels stay planar instead of twisting (which flat
   // shading shows as saw teeth).
   const maxRise = Math.max(...gh.roof.map(([z, h]) => h - sample(bp.deck, z)));
   const upper = (z: number): [number, number][] => {
-    const deck = sample(bp.deck, z) + GREENHOUSE_LIFT;
+    const deck = sample(bp.deck, z);
     const roof = Math.max(deck, sample(gh.roof, z));
     const roofHalf = gh.sillHalf + (gh.roofHalf - gh.sillHalf) * ((roof - deck) / maxRise);
     const t = 0.85;
@@ -245,21 +268,27 @@ export function buildPanels(bp: CarBlueprint): Panels {
     }
   }
 
+  for (const [part, byMaterial] of loft) {
+    for (const [mat, triangles] of byMaterial) target(panels, part, mat).push(...solidify(triangles, THICKNESS[mat]));
+  }
+
   // Body-coloured mirrors ride on the doors; the power bulge rides on the hood.
   const [mw, mh, ml] = bp.mirror.size;
   for (const side of [1, -1]) {
     const deck = sample(bp.deck, bp.mirror.z);
-    addBox(`door-${sideName(side)}`, 'paint', bp.mirror.size, v(side * (gh.sillHalf + mw / 2 + 0.02), deck + mh / 2 + 0.06, bp.mirror.z));
-    addBox(`door-${sideName(side)}`, 'paint', [mw + 0.04, 0.03, ml * 0.5], v(side * (gh.sillHalf + 0.03), deck + 0.04, bp.mirror.z));
+    const door = `door-${sideName(side)}`;
+    addBox(door, 'paint', new THREE.BoxGeometry(...bp.mirror.size), v(side * (gh.sillHalf + mw / 2 + 0.02), deck + mh / 2 + 0.06, bp.mirror.z));
+    addBox(door, 'paint', new THREE.BoxGeometry(mw + 0.04, 0.03, ml * 0.5), v(side * (gh.sillHalf + 0.03), deck + 0.04, bp.mirror.z));
   }
   // The bulge is tilted to follow the hood's slope so it sits flush along its length.
   const b = bp.hoodBulge;
   const bz = (b.from + b.to) / 2;
   const pitch = Math.atan2(sample(bp.deck, b.to) - sample(bp.deck, b.from), b.to - b.from);
-  const bulge = new THREE.BoxGeometry(b.halfWidth * 2, b.height, b.to - b.from).rotateX(-pitch).toNonIndexed();
-  bulge.translate(0, sample(bp.deck, bz) + bp.crown + gy + b.height / 2 - 0.015, bz);
-  target('hood', 'paint').push(...bulge.getAttribute('position').array);
-  bulge.dispose();
+  addBox(
+    'hood', 'paint',
+    new THREE.BoxGeometry(b.halfWidth * 2, b.height, b.to - b.from).rotateX(-pitch),
+    v(0, sample(bp.deck, bz) + bp.crown + b.height / 2 - 0.015, bz),
+  );
 
   return panels;
 }

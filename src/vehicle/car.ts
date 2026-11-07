@@ -8,6 +8,8 @@ import { buildCarModel, type CarModel, type CarPiece, type WheelVisual } from '.
 import { hullBoxes } from './blueprint';
 import { applyDent, inwardDirection } from './damage';
 import { HingedPanels, createPanelBody } from './panels';
+import { sample } from './blueprint';
+import { Smoke } from '../render/smoke';
 
 export interface CarInput {
   throttle: number;
@@ -72,6 +74,9 @@ export class Car {
   private readonly wheels: Wheel[] = [];
   private readonly pending = new Map<number, PendingImpact>();
   private readonly panels: HingedPanels;
+  private readonly smoke: Smoke;
+  /** Car-local point on top of the engine, where steam and smoke come out. */
+  private readonly engineVent: THREE.Vector3;
   /** Wheel rays skip this car's own hanging panels. */
   private readonly rayFilter = (c: RAPIER.Collider) => !this.panels.owns(c);
   /** Envelope used to aim dents inward. */
@@ -116,6 +121,10 @@ export class Car {
     );
 
     this.panels = new HingedPanels(world, scene, debris, this.body, cfg.damage);
+    this.smoke = new Smoke(scene);
+    const bp = cfg.blueprint;
+    const ventZ = (bp.hood[0] + bp.hood[1]) / 2;
+    this.engineVent = new THREE.Vector3(0, sample(bp.deck, ventZ) + bp.groundY + 0.05, ventZ);
 
     // Report contacts whose force corresponds to at least ~2 m/s of Δv in one step.
     const forceThreshold = (cfg.mass * 2) / PHYSICS_STEP;
@@ -531,6 +540,23 @@ export class Car {
       w.visual.spin.rotation.x -= w.spinSpeed * frameDt;
     }
     this.panels.sync();
+    this.emitEngineSmoke(frameDt);
+  }
+
+  /** Steam once the car is badly hurt, thick dark smoke once the engine has died. */
+  private emitEngineSmoke(dt: number): void {
+    const d = this.cfg.damage;
+    if (this.integrity < d.steamBelow) {
+      const at = this.model.root.localToWorld(_pt.copy(this.engineVent));
+      const drift = this.velocity.multiplyScalar(0.6);
+      if (this.engineAlive) {
+        const rate = 6 + ((d.steamBelow - this.integrity) / d.steamBelow) * 18;
+        this.smoke.emit(dt, rate, at, drift, '#eef1f5', 0.7);
+      } else {
+        this.smoke.emit(dt, 16, at, drift, '#3b3b3e', 1.1);
+      }
+    }
+    this.smoke.update(dt);
   }
 
   get position(): THREE.Vector3 {
@@ -544,6 +570,7 @@ export class Car {
 
   dispose(): void {
     this.panels.dispose();
+    this.smoke.dispose();
     this.world.removeRigidBody(this.body);
     this.scene.remove(this.model.root);
     // Detached parts now belong to Debris; only dispose what is still on the car.
