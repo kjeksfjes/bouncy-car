@@ -106,6 +106,10 @@ export interface CarConfig {
     integrityPerDv: number;
     /** Below this integrity the engine dies. */
     engineDeathAt: number;
+    /** Hinged panels: see PanelTuning. */
+    tearHp: number;
+    tearSwingSpeed: number;
+    panelAeroDrag: number;
   };
 }
 
@@ -224,5 +228,8 @@ export const COUPE_70S: CarConfig = {
     bottomOutDamagePerDv: 6,
     integrityPerDv: 0.025,
     engineDeathAt: 0.12,
+    tearHp: 70,
+    tearSwingSpeed: 16,
+    panelAeroDrag: 0.3,
   },
 };

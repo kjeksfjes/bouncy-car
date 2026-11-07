@@ -12,8 +12,25 @@ export interface CarPiece {
   /** Car-local bounds at build time, for hit proximity. */
   bounds: THREE.Box3;
   detachable: boolean;
-  attached: boolean;
+  /** closed = on the car and dentable; hinged = hanging on its hinge; gone = torn off. */
+  state: 'closed' | 'hinged' | 'gone';
   hp: number;
+  /** Where a detachable panel hangs once it breaks loose. */
+  hinge?: HingeSpec;
+}
+
+/** A revolute hinge in car-local space. Angles are relative to the closed position. */
+export interface HingeSpec {
+  anchor: THREE.Vector3;
+  axis: THREE.Vector3;
+  min: number;
+  max: number;
+  /** Panel mass (kg) once it hangs as its own body. */
+  mass: number;
+  /** Hinge friction (motor damping factor). */
+  damping: number;
+  /** Bumpers: the hinge flips to the far end when the anchor end is the one that's hit. */
+  mirrorable?: boolean;
 }
 
 export interface WheelVisual {
@@ -72,6 +89,33 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
   return m;
 }
 
+/**
+ * Hinges along the blueprint's cut lines: doors at their front edge (swing out),
+ * hood at the windshield and trunk at the rear glass (open upward), bumpers at
+ * one end (dangle). Masses and friction are feel values.
+ */
+function hingesFor(cfg: CarConfig): Record<string, HingeSpec> {
+  const bp = cfg.blueprint;
+  const v = (x: number, h: number, z: number) => new THREE.Vector3(x, h + bp.groundY, z);
+  const X = new THREE.Vector3(1, 0, 0);
+  const Y = new THREE.Vector3(0, 1, 0);
+  const Z = new THREE.Vector3(0, 0, 1);
+  const doorZ = bp.door[0];
+  const doorX = sample(bp.halfWidth, doorZ);
+  const doorH = (sample(bp.rocker, doorZ) + sample(bp.deck, doorZ)) / 2;
+  const door = { axis: Y, mass: 35, damping: 4 };
+  const lid = { axis: X, damping: 3 };
+  const bumper = { axis: Z, min: 0, max: 1.4, mass: 15, damping: 1, mirrorable: true };
+  return {
+    'door-right': { ...door, anchor: v(doorX, doorH, doorZ), min: 0, max: 1.2 },
+    'door-left': { ...door, anchor: v(-doorX, doorH, doorZ), min: -1.2, max: 0 },
+    hood: { ...lid, anchor: v(0, sample(bp.deck, bp.hood[1]), bp.hood[1]), min: 0, max: 1.25, mass: 25 },
+    trunk: { ...lid, anchor: v(0, sample(bp.deck, bp.trunk[0]), bp.trunk[0]), min: -1.25, max: 0, mass: 20 },
+    'bumper-front': { ...bumper, anchor: v(0.95, 0.5, bp.front - 0.06) },
+    'bumper-rear': { ...bumper, anchor: v(0.95, 0.56, bp.rear + 0.06) },
+  };
+}
+
 /** Builds the car from its blueprint: lofted body parts plus lights, grille, bumpers and wheels. */
 export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   const mat = materialsFor(cfg, paint);
@@ -79,9 +123,15 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   const gy = bp.groundY;
   const root = new THREE.Group();
   const pieces: CarPiece[] = [];
+  const hinges = hingesFor(cfg);
 
   /** Adds a piece. Geometry is recentred on its bounds so the mesh position is the part's centre. */
-  const add = (name: string, geometry: THREE.BufferGeometry, material: THREE.Material | THREE.Material[], at?: THREE.Vector3) => {
+  const add = (
+    name: string,
+    geometry: THREE.BufferGeometry,
+    material: THREE.Material | THREE.Material[],
+    at?: THREE.Vector3,
+  ) => {
     geometry.computeBoundingBox();
     const center = at ?? geometry.boundingBox!.getCenter(new THREE.Vector3());
     if (!at) geometry.translate(-center.x, -center.y, -center.z);
@@ -98,8 +148,9 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
       original: Float32Array.from(geometry.getAttribute('position').array),
       bounds: geometry.boundingBox!.clone().translate(mesh.position),
       detachable: DETACHABLE.has(name),
-      attached: true,
+      state: 'closed',
       hp: cfg.damage.partHp,
+      hinge: hinges[name],
     });
   };
 

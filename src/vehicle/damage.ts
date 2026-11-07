@@ -5,7 +5,7 @@ const _v = new THREE.Vector3();
 const _o = new THREE.Vector3();
 
 /**
- * Pushes vertices of every attached piece near `point` along `dir`, with a
+ * Pushes vertices of every closed (on-car) piece near `point` along `dir`, with a
  * smooth falloff. All coordinates are car-local. Pieces are unrotated children
  * of the car root, so car-local → mesh-local is just subtracting the position.
  * Coincident vertices on box edges move identically, so no cracks open up.
@@ -19,7 +19,7 @@ export function applyDent(
   maxDent: number,
 ): void {
   for (const piece of pieces) {
-    if (!piece.attached || piece.bounds.distanceToPoint(point) > radius) continue;
+    if (piece.state !== 'closed' || piece.bounds.distanceToPoint(point) > radius) continue;
     const pos = piece.mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
     const offset = piece.mesh.position;
     let changed = false;

@@ -60,7 +60,16 @@ export class Debris {
     );
     for (const desc of colliders) this.world.createCollider(desc, body);
     this.items.push({ body, object, restTime: 0, sinking: null });
+    this.enforceCap();
+  }
 
+  /** Takes over an existing body (e.g. a panel torn off its hinge); `object` must be in world space. */
+  adopt(object: THREE.Object3D, body: RAPIER.RigidBody): void {
+    this.items.push({ body, object, restTime: 0, sinking: null });
+    this.enforceCap();
+  }
+
+  private enforceCap(): void {
     const live = this.items.filter((i) => i.sinking === null);
     if (live.length > CLEANUP.maxPieces) this.startSinking(live[0]);
   }

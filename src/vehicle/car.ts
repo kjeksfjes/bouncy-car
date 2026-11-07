@@ -7,6 +7,7 @@ import type { CarConfig } from './carConfig';
 import { buildCarModel, type CarModel, type CarPiece, type WheelVisual } from './carModel';
 import { hullBoxes } from './blueprint';
 import { applyDent, inwardDirection } from './damage';
+import { HingedPanels, createPanelBody } from './panels';
 
 export interface CarInput {
   throttle: number;
@@ -70,6 +71,9 @@ export class Car {
   private readonly colliderOffsets = new Map<number, THREE.Vector3>();
   private readonly wheels: Wheel[] = [];
   private readonly pending = new Map<number, PendingImpact>();
+  private readonly panels: HingedPanels;
+  /** Wheel rays skip this car's own hanging panels. */
+  private readonly rayFilter = (c: RAPIER.Collider) => !this.panels.owns(c);
   /** Envelope used to aim dents inward. */
   private readonly hullCenter: THREE.Vector3;
   private readonly hullHalf: THREE.Vector3;
@@ -110,6 +114,8 @@ export class Car {
         .setCanSleep(false)
         .setCcdEnabled(true),
     );
+
+    this.panels = new HingedPanels(world, scene, debris, this.body, cfg.damage);
 
     // Report contacts whose force corresponds to at least ~2 m/s of Δv in one step.
     const forceThreshold = (cfg.mass * 2) / PHYSICS_STEP;
@@ -234,6 +240,7 @@ export class Car {
         undefined,
         undefined,
         this.body,
+        this.panels.count > 0 ? this.rayFilter : undefined,
       );
 
       if (!hit) {
@@ -331,6 +338,7 @@ export class Car {
     // --- Aerodynamic drag ∝ v².
     _imp.copy(_lin).multiplyScalar(-_lin.length() * cfg.aeroDrag * dt);
     this.body.applyImpulse(_imp, true);
+    this.panels.step(dt);
   }
 
   /**
@@ -366,6 +374,7 @@ export class Car {
   /** Resolves impacts from this step and snapshots the transform. Call after world.step(). */
   afterStep(): void {
     this.captureTransform();
+    this.panels.afterStep();
     this.bodyTouching = false;
     for (const own of this.colliders.values()) {
       this.world.contactPairsWith(own, (other) =>
@@ -415,11 +424,12 @@ export class Car {
 
     const reach = d.dentRadius * 1.3;
     for (const piece of this.model.pieces) {
-      if (!piece.detachable || !piece.attached) continue;
+      if (!piece.detachable || piece.state === 'gone') continue;
       const dist = piece.bounds.distanceToPoint(local);
       if (dist >= reach) continue;
+      // Hanging panels keep taking damage; HingedPanels tears them off past their limit.
       piece.hp -= severity * d.partDamagePerDv * (1 - dist / reach);
-      if (piece.hp <= 0) this.detachPiece(piece);
+      if (piece.state === 'closed' && piece.hp <= 0) this.breakLoose(piece, local);
     }
     for (const wheel of this.wheels) {
       if (!wheel.attached) continue;
@@ -442,36 +452,44 @@ export class Car {
     this.release(wheel.visual.pivot, [collider]);
   }
 
-  private detachPiece(piece: CarPiece): void {
-    piece.attached = false;
-    const box = piece.mesh.geometry.boundingBox!;
-    const half = box.getSize(new THREE.Vector3()).multiplyScalar(0.5).max(new THREE.Vector3(0.03, 0.03, 0.03));
-    const center = box.getCenter(new THREE.Vector3());
-    const collider = RAPIER.ColliderDesc.cuboid(half.x, half.y, half.z)
-      .setTranslation(center.x, center.y, center.z)
-      .setDensity(250)
-      .setFriction(0.7);
-    this.release(piece.mesh, [collider]);
+  /** A panel past its hp: hangs on its hinge if it has one, otherwise falls off entirely. */
+  private breakLoose(piece: CarPiece, impact: THREE.Vector3): void {
+    this.snapRootToPhysics();
+    if (piece.hinge) {
+      this.panels.hinge(piece, piece.hinge, impact, (p) => this.pointVelocity(p));
+      return;
+    }
+    piece.state = 'gone';
+    this.scene.attach(piece.mesh);
+    this.debris.adopt(piece.mesh, createPanelBody(this.world, piece.mesh, 20, this.pointVelocity(piece.mesh.position)));
   }
 
   /** Moves a part from the car into the world as a tumbling debris body. */
   private release(object: THREE.Object3D, colliders: RAPIER.ColliderDesc[]): void {
-    // Snap the visual root to the physics pose so the part leaves from where it really is.
-    this.model.root.position.copy(this.currPos);
-    this.model.root.quaternion.copy(this.currQuat);
-    this.model.root.updateMatrixWorld(true);
+    this.snapRootToPhysics();
     this.scene.attach(object);
+    const vel = this.pointVelocity(object.position);
+    // A little outward kick so parts visibly fly off.
+    _arm.subVectors(object.position, this.currPos).setY(0).normalize().multiplyScalar(1.5 + Math.random() * 1.5);
+    vel.add(_arm).add(_tmp.set(0, 1.5 + Math.random() * 2, 0));
+    const spin = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(8);
+    this.debris.spawn(object, colliders, vel, spin);
+  }
 
+  /** Velocity of the car body at a world-space point. */
+  private pointVelocity(world: THREE.Vector3): THREE.Vector3 {
     const lin = this.body.linvel();
     const ang = this.body.angvel();
     const com = this.body.worldCom();
-    _arm.set(object.position.x - com.x, object.position.y - com.y, object.position.z - com.z);
-    const vel = new THREE.Vector3(ang.x, ang.y, ang.z).cross(_arm).add(_tmp.set(lin.x, lin.y, lin.z));
-    // A little outward kick so parts visibly fly off.
-    const outward = _arm.clone().setY(0).normalize().multiplyScalar(1.5 + Math.random() * 1.5);
-    vel.add(outward).add(_tmp.set(0, 1.5 + Math.random() * 2, 0));
-    const spin = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).multiplyScalar(8);
-    this.debris.spawn(object, colliders, vel, spin);
+    _arm.set(world.x - com.x, world.y - com.y, world.z - com.z);
+    return new THREE.Vector3(ang.x, ang.y, ang.z).cross(_arm).add(_tmp.set(lin.x, lin.y, lin.z));
+  }
+
+  /** Puts the visual root at the physics pose, so parts leave the car from where they really are. */
+  private snapRootToPhysics(): void {
+    this.model.root.position.copy(this.currPos);
+    this.model.root.quaternion.copy(this.currQuat);
+    this.model.root.updateMatrixWorld(true);
   }
 
   /** Puts the car back on its wheels at the current spot, keeping heading and damage. */
@@ -486,8 +504,10 @@ export class Car {
       _tmp.set(x * this.hullHalf.x, 0, z * this.hullHalf.z).applyQuaternion(_q);
       ground = Math.max(ground, field.height(t.x + _tmp.x, t.z + _tmp.z));
     }
+    const before = new THREE.Matrix4().compose(this.currPos, this.currQuat, _tmp.set(1, 1, 1));
     this.body.setTranslation({ x: t.x, y: ground + 1.5, z: t.z }, true);
     this.body.setRotation(_q, true);
+    this.panels.teleport(before, new THREE.Matrix4().compose(_p.set(t.x, ground + 1.5, t.z), _q, _tmp.set(1, 1, 1)));
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     for (const w of this.wheels) {
@@ -510,6 +530,7 @@ export class Car {
       w.visual.pivot.rotation.y = w.front ? this.steer : 0;
       w.visual.spin.rotation.x -= w.spinSpeed * frameDt;
     }
+    this.panels.sync();
   }
 
   get position(): THREE.Vector3 {
@@ -522,6 +543,7 @@ export class Car {
   }
 
   dispose(): void {
+    this.panels.dispose();
     this.world.removeRigidBody(this.body);
     this.scene.remove(this.model.root);
     // Detached parts now belong to Debris; only dispose what is still on the car.
