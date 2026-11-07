@@ -1,6 +1,7 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import type { Visibility } from '../render/visibility';
+import { Fluids } from './fluids';
 import { Shards } from './shards';
 import type { TerrainField } from './terrainField';
 
@@ -42,6 +43,8 @@ const _p = new THREE.Vector3();
 export class Debris {
   private items: DebrisItem[] = [];
   private readonly shards: Shards;
+  /** Oil and coolant stains left on the snow by leaking cars. */
+  readonly fluids: Fluids;
 
   constructor(
     private readonly scene: THREE.Scene,
@@ -49,6 +52,7 @@ export class Debris {
     readonly field: TerrainField,
   ) {
     this.shards = new Shards(scene, field);
+    this.fluids = new Fluids(scene, field);
   }
 
   /** Glass shards bursting from `points` (world space), carried along with `velocity`, thrown out along `outward`. */
@@ -86,6 +90,7 @@ export class Debris {
   /** @param player cleanup distances are measured from here */
   update(dt: number, player: THREE.Vector3, view: Visibility): void {
     this.shards.update(dt, view.eye);
+    this.fluids.update(dt);
     const C = CLEANUP;
 
     this.items = this.items.filter((item) => {

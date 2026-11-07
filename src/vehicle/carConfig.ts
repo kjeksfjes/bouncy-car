@@ -129,6 +129,35 @@ export interface CarConfig {
     roofGlassBreak: number;
     /** Below this integrity the engine steams. */
     steamBelow: number;
+    /**
+     * Leaks, each from its own damage and with its own tank: coolant from the radiator (hits
+     * near the nose, front crush), oil from the sump (hits from below, bottoming out, a wreck).
+     * Hit points as for parts; a leak runs at full rate once its damage reaches them.
+     */
+    radiatorHp: number;
+    sumpHp: number;
+    /** Share (0..1) of a leak's damage the car shrugs off before it starts leaking at all. */
+    leakTolerance: number;
+    /** Share of a hit from below (and of a bottomed-out wheel's damage) that reaches the sump. */
+    sumpHitShare: number;
+    sumpBottomOutShare: number;
+    /** Front crush (m) at which the radiator leaks at full rate. */
+    coolantCrushFull: number;
+    /** Below this integrity the engine weeps oil anyway, more the lower it goes. */
+    oilWreckBelow: number;
+    /** Tank sizes (litres) and how much a drop of average size (0.15 m) takes. */
+    coolantCapacity: number;
+    oilCapacity: number;
+    dropVolume: number;
+    /** Metres driven between drops, from a slow weep to a full leak. */
+    leakSpacingMax: number;
+    leakSpacingMin: number;
+    /** Dripping while standing still, as if driving this fast (m/s). */
+    leakIdle: number;
+    /** A dead, stopped car's oil puddle grows to this size (m) at this rate (m/s), draining this much oil (l/s). */
+    puddleMax: number;
+    puddleGrowth: number;
+    puddleDrain: number;
     /** Hinged panels: see PanelTuning. */
     tearHp: number;
     tearSwingSpeed: number;
@@ -269,6 +298,26 @@ export const COUPE_70S: CarConfig = {
     glassReachGrowth: 0.08,
     glassReachCap: 15,
     steamBelow: 0.5,
+    // Tougher than a real car: one big landing (floor hit ≈70 + bottom-outs ≈55) doesn't leak,
+    // two at most weep, three or four leave a proper oil trail.
+    radiatorHp: 100,
+    sumpHp: 200,
+    leakTolerance: 0.5,
+    sumpHitShare: 0.4,
+    sumpBottomOutShare: 0.125,
+    coolantCrushFull: 0.25,
+    oilWreckBelow: 0.35,
+    // A full leak loses ≈7 drop volumes per metre (2.9 drops/m at ≈2.5× average size): the sump
+    // runs dry in ≈350 m of driving, the radiator in ≈600 m; a slow weep lasts kilometres.
+    coolantCapacity: 9,
+    oilCapacity: 5,
+    dropVolume: 0.002,
+    leakSpacingMax: 3,
+    leakSpacingMin: 0.35,
+    leakIdle: 0.4,
+    puddleMax: 1.3,
+    puddleGrowth: 0.04,
+    puddleDrain: 0.08,
     tearHp: 70,
     tearSwingSpeed: 16,
     panelAeroDrag: 0.3,

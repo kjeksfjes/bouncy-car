@@ -2,6 +2,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import { PHYSICS_STEP } from '../constants';
 import type { Debris } from '../world/debris';
+import type { FluidStain } from '../world/fluids';
 import type { TerrainField } from '../world/terrainField';
 import type { CarConfig } from './carConfig';
 import { buildCarModel, GLASS_OPACITY, GLASS_TINT, type CarModel, type CarPiece, type WheelVisual } from './carModel';
@@ -109,6 +110,18 @@ export class Car {
   private readonly smoke: Smoke;
   /** Car-local point on top of the engine, where steam and smoke come out. */
   private readonly engineVent: THREE.Vector3;
+  /** Car-local drip points under the radiator (coolant) and the engine (oil). */
+  private readonly radiatorDrip: THREE.Vector3;
+  private readonly sumpDrip: THREE.Vector3;
+  /** Radiator and sump damage (hit points, see radiatorHp/sumpHp), and what's left in each (litres). */
+  private radiatorDamage = 0;
+  private sumpDamage = 0;
+  private coolantLeft: number;
+  private oilLeft: number;
+  /** Distance (m) driven since each stream's last drop. */
+  private readonly leakDistance = { coolant: 0, oil: 0 };
+  /** The oil puddle growing under a dead, stopped car. */
+  private puddle: FluidStain | null = null;
   /** Wheel rays skip this car's own hanging panels. */
   private readonly rayFilter = (c: RAPIER.Collider) => !this.panels.owns(c);
   /** Front and rear crumple zones. */
@@ -172,6 +185,12 @@ export class Car {
     const bp = cfg.blueprint;
     const ventZ = (bp.hood[0] + bp.hood[1]) / 2;
     this.engineVent = new THREE.Vector3(0, sample(bp.deck, ventZ) + bp.groundY + 0.05, ventZ);
+    // Radiator just behind the grille, engine sump mid-bay, both at floor level.
+    const floor = sample(bp.rocker, ventZ) + bp.groundY;
+    this.radiatorDrip = new THREE.Vector3(0, floor, bp.front + 0.3);
+    this.sumpDrip = new THREE.Vector3(0, floor, ventZ);
+    this.coolantLeft = cfg.damage.coolantCapacity;
+    this.oilLeft = cfg.damage.oilCapacity;
 
     // Report contacts whose force corresponds to at least ~2 m/s of Δv in one step.
     const forceThreshold = (cfg.mass * 2) / PHYSICS_STEP;
@@ -330,7 +349,10 @@ export class Car {
       const compVel = (compression - wheel.compression) / dt;
       const bumpStart = Su.restLength * Su.bumpStopAt;
       if (wheel.grounded && compression > bumpStart && compVel > cfg.damage.bottomOutSpeed) {
-        this.damageWheel(wheel, (compVel - cfg.damage.bottomOutSpeed) * cfg.damage.bottomOutDamagePerDv);
+        const bottomOut = (compVel - cfg.damage.bottomOutSpeed) * cfg.damage.bottomOutDamagePerDv;
+        // Slamming down to the bump stops knocks the sump too.
+        this.sumpDamage += bottomOut * cfg.damage.sumpBottomOutShare;
+        this.damageWheel(wheel, bottomOut);
         if (!wheel.attached) continue;
       }
       wheel.grounded = true;
@@ -546,6 +568,14 @@ export class Car {
         for (const piece of this.model.pieces) if (piece.glass && piece.state !== 'gone') this.shatter(piece);
       }
       square = Math.max(square, down);
+    }
+
+    // Radiator (hits near the nose) and sump (hits from below on the engine bay) start leaking.
+    const leakReach = d.dentRadius * 1.3;
+    const toRadiator = local.distanceTo(this.radiatorDrip);
+    if (toRadiator < leakReach) this.radiatorDamage += severity * d.partDamagePerDv * (1 - toRadiator / leakReach);
+    if (normal.y < -0.5 && local.z < this.sumpDrip.z + leakReach && local.z > this.radiatorDrip.z - leakReach) {
+      this.sumpDamage += severity * d.partDamagePerDv * -normal.y * d.sumpHitShare;
     }
 
     const dir = inwardDirection(local, this.hullCenter, this.hullHalf);
@@ -806,6 +836,7 @@ export class Car {
       w.visual.spin.rotation.x -= w.spinSpeed * frameDt;
     }
     this.panels.sync(alpha);
+    this.leak(frameDt);
     this.lights.update(frameDt);
     this.emitEngineSmoke(frameDt);
   }
@@ -824,6 +855,57 @@ export class Car {
       }
     }
     this.smoke.update(dt);
+  }
+
+  /**
+   * Coolant (green, from the radiator) and oil (dark, from the sump) leak independently, each
+   * from its own damage, as trails of drops spaced by distance until its tank runs dry. A dead
+   * car that has stopped bleeds its remaining oil into a spreading puddle.
+   */
+  private leak(dt: number): void {
+    if (dt <= 0) return;
+    const d = this.cfg.damage;
+    // Each measure runs 0..1; the first leakTolerance of it is shrugged off.
+    const leaking = (x: number) => THREE.MathUtils.clamp((x - d.leakTolerance) / (1 - d.leakTolerance), 0, 1);
+    const coolant = leaking(Math.max(this.radiatorDamage / d.radiatorHp, this.crush.depth('front') / d.coolantCrushFull));
+    const oil = Math.max(leaking(this.sumpDamage / d.sumpHp), (d.oilWreckBelow - this.integrity) / d.oilWreckBelow);
+    if (coolant <= 0 && oil <= 0) return;
+    const velocity = this.velocity.setY(0);
+    const speed = velocity.length();
+    if (coolant > 0 && this.coolantLeft > 0) this.coolantLeft -= this.drip('coolant', coolant, this.radiatorDrip, dt, speed, velocity);
+    if (oil > 0 && this.oilLeft > 0) this.oilLeft -= this.drip('oil', oil, this.sumpDrip, dt, speed, velocity);
+
+    // Dead and standing still: the sump empties into a spreading puddle.
+    if (!this.engineAlive && speed < 0.4 && this.groundedWheels > 0 && this.oilLeft > 0) {
+      const at = this.model.root.localToWorld(_pt.copy(this.sumpDrip));
+      // A new puddle once the car has shifted off the old one (compared on the ground plane).
+      if (!this.puddle || Math.hypot(this.puddle.position.x - at.x, this.puddle.position.z - at.z) > 0.8) {
+        this.puddle = this.debris.fluids.drip(at.x, at.z, 'oil', 0.3, undefined, 1, 0.5);
+      }
+      this.puddle.size = Math.min(d.puddleMax, this.puddle.size + d.puddleGrowth * dt);
+      this.oilLeft -= d.puddleDrain * dt;
+    } else {
+      this.puddle = null;
+    }
+  }
+
+  /** One leak's drops for this frame, at `rate` (0..1) from car-local `source`; returns litres lost. */
+  private drip(kind: 'coolant' | 'oil', rate: number, source: THREE.Vector3, dt: number, speed: number, velocity: THREE.Vector3): number {
+    const d = this.cfg.damage;
+    const field = this.debris.field;
+    let lost = 0;
+    this.leakDistance[kind] += (speed + d.leakIdle) * dt;
+    const spacing = THREE.MathUtils.lerp(d.leakSpacingMax, d.leakSpacingMin, rate);
+    while (this.leakDistance[kind] >= spacing) {
+      this.leakDistance[kind] -= spacing;
+      const size = (0.08 + Math.random() * 0.14) * (0.6 + rate);
+      lost += d.dropVolume * (size / 0.15) ** 2;
+      const at = this.model.root.localToWorld(_pt.copy(source)).add(_tmp.set((Math.random() - 0.5) * 0.3, 0, (Math.random() - 0.5) * 0.3));
+      // Only on the ground: drops shaken off mid-air would land somewhere unpredictable.
+      if (at.y - field.height(at.x, at.z) > 1) continue;
+      this.debris.fluids.drip(at.x, at.z, kind, size, velocity, 1 + Math.min(speed, 30) * 0.08);
+    }
+    return lost;
   }
 
   /** True while the body itself drags along something (for scrape sounds and sparks). */
