@@ -67,7 +67,16 @@ export interface CarConfig {
     rate: number;
   };
 
-  air: { pitchTorque: number; rollTorque: number; angularDamping: number };
+  air: {
+    pitchTorque: number;
+    rollTorque: number;
+    angularDamping: number;
+    /** Auto-levelling in the air: spring (1/s²) and damping (1/s) toward the flight path. */
+    levelPitch: number;
+    levelPitchDamping: number;
+    levelRoll: number;
+    levelRollDamping: number;
+  };
   aeroDrag: number;
 
   damage: {
@@ -109,7 +118,8 @@ export const SEDAN_70S: CarConfig = {
     frontZ: -1.58,
     rearZ: 1.52,
     mountY: -0.05,
-    drive: 'rear',
+    // AWD is an arcade liberty: rear-only traction (≈ rear load × mu) can't climb out of dips.
+    drive: 'all',
   },
 
   suspension: {
@@ -124,14 +134,14 @@ export const SEDAN_70S: CarConfig = {
   tire: {
     gripFront: 0.55,
     gripRear: 0.5,
-    mu: 1.05,
+    mu: 1.2,
     handbrakeRearGrip: 0.12,
     rollingResistance: 0.015,
     rollInfluence: 0.45,
   },
 
   engine: {
-    force: 12000,
+    force: 16000,
     maxSpeed: 55,
     reverseForce: 4500,
     reverseMaxSpeed: 12,
@@ -141,8 +151,16 @@ export const SEDAN_70S: CarConfig = {
 
   steering: { maxAngle: 0.55, minAngle: 0.13, fullSpeed: 40, rate: 2.6 },
 
-  air: { pitchTorque: 2800, rollTorque: 1400, angularDamping: 0.6 },
-  aeroDrag: 0.9,
+  air: {
+    pitchTorque: 5000,
+    rollTorque: 1400,
+    angularDamping: 0.3,
+    levelPitch: 6,
+    levelPitchDamping: 3,
+    levelRoll: 4,
+    levelRollDamping: 2.5,
+  },
+  aeroDrag: 1.4,
 
   damage: {
     toughness: 4.5,

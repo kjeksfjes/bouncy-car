@@ -56,11 +56,17 @@ const _arm = new THREE.Vector3();
 const _imp = new THREE.Vector3();
 const _pt = new THREE.Vector3();
 const _tmp = new THREE.Vector3();
+const _contactLocal = new THREE.Vector3();
+
+/** Contacts closer than this (m) count as touching. */
+const CONTACT_TOUCH_DIST = 0.02;
 
 export class Car {
   readonly body: RAPIER.RigidBody;
   readonly model: CarModel;
   private readonly colliders = new Map<number, RAPIER.Collider>();
+  /** Each collider's offset from the body origin (car-local); colliders are unrotated. */
+  private readonly colliderOffsets = new Map<number, THREE.Vector3>();
   private readonly wheels: Wheel[] = [];
   private readonly pending = new Map<number, PendingImpact>();
   /** Envelope used to aim dents inward. */
@@ -114,14 +120,17 @@ export class Car {
       C.z,
     );
     for (const desc of [shell, cabin]) {
+      const t = desc.translation;
       desc
         .setDensity(0)
-        .setFriction(0.5)
+        // Low friction so a high-centred body slides off bumps instead of sticking.
+        .setFriction(0.2)
         .setRestitution(0.1)
         .setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS)
         .setContactForceEventThreshold(forceThreshold);
       const collider = world.createCollider(desc, this.body);
       this.colliders.set(collider.handle, collider);
+      this.colliderOffsets.set(collider.handle, new THREE.Vector3(t.x, t.y, t.z));
     }
     this.hullCenter = new THREE.Vector3(0, C.height / 2, 0);
     this.hullHalf = new THREE.Vector3(B.width / 2, B.height / 2 + C.height / 2, B.length / 2 + 0.1);
@@ -293,14 +302,14 @@ export class Car {
 
     // --- Air control (also works when stuck on the roof: a handy self-righting tool).
     this.groundedWheels = grounded;
-    // Some rotational drag in the air keeps jumps controllable instead of flip-prone.
     this.body.setAngularDamping(grounded === 0 ? cfg.air.angularDamping : 0);
     if (grounded === 0) {
       // Lying on the roof or side isn't air: only count truly airborne time.
       this.airTime = this.bodyTouching ? 0 : this.airTime + dt;
-      const pitch = input.brake - input.throttle; // W = nose down
-      _imp.copy(_right).multiplyScalar(pitch * cfg.air.pitchTorque * dt);
+      // Throttle is usually held through jumps, so W does nothing here; S lifts the nose.
+      _imp.copy(_right).multiplyScalar(input.brake * cfg.air.pitchTorque * dt);
       _imp.addScaledVector(_fwd, -input.steer * cfg.air.rollTorque * dt);
+      if (!this.bodyTouching) this.addAirLeveling(_imp, dt);
       this.body.applyTorqueImpulse(_imp, true);
     } else {
       if (this.airTime > 0.6) {
@@ -313,6 +322,25 @@ export class Car {
     // --- Aerodynamic drag ∝ v².
     _imp.copy(_lin).multiplyScalar(-_lin.length() * cfg.aeroDrag * dt);
     this.body.applyImpulse(_imp, true);
+  }
+
+  /**
+   * Adds a torque impulse that turns the nose toward the flight path and the
+   * wings level, so a plain jump lands on its wheels. Skipped when flying
+   * backwards or mostly upside down, where the target would be ambiguous.
+   * Expects the step's scratch vectors (_lin, _ang, _up, _fwd, _right) to be current.
+   */
+  private addAirLeveling(torqueImpulse: THREE.Vector3, dt: number): void {
+    const A = this.cfg.air;
+    const [pitchInertia, , rollInertia] = this.cfg.inertia;
+    const along = _lin.dot(_fwd);
+    if (along < 3 || _up.y < 0.3) return;
+    const pitchError = Math.atan2(_lin.dot(_up), along); // + = flight path above the nose
+    const pitchAcc = A.levelPitch * pitchError - A.levelPitchDamping * _ang.dot(_right);
+    const rollError = _right.y; // + = right side high
+    const rollAcc = A.levelRoll * rollError - A.levelRollDamping * _ang.dot(_fwd);
+    torqueImpulse.addScaledVector(_right, pitchAcc * pitchInertia * dt);
+    torqueImpulse.addScaledVector(_fwd, rollAcc * rollInertia * dt);
   }
 
   /** Records a contact-force event if one of the colliders is ours. */
@@ -332,9 +360,7 @@ export class Car {
     this.bodyTouching = false;
     for (const own of this.colliders.values()) {
       this.world.contactPairsWith(own, (other) =>
-        this.world.contactPair(own, other, (m) => {
-          if (m.numSolverContacts() > 0) this.bodyTouching = true;
-        }),
+        this.forEachContact(own, other, () => (this.bodyTouching = true)),
       );
     }
     const d = this.cfg.damage;
@@ -345,19 +371,31 @@ export class Car {
 
       const sum = new THREE.Vector3();
       let count = 0;
-      this.world.contactPair(impact.own, impact.other, (manifold) => {
-        for (let k = 0; k < manifold.numSolverContacts(); k++) {
-          const pt = manifold.solverContactPoint(k);
-          if (pt) {
-            sum.add(_tmp.set(pt.x, pt.y, pt.z));
-            count++;
-          }
-        }
+      this.forEachContact(impact.own, impact.other, (local) => {
+        sum.add(local);
+        count++;
       });
       // The pair can separate within the step (bounce); then there's no point to dent.
-      if (count > 0) this.applyImpact(this.worldToLocal(sum.divideScalar(count)), severity);
+      if (count > 0) this.applyImpact(sum.divideScalar(count), severity);
     }
     this.pending.clear();
+  }
+
+  /**
+   * Calls `fn` with each touching contact point between one of our colliders
+   * and `other`, in car-local space. Reads the narrow-phase contacts: solver
+   * contacts are already cleared by the time world.step() returns.
+   */
+  private forEachContact(own: RAPIER.Collider, other: RAPIER.Collider, fn: (local: THREE.Vector3) => void): void {
+    const offset = this.colliderOffsets.get(own.handle)!;
+    this.world.contactPair(own, other, (m, flipped) => {
+      for (let k = 0; k < m.numContacts(); k++) {
+        // Positive distances are predictive contacts that aren't touching yet.
+        if (m.contactDist(k) > CONTACT_TOUCH_DIST) continue;
+        const p = flipped ? m.localContactPoint2(k) : m.localContactPoint1(k);
+        if (p) fn(_contactLocal.set(p.x, p.y, p.z).add(offset));
+      }
+    });
   }
 
   private applyImpact(local: THREE.Vector3, severity: number): void {
@@ -491,9 +529,5 @@ export class Car {
     const r = this.body.rotation();
     this.currPos.set(t.x, t.y, t.z);
     this.currQuat.set(r.x, r.y, r.z, r.w);
-  }
-
-  private worldToLocal(world: THREE.Vector3): THREE.Vector3 {
-    return world.sub(this.currPos).applyQuaternion(_q.copy(this.currQuat).invert());
   }
 }

@@ -7,8 +7,8 @@ import { makeNoise, smoothstep } from './noise';
  * constants: tweak them to change how the slope rides.
  */
 const SHAPE = {
-  /** Downhill gradient along −Z (rise over run). 0.2 ≈ 11°. */
-  slope: 0.2,
+  /** Downhill gradient along −Z (rise over run). 0.32 ≈ 18°. */
+  slope: 0.32,
   /** Big rolling hills that bend the fall line. */
   largeScale: 260,
   largeAmp: 12,
@@ -16,19 +16,33 @@ const SHAPE = {
   largeDetail: 0.3,
   /** Moguls – the bumps you bounce over. */
   midScale: 38,
-  midAmp: 2.6,
-  /** Fine surface roughness. */
+  midAmp: 2.0,
+  /** Fine surface roughness – kept subtle so facets read smooth. */
   smallScale: 9,
-  smallAmp: 0.3,
-  /** Kicker ridges running across the slope (stretched along X). */
-  ridgeScaleX: 110,
-  ridgeScaleZ: 30,
-  ridgeAmp: 3.2,
-  ridgeSharpness: 6,
+  smallAmp: 0.06,
+  /**
+   * Kicker ridges running across the slope (stretched along X). Must stay
+   * several car lengths wide: narrow ridges become spikes that high-centre the car.
+   */
+  ridgeScaleX: 140,
+  ridgeScaleZ: 75,
+  ridgeAmp: 2.6,
+  ridgeSharpness: 3,
   ridgeMaskScale: 180,
   /** Around the origin the ground blends into a plain downhill start pad. */
   spawnPadInner: 15,
   spawnPadOuter: 45,
+};
+
+/**
+ * Trees thicken as you descend: none near the start, ramping to a cap.
+ * Distance is measured downhill (−Z) from the spawn.
+ */
+const TREES = {
+  rampStart: 150,
+  rampEnd: 1500,
+  /** Max chance a candidate cell gets a tree, in the densest forest. */
+  maxChance: 0.55,
 };
 
 /**
@@ -84,8 +98,10 @@ export class TerrainField {
     return out.set(-dx, 2 * e, -dz).normalize();
   }
 
-  /** 0..1 how forested an area is. */
-  forestDensity(x: number, z: number): number {
-    return smoothstep(-0.25, 0.45, this.forest(x / 160, z / 160));
+  /** 0..TREES.maxChance: probability that a candidate cell here holds a tree. */
+  treeDensity(x: number, z: number): number {
+    const patches = smoothstep(-0.25, 0.45, this.forest(x / 160, z / 160));
+    const descent = smoothstep(TREES.rampStart, TREES.rampEnd, -z);
+    return patches * descent * TREES.maxChance;
   }
 }

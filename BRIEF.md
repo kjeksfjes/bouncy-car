@@ -26,12 +26,12 @@ mountain. Hit bumps, catch air, land hard, lose a bumper, keep going. The fun is
 |---|---|
 | Stack | TypeScript + Vite + Three.js (rendering) + Rapier (`@dimforge/rapier3d-compat`, physics). Runs in the browser. |
 | Mode | **Sandbox**: free roam, no fail state, respawn anytime. Goals/scoring come later. |
-| World | Endless chunk-streamed terrain from seeded noise. Downhill along −Z. **Snowy mountain** biome: snow on gentle slopes, rock on steep ones, snowy pines, rocks. |
-| Car | One car: **boxy 70s sedan** (soft, floaty, lots of body roll, RWD). Cars are data-driven configs, so more can be added. |
-| Physics | Custom raycast suspension (spring + damper per wheel, bump stops), arcade tire model (lateral grip, friction circle, handbrake slides), mild air control. |
+| World | Endless chunk-streamed terrain from seeded noise. Downhill along −Z. **Snowy mountain** biome: snow on gentle slopes, rock on steep ones. Snowy pines appear gradually as you descend (none at the start, thickening to a cap). |
+| Car | One car: **boxy 70s sedan** (soft, floaty, lots of body roll; all-wheel drive for arcade traction). Cars are data-driven configs, so more can be added. |
+| Physics | Custom raycast suspension (spring + damper per wheel, bump stops), arcade tire model (lateral grip, friction circle, handbrake slides), air auto-levelling toward the flight path. |
 | Damage | Mesh **deformation** at impact points plus **detachable parts** (bumpers, hood, trunk lid, doors, wheels). Losing a wheel changes handling. Low integrity kills the engine; press N for a new car. |
 | Camera | Smoothed chase cam that stays above the terrain. |
-| Controls | Keyboard: W/S or ↑/↓ for throttle and brake/reverse, A/D or ←/→ to steer, Space for handbrake, R to reset upright (keeps damage), N for a new car. In the air, the throttle and steer keys pitch and roll. |
+| Controls | Keyboard: W/S or ↑/↓ for throttle and brake/reverse, A/D or ←/→ to steer, Space for handbrake, R to reset upright (keeps damage), N for a new car. In the air: S lifts the nose, A/D roll (W does nothing, since it's usually held). |
 | HUD | Speed, car integrity, airtime, controls hint. |
 
 ## Later (not v0.1)

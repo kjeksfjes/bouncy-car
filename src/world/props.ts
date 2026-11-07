@@ -9,13 +9,9 @@ const COLORS = {
   needles: new THREE.Color('#2f5a46'),
   needlesDark: new THREE.Color('#244838'),
   snow: new THREE.Color('#f3f6fa'),
-  rock: new THREE.Color('#6e717a'),
 };
 
-/** No props within this radius of the spawn point, so the first seconds are clear. */
-const SPAWN_CLEAR_RADIUS = 35;
 const TREE_CELL = 9;
-const ROCK_CELL = 16;
 
 /** Writes one flat colour per triangle into a non-indexed geometry. */
 function paintFaces(
@@ -64,37 +60,14 @@ function buildTreeGeometry(): THREE.BufferGeometry {
   return merged;
 }
 
-/** A jittered icosahedron. Duplicate corners are moved identically so the hull stays closed. */
-function buildRockGeometry(): { geometry: THREE.BufferGeometry; hullPoints: THREE.Vector3[] } {
-  const geo = new THREE.IcosahedronGeometry(1, 0);
-  const pos = geo.getAttribute('position');
-  const v = new THREE.Vector3();
-  const unique = new Map<string, THREE.Vector3>();
-  for (let i = 0; i < pos.count; i++) {
-    v.fromBufferAttribute(pos, i);
-    const key = `${v.x.toFixed(3)},${v.y.toFixed(3)},${v.z.toFixed(3)}`;
-    let moved = unique.get(key);
-    if (!moved) {
-      const j = 0.75 + hash2(unique.size * 17, 3, 99) * 0.45;
-      moved = v.clone().multiplyScalar(j);
-      unique.set(key, moved);
-    }
-    pos.setXYZ(i, moved.x, moved.y, moved.z);
-  }
-  geo.computeVertexNormals();
-  paintFaces(geo, (_c, n) => (n.y > 0.55 ? COLORS.snow : COLORS.rock));
-  return { geometry: geo, hullPoints: [...unique.values()] };
-}
-
 export interface ChunkProps {
   objects: THREE.Object3D[];
   dispose(): void;
 }
 
-/** Scatters snowy pines and rocks over terrain chunks, with fixed colliders. */
+/** Scatters snowy pines over terrain chunks, with fixed trunk colliders. */
 export class PropScatter {
   private readonly treeGeometry = buildTreeGeometry();
-  private readonly rock = buildRockGeometry();
   private readonly material = new THREE.MeshStandardMaterial({
     vertexColors: true,
     flatShading: true,
@@ -109,13 +82,13 @@ export class PropScatter {
   populate(x0: number, z0: number, size: number, body: RAPIER.RigidBody): ChunkProps {
     const seed = this.field.seed;
     const n = new THREE.Vector3();
-    const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const s = new THREE.Vector3();
     const p = new THREE.Vector3();
     const up = new THREE.Vector3(0, 1, 0);
 
-    const treeMatrices: THREE.Matrix4[] = [];
+    const matrices: THREE.Matrix4[] = [];
+    // Cells don't align with chunk edges (64 / 9), so scan one extra and keep what falls inside.
     for (let gz = 0; gz <= size / TREE_CELL; gz++) {
       for (let gx = 0; gx <= size / TREE_CELL; gx++) {
         const cellX = Math.floor(x0 / TREE_CELL) + gx;
@@ -123,14 +96,13 @@ export class PropScatter {
         const x = (cellX + hash2(cellX, cellZ, seed + 11)) * TREE_CELL;
         const z = (cellZ + hash2(cellX, cellZ, seed + 12)) * TREE_CELL;
         if (x < x0 || x >= x0 + size || z < z0 || z >= z0 + size) continue;
-        if (Math.hypot(x, z) < SPAWN_CLEAR_RADIUS) continue;
-        if (hash2(cellX, cellZ, seed + 13) > this.field.forestDensity(x, z) * 0.7) continue;
+        if (hash2(cellX, cellZ, seed + 13) >= this.field.treeDensity(x, z)) continue;
         if (this.field.normal(x, z, n).y < 0.82) continue;
 
         const scale = 0.8 + hash2(cellX, cellZ, seed + 14) * 0.8;
         const y = this.field.height(x, z) - 0.2;
         q.setFromAxisAngle(up, hash2(cellX, cellZ, seed + 15) * Math.PI * 2);
-        treeMatrices.push(new THREE.Matrix4().compose(p.set(x, y, z), q, s.setScalar(scale)));
+        matrices.push(new THREE.Matrix4().compose(p.set(x, y, z), q, s.setScalar(scale)));
 
         const halfHeight = 2.2 * scale;
         this.world.createCollider(
@@ -140,47 +112,19 @@ export class PropScatter {
       }
     }
 
-    const rockMatrices: THREE.Matrix4[] = [];
-    for (let gz = 0; gz < size / ROCK_CELL; gz++) {
-      for (let gx = 0; gx < size / ROCK_CELL; gx++) {
-        const cellX = Math.floor(x0 / ROCK_CELL) + gx;
-        const cellZ = Math.floor(z0 / ROCK_CELL) + gz;
-        if (hash2(cellX, cellZ, seed + 21) > 0.25) continue;
-        const x = (cellX + hash2(cellX, cellZ, seed + 22)) * ROCK_CELL;
-        const z = (cellZ + hash2(cellX, cellZ, seed + 23)) * ROCK_CELL;
-        if (Math.hypot(x, z) < SPAWN_CLEAR_RADIUS) continue;
-
-        const size3 = 1.0 + hash2(cellX, cellZ, seed + 24) * 2.2;
-        s.set(size3 * (0.9 + hash2(cellX, cellZ, seed + 25) * 0.4), size3 * 0.7, size3);
-        q.setFromAxisAngle(up, hash2(cellX, cellZ, seed + 26) * Math.PI * 2);
-        p.set(x, this.field.height(x, z) - size3 * 0.25, z);
-        m.compose(p, q, s);
-        rockMatrices.push(m.clone());
-
-        const pts = new Float32Array(this.rock.hullPoints.length * 3);
-        this.rock.hullPoints.forEach((hp, i) => hp.clone().applyMatrix4(m).toArray(pts, i * 3));
-        const hull = RAPIER.ColliderDesc.convexHull(pts);
-        if (!hull) throw new Error('Rock convex hull failed: degenerate points');
-        this.world.createCollider(hull, body);
-      }
-    }
-
     const objects: THREE.Object3D[] = [];
-    const toInstanced = (geo: THREE.BufferGeometry, mats: THREE.Matrix4[]) => {
-      if (mats.length === 0) return;
-      const mesh = new THREE.InstancedMesh(geo, this.material, mats.length);
-      mats.forEach((mat, i) => mesh.setMatrixAt(i, mat));
+    if (matrices.length > 0) {
+      const mesh = new THREE.InstancedMesh(this.treeGeometry, this.material, matrices.length);
+      matrices.forEach((mat, i) => mesh.setMatrixAt(i, mat));
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       mesh.computeBoundingSphere();
       objects.push(mesh);
-    };
-    toInstanced(this.treeGeometry, treeMatrices);
-    toInstanced(this.rock.geometry, rockMatrices);
+    }
 
     return {
       objects,
-      // Geometry and material are shared across chunks; only the instance buffers are per-chunk.
+      // Geometry and material are shared across chunks; only the instance buffer is per-chunk.
       dispose: () => objects.forEach((o) => (o as THREE.InstancedMesh).dispose()),
     };
   }
