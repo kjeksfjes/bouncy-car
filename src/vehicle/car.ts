@@ -8,6 +8,7 @@ import { buildCarModel, GLASS_OPACITY, GLASS_TINT, type CarModel, type CarPiece,
 import { hullBoxes } from './blueprint';
 import { Crush } from './crush';
 import { CarLights } from './lights';
+import { BodyOutline } from './outline';
 import { applyDent, inwardDirection } from './damage';
 import { HingedPanels, createPanelBody } from './panels';
 import { sample } from './blueprint';
@@ -199,7 +200,10 @@ export class Car {
     this.model = buildCarModel(cfg, paint);
     scene.add(this.model.root);
     this.crush = new Crush(cfg.blueprint, cfg.damage);
-    this.lights = new CarLights(this.model.lights, this.model.root, scene, debris, cfg.damage, this.model.smashedLens);
+    this.lights = new CarLights(
+      this.model.lights, this.model.root, scene, debris, cfg.damage, this.model.smashedLens,
+      new BodyOutline(cfg.blueprint, this.crush, this.model.pieces), debris.field,
+    );
 
     const W = cfg.wheels;
     let i = 0;

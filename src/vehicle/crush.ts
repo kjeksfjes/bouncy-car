@@ -94,6 +94,11 @@ export class Crush {
     return null;
   }
 
+  /** How far (m) an end's tip has moved in at car-local `x`. */
+  tipDepth(end: CrushEnd, x: number): number {
+    return this.crushAt(this.zones[end], x);
+  }
+
   /** Deepest crush (m) at an end: how far its tip has moved in. */
   depth(end: CrushEnd): number {
     return Math.max(...this.zones[end].columns);

@@ -46,7 +46,7 @@ export class Debris {
   constructor(
     private readonly scene: THREE.Scene,
     private readonly world: RAPIER.World,
-    private readonly field: TerrainField,
+    readonly field: TerrainField,
   ) {
     this.shards = new Shards(scene, field);
   }

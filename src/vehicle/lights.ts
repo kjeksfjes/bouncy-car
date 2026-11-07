@@ -2,7 +2,9 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import { GRAVITY, PHYSICS_STEP } from '../constants';
 import type { Debris } from '../world/debris';
+import type { TerrainField } from '../world/terrainField';
 import type { Crush } from './crush';
+import type { BodyOutline } from './outline';
 
 /** Light fixture feel values (part of the car's damage config). */
 export interface LightTuning {
@@ -14,6 +16,8 @@ export interface LightTuning {
   lightWireHp: number;
   /** A fixture pushed this far (m) by crush and dents together is squeezed out of its socket. */
   lightDropAtCrush: number;
+  /** Chance a fixture that comes out of its socket snaps off at once instead of dangling. */
+  lightSnapChance: number;
   /** Wire length (m), air drag on a dangling fixture (1/s), and the swing speed (m/s, relative to its socket) that snaps the wire. */
   wireLength: number;
   wireDrag: number;
@@ -59,6 +63,8 @@ interface Fixture extends LightFixtureDef {
   hangTime: number;
   /** Collision box for when it is ripped off (group-local). */
   half: THREE.Vector3;
+  /** Size of the sphere kept outside the body while dangling (m). */
+  radius: number;
 }
 
 /** Shards per smashed lens and their tint by kind. */
@@ -70,19 +76,14 @@ const SHARD_TINT: Record<LightKind, THREE.Color> = {
 };
 /** Longest frame step the pendulum takes (s): a stalled frame shouldn't fling a light off. */
 const MAX_DT = 1 / 30;
-/**
- * A dangling light has no collider, so it's kept at least this far (m) outside the body
- * surface its socket sits in: airflow presses a headlight against the nose instead of into it.
- */
-const STAND_OFF = 0.04;
 /** Seconds after dropping out before a swing can snap the wire: the pop out of the socket isn't a yank. */
 const WIRE_GRACE = 0.25;
 
 const wireMaterial = new THREE.LineBasicMaterial({ color: '#141416' });
 const _w = new THREE.Vector3();
+const _local = new THREE.Vector3();
 const _v = new THREE.Vector3();
 const _d = new THREE.Vector3();
-const _n = new THREE.Vector3();
 const _box = new THREE.Box3();
 
 /**
@@ -100,7 +101,9 @@ export class CarLights {
     private readonly scene: THREE.Scene,
     private readonly debris: Debris,
     private readonly tuning: LightTuning,
-    private readonly smashedLens: THREE.Material,
+    private readonly smashedLens: Record<LightKind, THREE.Material>,
+    private readonly outline: BodyOutline,
+    private readonly field: TerrainField,
   ) {
     this.fixtures = defs.map((def) => {
       _box.setFromObject(def.group, true);
@@ -121,6 +124,8 @@ export class CarLights {
         fresh: false,
         hangTime: 0,
         half,
+        // Vertical half size: the lamp hangs face-down, so this is roughly its footprint.
+        radius: half.y,
       };
     });
   }
@@ -199,9 +204,7 @@ export class CarLights {
       _d.subVectors(f.pos, socket);
       const len = _d.length();
       if (len > T.wireLength) f.pos.copy(socket).addScaledVector(_d, T.wireLength / len);
-      const out = _n.copy(f.normal).transformDirection(this.root.matrixWorld);
-      const depth = _d.subVectors(f.pos, socket).dot(out);
-      if (depth < STAND_OFF) f.pos.addScaledVector(out, STAND_OFF - depth);
+      this.keepOutside(f);
 
       // Swing speed relative to the socket: a violent yank snaps the wire.
       _v.subVectors(f.pos, f.prev).divideScalar(dt);
@@ -246,7 +249,7 @@ export class CarLights {
 
   private smash(f: Fixture, velocityAt: (world: THREE.Vector3) => THREE.Vector3): void {
     f.state = 'smashed';
-    f.lens.material = this.smashedLens;
+    f.lens.material = this.smashedLens[f.kind];
     this.root.updateMatrixWorld();
     const pos = f.lens.geometry.getAttribute('position');
     const points: THREE.Vector3[] = [];
@@ -266,8 +269,15 @@ export class CarLights {
     // Starts just outside the body, leaving with the car's velocity there plus a small pop.
     const out = f.normal.clone().transformDirection(this.root.matrixWorld);
     const socket = this.root.localToWorld(new THREE.Vector3().copy(f.socketNow));
-    f.pos.copy(socket).addScaledVector(out, STAND_OFF);
+    f.pos.copy(socket).addScaledVector(out, f.radius + 0.01);
+    this.keepOutside(f);
     const v = velocityAt(f.pos).addScaledVector(out, 1.5);
+    if (Math.random() < this.tuning.lightSnapChance) {
+      // Not every light hangs on: some snap clean off.
+      f.group.position.copy(f.pos);
+      this.rip(f, v);
+      return;
+    }
     f.prev.copy(f.pos).addScaledVector(v, -PHYSICS_STEP);
     f.socketPrev.copy(socket);
     f.fresh = true;
@@ -277,6 +287,15 @@ export class CarLights {
     f.wire = new THREE.Line(geometry, wireMaterial);
     f.wire.frustumCulled = false;
     this.scene.add(f.wire);
+  }
+
+  /** Keeps a dangling fixture out of its own car's body and above the snow (it has no collider). */
+  private keepOutside(f: Fixture): void {
+    const local = this.root.worldToLocal(_local.copy(f.pos));
+    this.outline.pushOut(local, f.radius, f.socketNow, this.tuning.wireLength);
+    this.root.localToWorld(f.pos.copy(local));
+    const ground = this.field.height(f.pos.x, f.pos.z) + f.radius;
+    if (f.pos.y < ground) f.pos.y = ground;
   }
 
   private rip(f: Fixture, velocity: THREE.Vector3): void {

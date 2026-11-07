@@ -67,8 +67,8 @@ export interface CarModel {
   pieces: CarPiece[];
   wheels: WheelVisual[];
   lights: LightFixtureDef[];
-  /** Lens material once a light is smashed. */
-  smashedLens: THREE.Material;
+  /** Lens material once a light is smashed, per kind. */
+  smashedLens: Record<LightKind, THREE.Material>;
 }
 
 interface CarMaterials {
@@ -80,6 +80,10 @@ interface CarMaterials {
   headlight: THREE.Material;
   taillight: THREE.Material;
   marker: THREE.Material;
+  /** Smashed lenses: a bare reflector bowl for headlights, unlit coloured plastic for the rest. */
+  brokenHead: THREE.Material;
+  brokenTail: THREE.Material;
+  brokenMarker: THREE.Material;
   engine: THREE.Material;
   upholstery: THREE.Material;
 }
@@ -161,6 +165,9 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
       headlight: std('#fff6d8', { emissive: '#fff1c4', emissiveIntensity: 0.6 }),
       taillight: std('#a3121b', { emissive: '#7a0a10', emissiveIntensity: 0.5 }),
       marker: std('#e08a1e', { emissive: '#7a4208', emissiveIntensity: 0.4 }),
+      brokenHead: std('#c3c9cf', { roughness: 0.35, metalness: 0.8 }),
+      brokenTail: std('#5a1418', { roughness: 0.6 }),
+      brokenMarker: std('#7a4a14', { roughness: 0.6 }),
       engine: std('#c0502d', { roughness: 0.5, metalness: 0.3 }),
       upholstery: std('#5a2e24', { roughness: 0.75 }),
     };
@@ -404,5 +411,11 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     }
   }
 
-  return { root, pieces, wheels, lights, smashedLens: mat.dark };
+  return {
+    root,
+    pieces,
+    wheels,
+    lights,
+    smashedLens: { head: mat.brokenHead, tail: mat.brokenTail, marker: mat.brokenMarker },
+  };
 }

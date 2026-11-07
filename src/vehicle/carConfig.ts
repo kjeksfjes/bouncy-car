@@ -272,6 +272,7 @@ export const COUPE_70S: CarConfig = {
     lightMountHp: 100,
     lightWireHp: 180,
     lightDropAtCrush: 0.15,
+    lightSnapChance: 0.4,
     wireLength: 0.25,
     // Linear air drag on a dangling light: ≈3 m/s² at 15 m/s, well under gravity, so it hangs and swings.
     wireDrag: 0.25,
