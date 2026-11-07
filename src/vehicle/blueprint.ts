@@ -236,13 +236,14 @@ export function buildPanels(bp: CarBlueprint): Panels {
   const upperPart = (zm: number, seg: number, side: number): [string, PanelMaterial] => {
     const zone = zm < gh.windshieldTo ? 'windshield' : zm > gh.rearGlassFrom ? 'rear' : 'roof';
     if (seg === 0) {
-      if (within(zm, gh.doorGlass)) return [`door-${sideName(side)}`, 'glass'];
-      if (within(zm, gh.quarterGlass)) return ['glass', 'glass'];
+      if (within(zm, gh.doorGlass)) return [`door-glass-${sideName(side)}`, 'glass'];
+      if (within(zm, gh.quarterGlass)) return [`quarter-glass-${sideName(side)}`, 'glass'];
       return ['roof', 'paint'];
     }
     if (seg === 1) return ['roof', 'paint'];
     if (seg === 2) return ['roof', 'paint'];
-    return zone === 'roof' ? ['roof', 'paint'] : ['glass', 'glass'];
+    if (zone === 'windshield') return ['windshield', 'glass'];
+    return zone === 'rear' ? ['rear-glass', 'glass'] : ['roof', 'paint'];
   };
 
   const ghStations = stations.filter((z) => z >= ghFrom && z <= ghTo);

@@ -106,6 +106,9 @@ export interface CarConfig {
     integrityPerDv: number;
     /** Below this integrity the engine dies. */
     engineDeathAt: number;
+    /** Glass panes: hit points, and the fraction of them left when a pane cracks. */
+    glassHp: number;
+    crackAt: number;
     /** Below this integrity the engine steams. */
     steamBelow: number;
     /** Hinged panels: see PanelTuning. */
@@ -230,6 +233,8 @@ export const COUPE_70S: CarConfig = {
     bottomOutDamagePerDv: 6,
     integrityPerDv: 0.025,
     engineDeathAt: 0.12,
+    glassHp: 45,
+    crackAt: 0.6,
     steamBelow: 0.5,
     tearHp: 70,
     tearSwingSpeed: 16,

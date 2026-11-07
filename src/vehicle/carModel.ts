@@ -17,7 +17,26 @@ export interface CarPiece {
   hp: number;
   /** Where a detachable panel hangs once it breaks loose. */
   hinge?: HingeSpec;
+  /** Set for glass panes, which crack and shatter instead of denting. */
+  glass?: GlassPane;
 }
+
+export interface GlassPane {
+  /** Planar UV projection of the pane (geometry-local), for placing the crack pattern. */
+  u: THREE.Vector3;
+  v: THREE.Vector3;
+  min: THREE.Vector2;
+  size: THREE.Vector2;
+  /** The cracked material, once cracked. */
+  cracked: THREE.Material | null;
+  /** A pane that rides on another piece (door glass on its door) and shatters when that tears off. */
+  follows?: string;
+}
+
+/** Tint of intact glass; cracked panes reuse it under the crack pattern. */
+export const GLASS_TINT = '#1e2a33';
+/** Per surface; solidified panes have two surfaces, so they look about twice as dark. */
+export const GLASS_OPACITY = 0.45;
 
 /** A revolute hinge in car-local space. Angles are relative to the closed position. */
 export interface HingeSpec {
@@ -59,6 +78,50 @@ interface CarMaterials {
   upholstery: THREE.Material;
 }
 
+/** Glass panes (from the blueprint's part names). */
+const GLASS = /glass|windshield/;
+
+/**
+ * Projects a pane onto its own plane and stores the result as UVs, so a crack
+ * texture can be centred on a hit point. The basis comes from the pane's
+ * average facing (inner faces are flipped to agree with the outer ones).
+ */
+function planarProjection(geometry: THREE.BufferGeometry): GlassPane {
+  const pos = geometry.getAttribute('position');
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const n = new THREE.Vector3();
+  const sum = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i += 3) {
+    a.fromBufferAttribute(pos, i);
+    b.fromBufferAttribute(pos, i + 1).sub(a);
+    c.fromBufferAttribute(pos, i + 2).sub(a);
+    n.crossVectors(b, c);
+    sum.addScaledVector(n, sum.dot(n) < 0 ? -1 : 1);
+  }
+  const normal = sum.normalize();
+  const u = new THREE.Vector3().crossVectors(normal, Math.abs(normal.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0)).normalize();
+  const v = new THREE.Vector3().crossVectors(normal, u);
+  const uv = new Float32Array(pos.count * 2);
+  const min = new THREE.Vector2(Infinity, Infinity);
+  const max = new THREE.Vector2(-Infinity, -Infinity);
+  for (let i = 0; i < pos.count; i++) {
+    a.fromBufferAttribute(pos, i);
+    uv[i * 2] = a.dot(u);
+    uv[i * 2 + 1] = a.dot(v);
+    min.min(new THREE.Vector2(uv[i * 2], uv[i * 2 + 1]));
+    max.max(new THREE.Vector2(uv[i * 2], uv[i * 2 + 1]));
+  }
+  const size = max.clone().sub(min);
+  for (let i = 0; i < pos.count; i++) {
+    uv[i * 2] = (uv[i * 2] - min.x) / size.x;
+    uv[i * 2 + 1] = (uv[i * 2 + 1] - min.y) / size.y;
+  }
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return { u, v, min, size, cracked: null };
+}
+
 /** Body parts that can be knocked off. Everything else stays on and only dents. */
 const DETACHABLE = new Set(['hood', 'trunk', 'door-left', 'door-right', 'bumper-front', 'bumper-rear']);
 
@@ -85,7 +148,7 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
     // Panels are solid (see solidify), so ordinary front-face rendering is enough.
     m = {
       paint: std(paint, { roughness: 0.4, metalness: 0.25 }),
-      glass: std('#1e2a33', { roughness: 0.08, metalness: 0.4 }),
+      glass: std(GLASS_TINT, { roughness: 0.05, metalness: 0.5, transparent: true, opacity: GLASS_OPACITY }),
       chrome: std('#d9dde2', { roughness: 0.2, metalness: 0.9 }),
       dark: std('#1c1d20', { roughness: 0.7 }),
       tire: std('#1a1a1c', { roughness: 0.9 }),
@@ -158,6 +221,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     root.add(mesh);
+    const glass = GLASS.test(name) ? planarProjection(geometry) : undefined;
     pieces.push({
       name,
       mesh,
@@ -165,8 +229,9 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
       bounds: geometry.boundingBox!.clone().translate(mesh.position),
       detachable: DETACHABLE.has(name),
       state: 'closed',
-      hp: cfg.damage.partHp,
+      hp: glass ? cfg.damage.glassHp : cfg.damage.partHp,
       hinge: hinges[name],
+      glass,
     });
   };
 
@@ -183,6 +248,14 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     const merged = mergeGeometries(geos, true);
     if (!merged) throw new Error(`Body part "${part}" failed to merge`);
     add(part, merged, materials);
+  }
+
+  // Door windows ride on their doors: they swing and fly off with them.
+  for (const side of ['left', 'right']) {
+    const door = pieces.find((p) => p.name === `door-${side}`)!;
+    const pane = pieces.find((p) => p.name === `door-glass-${side}`)!;
+    door.mesh.attach(pane.mesh);
+    pane.glass!.follows = door.name;
   }
 
   const box = (w: number, h: number, d: number, segX = 1) => new THREE.BoxGeometry(w, h, d, segX, 1, 1);

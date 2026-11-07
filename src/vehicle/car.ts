@@ -4,12 +4,13 @@ import { PHYSICS_STEP } from '../constants';
 import type { Debris } from '../world/debris';
 import type { TerrainField } from '../world/terrainField';
 import type { CarConfig } from './carConfig';
-import { buildCarModel, type CarModel, type CarPiece, type WheelVisual } from './carModel';
+import { buildCarModel, GLASS_OPACITY, GLASS_TINT, type CarModel, type CarPiece, type WheelVisual } from './carModel';
 import { hullBoxes } from './blueprint';
 import { applyDent, inwardDirection } from './damage';
 import { HingedPanels, createPanelBody } from './panels';
 import { sample } from './blueprint';
 import { Smoke } from '../render/smoke';
+import { crackTexture } from '../render/crackTexture';
 
 export interface CarInput {
   throttle: number;
@@ -384,6 +385,11 @@ export class Car {
   afterStep(): void {
     this.captureTransform();
     this.panels.afterStep();
+    // A door window goes when its door is torn off.
+    for (const piece of this.model.pieces) {
+      const follows = piece.glass?.follows;
+      if (follows && piece.state !== 'gone' && this.piece(follows).state === 'gone') this.shatter(piece);
+    }
     this.bodyTouching = false;
     for (const own of this.colliders.values()) {
       this.world.contactPairsWith(own, (other) =>
@@ -440,6 +446,16 @@ export class Car {
       piece.hp -= severity * d.partDamagePerDv * (1 - dist / reach);
       if (piece.state === 'closed' && piece.hp <= 0) this.breakLoose(piece, local);
     }
+    // Glass is more fragile and feels hits from further away.
+    const glassReach = d.dentRadius * 1.6;
+    for (const piece of this.model.pieces) {
+      if (!piece.glass || piece.state === 'gone') continue;
+      const dist = piece.bounds.distanceToPoint(local);
+      if (dist >= glassReach) continue;
+      piece.hp -= severity * d.partDamagePerDv * (1 - dist / glassReach);
+      if (piece.hp <= 0) this.shatter(piece);
+      else if (!piece.glass.cracked && piece.hp < d.glassHp * d.crackAt) this.crack(piece, local);
+    }
     for (const wheel of this.wheels) {
       if (!wheel.attached) continue;
       _tmp.copy(wheel.anchor).setY(wheel.anchor.y - wheel.suspLen);
@@ -459,6 +475,68 @@ export class Car {
       .setDensity(300)
       .setFriction(0.9);
     this.release(wheel.visual.pivot, [collider]);
+  }
+
+  /** Swaps a pane's material for a crack pattern centred on the car-local hit point. */
+  private crack(piece: CarPiece, local: THREE.Vector3): void {
+    const pane = piece.glass!;
+    // Geometry is centred on the piece's rest bounds, so this gives the hit in pane space.
+    const p = local.clone().sub(piece.bounds.getCenter(_tmp));
+    const uv = new THREE.Vector2(
+      THREE.MathUtils.clamp((p.dot(pane.u) - pane.min.x) / pane.size.x, 0.05, 0.95),
+      THREE.MathUtils.clamp((p.dot(pane.v) - pane.min.y) / pane.size.y, 0.05, 0.95),
+    );
+    pane.cracked = new THREE.MeshStandardMaterial({
+      map: crackTexture(uv, GLASS_TINT, GLASS_OPACITY),
+      transparent: true,
+      roughness: 0.1,
+      metalness: 0.3,
+      flatShading: true,
+    });
+    piece.mesh.material = pane.cracked;
+  }
+
+  /** Removes a pane and bursts it into shards sampled across its surface. */
+  private shatter(piece: CarPiece): void {
+    piece.state = 'gone';
+    const mesh = piece.mesh;
+    mesh.updateWorldMatrix(true, false);
+    const pos = mesh.geometry.getAttribute('position');
+    const size = piece.bounds.getSize(_tmp);
+    const area = Math.max(size.x * size.y, size.y * size.z, size.x * size.z);
+    const count = THREE.MathUtils.clamp(Math.round(area * 30), 8, 40);
+    const points: THREE.Vector3[] = [];
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    for (let i = 0; i < count; i++) {
+      const t = Math.floor(Math.random() * (pos.count / 3)) * 3;
+      a.fromBufferAttribute(pos, t);
+      b.fromBufferAttribute(pos, t + 1);
+      c.fromBufferAttribute(pos, t + 2);
+      let r1 = Math.random();
+      let r2 = Math.random();
+      if (r1 + r2 > 1) [r1, r2] = [1 - r1, 1 - r2];
+      points.push(a.clone().addScaledVector(b.sub(a), r1).addScaledVector(c.sub(a), r2).applyMatrix4(mesh.matrixWorld));
+    }
+    this.debris.shatter(points, this.velocity);
+    mesh.removeFromParent();
+    mesh.geometry.dispose();
+    this.disposeCrack(piece);
+  }
+
+  private disposeCrack(piece: CarPiece): void {
+    const cracked = piece.glass?.cracked as THREE.MeshStandardMaterial | null | undefined;
+    if (!cracked) return;
+    cracked.map?.dispose();
+    cracked.dispose();
+    piece.glass!.cracked = null;
+  }
+
+  private piece(name: string): CarPiece {
+    const piece = this.model.pieces.find((p) => p.name === name);
+    if (!piece) throw new Error(`No car piece named "${name}"`);
+    return piece;
   }
 
   /** A panel past its hp: hangs on its hinge if it has one, otherwise falls off entirely. */
@@ -571,6 +649,7 @@ export class Car {
   dispose(): void {
     this.panels.dispose();
     this.smoke.dispose();
+    for (const piece of this.model.pieces) this.disposeCrack(piece);
     this.world.removeRigidBody(this.body);
     this.scene.remove(this.model.root);
     // Detached parts now belong to Debris; only dispose what is still on the car.

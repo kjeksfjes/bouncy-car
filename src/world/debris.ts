@@ -1,6 +1,7 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import type { Visibility } from '../render/visibility';
+import { Shards } from './shards';
 import type { TerrainField } from './terrainField';
 
 /**
@@ -40,12 +41,20 @@ const _p = new THREE.Vector3();
 /** Loose car parts tumbling around as simple rigid bodies. */
 export class Debris {
   private items: DebrisItem[] = [];
+  private readonly shards: Shards;
 
   constructor(
     private readonly scene: THREE.Scene,
     private readonly world: RAPIER.World,
     private readonly field: TerrainField,
-  ) {}
+  ) {
+    this.shards = new Shards(scene, field);
+  }
+
+  /** Glass shards bursting from `points` (world space), carried along with `velocity`. */
+  shatter(points: readonly THREE.Vector3[], velocity: THREE.Vector3): void {
+    this.shards.burst(points, velocity);
+  }
 
   /** `object` must already be a direct child of the scene, placed in world space. */
   spawn(object: THREE.Object3D, colliders: RAPIER.ColliderDesc[], linvel: THREE.Vector3, angvel: THREE.Vector3): void {
@@ -76,6 +85,7 @@ export class Debris {
 
   /** @param player cleanup distances are measured from here */
   update(dt: number, player: THREE.Vector3, view: Visibility): void {
+    this.shards.update(dt);
     const C = CLEANUP;
 
     this.items = this.items.filter((item) => {

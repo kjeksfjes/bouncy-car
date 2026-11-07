@@ -19,7 +19,8 @@ export function applyDent(
   maxDent: number,
 ): void {
   for (const piece of pieces) {
-    if (piece.state !== 'closed' || piece.bounds.distanceToPoint(point) > radius) continue;
+    // Glass cracks instead of denting (see Car.applyImpact).
+    if (piece.glass || piece.state !== 'closed' || piece.bounds.distanceToPoint(point) > radius) continue;
     const pos = piece.mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
     const offset = piece.mesh.position;
     let changed = false;
