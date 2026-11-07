@@ -1,11 +1,31 @@
 import * as THREE from 'three';
 import { GRAVITY } from '../constants';
+import { SUN_DIR } from '../render/stage';
 import type { TerrainField } from './terrainField';
 
-const CAPACITY = 400;
-const LIFETIME = 6;
-/** The last part of a shard's life is spent shrinking away. */
-const FADE_TIME = 1;
+/** Feel values for glass shards. Tuned for readability on snow, not realism (tempered glass is ~1 cm crumbs). */
+const SHARDS = {
+  capacity: 600,
+  /** Seconds a shard lives; the last `fadeTime` of it is spent shrinking away. */
+  lifetime: 10,
+  fadeTime: 1.5,
+  /** Scale of the unit triangle (≈1 m across), so shards are 6–16 cm. */
+  sizeMin: 0.06,
+  sizeMax: 0.16,
+  /** Speed (m/s) thrown out from the pane, on top of the car's own velocity, plus random scatter. */
+  eject: 3,
+  scatter: 3,
+  /**
+   * Air drag (1/s): shards lose the car's speed quickly, so at speed they spray back past
+   * the chase camera instead of travelling along with the car.
+   */
+  drag: 1.4,
+  /** Glass-edge tint; lit by a fake sun term since the material is unlit. */
+  tint: new THREE.Color('#5fa3b3'),
+  /** Sun glint: sharpness (higher = shorter flashes) and strength (how fully it whitens the tint). */
+  glintPower: 24,
+  glint: 1.6,
+};
 
 interface Shard {
   position: THREE.Vector3;
@@ -20,11 +40,16 @@ interface Shard {
 const _m = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
 const _s = new THREE.Vector3();
+const _n = new THREE.Vector3();
+const _h = new THREE.Vector3();
+const _c = new THREE.Color();
+const WHITE = new THREE.Color(1, 1, 1);
 
 /**
  * Glass shards: visual-only particles (one instanced draw call) that fly,
  * tumble and bounce on the analytic terrain, then shrink away. No physics
- * bodies, so a shattered windshield costs next to nothing.
+ * bodies, so a shattered windshield costs next to nothing. Unlit, with
+ * per-shard colour from a fake sun glint, so they sparkle as they turn.
  */
 export class Shards {
   private readonly mesh: THREE.InstancedMesh;
@@ -36,43 +61,48 @@ export class Shards {
   ) {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0.2, 0.3, 0, 0.9], 3));
-    geometry.computeVertexNormals();
-    const material = new THREE.MeshStandardMaterial({
-      color: '#d3e6f2',
-      roughness: 0.05,
-      metalness: 0.7,
-      transparent: true,
-      opacity: 0.85,
-      side: THREE.DoubleSide,
-    });
-    this.mesh = new THREE.InstancedMesh(geometry, material, CAPACITY);
+    const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+    this.mesh = new THREE.InstancedMesh(geometry, material, SHARDS.capacity);
+    this.mesh.setColorAt(0, WHITE); // allocates instanceColor
     this.mesh.count = 0;
     this.mesh.frustumCulled = false;
     scene.add(this.mesh);
   }
 
-  /** Bursts shards from `points` (world space), carried along with `velocity`. */
-  burst(points: readonly THREE.Vector3[], velocity: THREE.Vector3): void {
+  /**
+   * Bursts shards from `points` (world space), carried along with `velocity` and
+   * thrown out along `outward` (unit vector away from the car body).
+   */
+  burst(points: readonly THREE.Vector3[], velocity: THREE.Vector3, outward: THREE.Vector3): void {
+    const S = SHARDS;
     for (const p of points) {
-      if (this.shards.length >= CAPACITY) this.shards.shift();
+      if (this.shards.length >= S.capacity) this.shards.shift();
+      const v = velocity
+        .clone()
+        .addScaledVector(outward, S.eject * (0.5 + Math.random()))
+        .add(new THREE.Vector3((Math.random() - 0.5) * S.scatter, Math.random() * S.scatter, (Math.random() - 0.5) * S.scatter));
       this.shards.push({
         position: p.clone(),
-        velocity: velocity.clone().add(new THREE.Vector3((Math.random() - 0.5) * 4, Math.random() * 3, (Math.random() - 0.5) * 4)),
+        velocity: v,
         rotation: new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.random() * 6, Math.random() * 6, Math.random() * 6)),
         spinAxis: new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize(),
         spin: 6 + Math.random() * 14,
-        size: 0.03 + Math.random() * 0.06,
+        size: THREE.MathUtils.lerp(S.sizeMin, S.sizeMax, Math.random()),
         age: 0,
       });
     }
   }
 
-  update(dt: number): void {
+  /** @param eye camera position, for the sun glint */
+  update(dt: number, eye: THREE.Vector3): void {
+    const S = SHARDS;
+    const drag = Math.exp(-S.drag * dt);
     let n = 0;
     for (let i = 0; i < this.shards.length; i++) {
       const s = this.shards[i];
       s.age += dt;
-      if (s.age >= LIFETIME) continue;
+      if (s.age >= S.lifetime) continue;
+      s.velocity.multiplyScalar(drag);
       s.velocity.y -= GRAVITY * dt;
       s.position.addScaledVector(s.velocity, dt);
       const ground = this.field.height(s.position.x, s.position.z) + 0.01;
@@ -82,12 +112,20 @@ export class Shards {
         s.spin *= 0.5;
       }
       s.rotation.multiply(_q.setFromAxisAngle(s.spinAxis, s.spin * dt));
-      const fade = Math.min(1, (LIFETIME - s.age) / FADE_TIME);
+      const fade = Math.min(1, (S.lifetime - s.age) / S.fadeTime);
       this.mesh.setMatrixAt(n, _m.compose(s.position, s.rotation, _s.setScalar(s.size * fade)));
+
+      // Double-sided flat shard: light and glint use |n·x|.
+      _n.set(0, 1, 0).applyQuaternion(s.rotation);
+      _h.subVectors(eye, s.position).normalize().add(SUN_DIR).normalize();
+      const lit = 0.6 + 0.4 * Math.abs(_n.dot(SUN_DIR));
+      const glint = Math.abs(_n.dot(_h)) ** S.glintPower * S.glint;
+      this.mesh.setColorAt(n, _c.copy(S.tint).multiplyScalar(lit).lerp(WHITE, Math.min(1, glint)));
       this.shards[n++] = s;
     }
     this.shards.length = n;
     this.mesh.count = n;
     this.mesh.instanceMatrix.needsUpdate = true;
+    this.mesh.instanceColor!.needsUpdate = true;
   }
 }

@@ -9,6 +9,11 @@ export class Visibility {
   private readonly cameraPos = new THREE.Vector3();
   private viewDistance = 0;
 
+  /** Camera position as of the last update. */
+  get eye(): THREE.Vector3 {
+    return this.cameraPos;
+  }
+
   /** Call once per frame after the camera has moved. */
   update(camera: THREE.Camera, viewDistance: number): void {
     camera.updateMatrixWorld();

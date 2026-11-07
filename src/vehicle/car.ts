@@ -556,7 +556,7 @@ export class Car {
     const pos = mesh.geometry.getAttribute('position');
     const size = piece.bounds.getSize(_tmp);
     const area = Math.max(size.x * size.y, size.y * size.z, size.x * size.z);
-    const count = THREE.MathUtils.clamp(Math.round(area * 30), 8, 40);
+    const count = THREE.MathUtils.clamp(Math.round(area * 60), 16, 80);
     const points: THREE.Vector3[] = [];
     const a = new THREE.Vector3();
     const b = new THREE.Vector3();
@@ -571,8 +571,12 @@ export class Car {
       if (r1 + r2 > 1) [r1, r2] = [1 - r1, 1 - r2];
       points.push(a.clone().addScaledVector(b.sub(a), r1).addScaledVector(c.sub(a), r2).applyMatrix4(mesh.matrixWorld));
     }
-    this.debris.shatter(points, this.velocity);
-    this.events?.glass(this, mesh.getWorldPosition(new THREE.Vector3()), true);
+    // Thrown away from the body: from the car's centre out through the pane, tipped upward.
+    const at = mesh.getWorldPosition(new THREE.Vector3());
+    const outward = at.clone().sub(this.position).setY(0).normalize();
+    outward.y = 0.6;
+    this.debris.shatter(points, this.velocity, outward.normalize());
+    this.events?.glass(this, at, true);
     mesh.removeFromParent();
     mesh.geometry.dispose();
     this.disposeCrack(piece);

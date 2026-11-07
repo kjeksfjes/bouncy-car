@@ -51,9 +51,9 @@ export class Debris {
     this.shards = new Shards(scene, field);
   }
 
-  /** Glass shards bursting from `points` (world space), carried along with `velocity`. */
-  shatter(points: readonly THREE.Vector3[], velocity: THREE.Vector3): void {
-    this.shards.burst(points, velocity);
+  /** Glass shards bursting from `points` (world space), carried along with `velocity`, thrown out along `outward`. */
+  shatter(points: readonly THREE.Vector3[], velocity: THREE.Vector3, outward: THREE.Vector3): void {
+    this.shards.burst(points, velocity, outward);
   }
 
   /** `object` must already be a direct child of the scene, placed in world space. */
@@ -85,7 +85,7 @@ export class Debris {
 
   /** @param player cleanup distances are measured from here */
   update(dt: number, player: THREE.Vector3, view: Visibility): void {
-    this.shards.update(dt);
+    this.shards.update(dt, view.eye);
     const C = CLEANUP;
 
     this.items = this.items.filter((item) => {
