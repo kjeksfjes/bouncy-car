@@ -52,8 +52,8 @@ export class Debris {
   }
 
   /** Glass shards bursting from `points` (world space), carried along with `velocity`, thrown out along `outward`. */
-  shatter(points: readonly THREE.Vector3[], velocity: THREE.Vector3, outward: THREE.Vector3): void {
-    this.shards.burst(points, velocity, outward);
+  shatter(points: readonly THREE.Vector3[], velocity: THREE.Vector3, outward: THREE.Vector3, tint?: THREE.Color): void {
+    this.shards.burst(points, velocity, outward, tint);
   }
 
   /** `object` must already be a direct child of the scene, placed in world space. */

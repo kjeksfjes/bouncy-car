@@ -35,6 +35,7 @@ interface Shard {
   spin: number;
   size: number;
   age: number;
+  tint: THREE.Color;
 }
 
 const _m = new THREE.Matrix4();
@@ -71,9 +72,9 @@ export class Shards {
 
   /**
    * Bursts shards from `points` (world space), carried along with `velocity` and
-   * thrown out along `outward` (unit vector away from the car body).
+   * thrown out along `outward` (unit vector away from the car body). `tint` defaults to window glass.
    */
-  burst(points: readonly THREE.Vector3[], velocity: THREE.Vector3, outward: THREE.Vector3): void {
+  burst(points: readonly THREE.Vector3[], velocity: THREE.Vector3, outward: THREE.Vector3, tint = SHARDS.tint): void {
     const S = SHARDS;
     for (const p of points) {
       if (this.shards.length >= S.capacity) this.shards.shift();
@@ -89,6 +90,7 @@ export class Shards {
         spin: 6 + Math.random() * 14,
         size: THREE.MathUtils.lerp(S.sizeMin, S.sizeMax, Math.random()),
         age: 0,
+        tint,
       });
     }
   }
@@ -120,7 +122,7 @@ export class Shards {
       _h.subVectors(eye, s.position).normalize().add(SUN_DIR).normalize();
       const lit = 0.6 + 0.4 * Math.abs(_n.dot(SUN_DIR));
       const glint = Math.abs(_n.dot(_h)) ** S.glintPower * S.glint;
-      this.mesh.setColorAt(n, _c.copy(S.tint).multiplyScalar(lit).lerp(WHITE, Math.min(1, glint)));
+      this.mesh.setColorAt(n, _c.copy(s.tint).multiplyScalar(lit).lerp(WHITE, Math.min(1, glint)));
       this.shards[n++] = s;
     }
     this.shards.length = n;

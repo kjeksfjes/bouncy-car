@@ -1,5 +1,6 @@
 import type { CarBlueprint } from './blueprint';
 import type { CrushTuning } from './crush';
+import type { LightTuning } from './lights';
 
 /**
  * Data-driven car definition. All values are gameplay tuning, not real-world
@@ -88,8 +89,8 @@ export interface CarConfig {
   };
   aeroDrag: number;
 
-  /** Crumple zones: see CrushTuning. */
-  damage: CrushTuning & {
+  /** Crumple zones: see CrushTuning; light fixtures: see LightTuning. */
+  damage: CrushTuning & LightTuning & {
     /** Impact Δv (m/s, per physics step) the car shrugs off without a scratch. */
     toughness: number;
     /** Dent depth per m/s of Δv over toughness. */
@@ -264,5 +265,17 @@ export const COUPE_70S: CarConfig = {
     crushBuckle: 0.2,
     crushWrinkle: 0.06,
     crushWrinkleSize: 0.2,
+    // Damage is severity × partDamagePerDv, fading with distance: a severity-6 hit right on
+    // a light smashes it, ≈10 drops it out, and a dangling one snaps off on the next big hit.
+    lightReach: 0.6,
+    lightLensHp: 25,
+    lightMountHp: 100,
+    lightWireHp: 180,
+    lightDropAtCrush: 0.15,
+    wireLength: 0.25,
+    // Linear air drag on a dangling light: ≈3 m/s² at 15 m/s, well under gravity, so it hangs and swings.
+    wireDrag: 0.25,
+    // Swing speed relative to the socket: survives ordinary landings, snaps on hard ones.
+    wireTearSpeed: 12,
   },
 };

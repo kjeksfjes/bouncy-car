@@ -7,6 +7,7 @@ import type { CarConfig } from './carConfig';
 import { buildCarModel, GLASS_OPACITY, GLASS_TINT, type CarModel, type CarPiece, type WheelVisual } from './carModel';
 import { hullBoxes } from './blueprint';
 import { Crush } from './crush';
+import { CarLights } from './lights';
 import { applyDent, inwardDirection } from './damage';
 import { HingedPanels, createPanelBody } from './panels';
 import { sample } from './blueprint';
@@ -109,6 +110,7 @@ export class Car {
   private readonly rayFilter = (c: RAPIER.Collider) => !this.panels.owns(c);
   /** Front and rear crumple zones. */
   private readonly crush: Crush;
+  private readonly lights: CarLights;
   /** The lower-body box and its uncrushed shape: its ends follow the crumple zones in. */
   private readonly lowerCollider: RAPIER.Collider;
   private readonly lowerHull: { center: THREE.Vector3; half: THREE.Vector3 };
@@ -197,6 +199,7 @@ export class Car {
     this.model = buildCarModel(cfg, paint);
     scene.add(this.model.root);
     this.crush = new Crush(cfg.blueprint, cfg.damage);
+    this.lights = new CarLights(this.model.lights, this.model.root, scene, debris, cfg.damage, this.model.smashedLens);
 
     const W = cfg.wheels;
     let i = 0;
@@ -519,7 +522,15 @@ export class Car {
     const dir = inwardDirection(local, this.hullCenter, this.hullHalf);
     const radius = d.dentRadius * (1 + Math.min(severity, 10) * 0.05);
     const dent = Math.min(d.maxDent, severity * d.dentPerDv) * (1 - square);
-    if (dent > 0) applyDent(this.model.pieces, local, dir, dent, radius, d.maxDent);
+    if (dent > 0) {
+      applyDent(this.model.pieces, local, dir, dent, radius, d.maxDent);
+      this.lights.dent(local, dir, dent, radius, d.maxDent);
+    }
+    // Lights leave from where the car really is (like breaking panels).
+    this.snapRootToPhysics();
+    const velocityAt = (world: THREE.Vector3) => this.pointVelocity(world);
+    this.lights.follow(this.crush, velocityAt);
+    this.lights.hit(local, severity * d.partDamagePerDv, velocityAt);
 
     const reach = d.dentRadius * 1.3;
     for (const piece of this.model.pieces) {
@@ -707,6 +718,7 @@ export class Car {
     this.captureTransform();
     this.prevPos.copy(this.currPos);
     this.prevQuat.copy(this.currQuat);
+    this.lights.teleport();
   }
 
   /** Interpolates the visual between the last two physics states. */
@@ -721,6 +733,7 @@ export class Car {
       w.visual.spin.rotation.x -= w.spinSpeed * frameDt;
     }
     this.panels.sync(alpha);
+    this.lights.update(frameDt);
     this.emitEngineSmoke(frameDt);
   }
 
@@ -780,6 +793,7 @@ export class Car {
   dispose(): void {
     this.disposed = true;
     this.panels.dispose();
+    this.lights.dispose();
     this.smoke.dispose();
     for (const piece of this.model.pieces) this.disposeCrack(piece);
     this.world.removeRigidBody(this.body);

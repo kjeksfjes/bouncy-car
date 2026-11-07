@@ -144,7 +144,7 @@ export class Crush {
   }
 
   /** Moves a car-local rest position to its crushed place (in place). */
-  private displace(p: THREE.Vector3): THREE.Vector3 {
+  displace(p: THREE.Vector3): THREE.Vector3 {
     const T = this.tuning;
     const bp = this.bp;
     for (const zone of [this.zones.front, this.zones.rear]) {

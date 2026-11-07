@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { buildPanels, sample, type CarBlueprint, type PanelMaterial, type Panels } from './blueprint';
 import type { CarConfig } from './carConfig';
+import type { LightFixtureDef, LightKind } from './lights';
 
 /** A dentable mesh on the car. Detachable pieces can be knocked off. */
 export interface CarPiece {
@@ -65,6 +66,9 @@ export interface CarModel {
   root: THREE.Group;
   pieces: CarPiece[];
   wheels: WheelVisual[];
+  lights: LightFixtureDef[];
+  /** Lens material once a light is smashed. */
+  smashedLens: THREE.Material;
 }
 
 interface CarMaterials {
@@ -268,22 +272,62 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   add('bumper-front', box(2.0, 0.12, 0.13, 10), mat.chrome, at(0, 0.5, bp.front - 0.06));
   add('bumper-rear', box(1.98, 0.12, 0.13, 10), mat.chrome, at(0, 0.56, bp.rear + 0.06));
 
-  // Grille with a chrome surround, quad headlights in chrome rings. Subdivided across so a
-  // crumpled nose bends them along with it.
+  // Grille with a chrome surround. Subdivided across so a crumpled nose bends it along with it.
   add('grille-frame', box(0.92, 0.26, 0.03, 8), mat.chrome, at(0, 0.69, bp.front - 0.005));
   add('grille', box(0.86, 0.2, 0.03, 8), mat.dark, at(0, 0.69, bp.front - 0.02));
-  for (const x of [-0.77, -0.56, 0.56, 0.77]) {
-    add(`headlight-ring-${x}`, new THREE.CylinderGeometry(0.085, 0.085, 0.04, 10).rotateX(Math.PI / 2), mat.chrome, at(x, 0.7, bp.front - 0.01));
-    add(`headlight-${x}`, new THREE.CylinderGeometry(0.065, 0.065, 0.05, 10).rotateX(Math.PI / 2), mat.headlight, at(x, 0.7, bp.front - 0.02));
-  }
 
-  // Full-width 70s taillight strip and side marker lights.
-  add('taillights', box(1.55, 0.1, 0.03, 6), mat.taillight, at(0, 0.7, bp.rear + 0.01));
+  // Lights are rigid fixtures (see CarLights), each with a dark socket that shows once it's gone.
+  // Geometry is posed relative to the mount point; the socket sits just proud of the body surface.
+  const lights: LightFixtureDef[] = [];
+  const fixture = (
+    name: string,
+    kind: LightKind,
+    mount: THREE.Vector3,
+    normal: THREE.Vector3,
+    parts: [THREE.BufferGeometry, THREE.Material, THREE.Vector3][],
+    socketGeometry: THREE.BufferGeometry,
+  ) => {
+    const group = new THREE.Group();
+    group.position.copy(mount);
+    const meshes = parts.map(([geometry, material, offset]) => {
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.position.copy(offset);
+      mesh.castShadow = true;
+      group.add(mesh);
+      return mesh;
+    });
+    root.add(group);
+    const socket = new THREE.Mesh(socketGeometry, mat.dark);
+    socket.position.copy(mount).addScaledVector(normal, 0.003);
+    root.add(socket);
+    // The lens is the last part (the ring, if any, comes first).
+    lights.push({ name, kind, group, lens: meshes[meshes.length - 1], socket, normal });
+  };
+  const disc = (r: number, depth: number) => new THREE.CylinderGeometry(r, r, depth, 10).rotateX(Math.PI / 2);
+  const back = new THREE.Vector3(0, 0, 1);
+  const forward = new THREE.Vector3(0, 0, -1);
+  for (const x of [-0.77, -0.56, 0.56, 0.77]) {
+    fixture(`headlight-${x}`, 'head', at(x, 0.7, bp.front), forward, [
+      [disc(0.085, 0.04), mat.chrome, new THREE.Vector3(0, 0, -0.01)],
+      [disc(0.065, 0.05), mat.headlight, new THREE.Vector3(0, 0, -0.02)],
+    ], disc(0.075, 0.01));
+  }
+  // The 70s full-width taillight strip, in two halves so each side can go on its own.
   for (const side of [-1, 1]) {
+    fixture(`taillight-${side}`, 'tail', at(side * 0.39, 0.7, bp.rear), back, [
+      [box(0.76, 0.1, 0.03, 3), mat.taillight, new THREE.Vector3(0, 0, 0.01)],
+    ], box(0.74, 0.09, 0.01));
+  }
+  for (const side of [-1, 1]) {
+    const out = new THREE.Vector3(side, 0, 0);
     const zf = bp.front + 0.25;
     const zr = bp.rear - 0.25;
-    add(`marker-front-${side}`, box(0.02, 0.05, 0.14), mat.marker, at(side * (sample(bp.halfWidth, zf) + 0.01), 0.72, zf));
-    add(`marker-rear-${side}`, box(0.02, 0.05, 0.14), mat.taillight, at(side * (sample(bp.halfWidth, zr) + 0.01), 0.74, zr));
+    fixture(`marker-front-${side}`, 'marker', at(side * sample(bp.halfWidth, zf), 0.72, zf), out, [
+      [box(0.02, 0.05, 0.14), mat.marker, new THREE.Vector3(side * 0.01, 0, 0)],
+    ], box(0.01, 0.045, 0.13));
+    fixture(`marker-rear-${side}`, 'tail', at(side * sample(bp.halfWidth, zr), 0.74, zr), out, [
+      [box(0.02, 0.05, 0.14), mat.taillight, new THREE.Vector3(side * 0.01, 0, 0)],
+    ], box(0.01, 0.045, 0.13));
   }
 
   /** Merges positioned primitives into one dentable piece with a material group each. */
@@ -360,5 +404,5 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     }
   }
 
-  return { root, pieces, wheels };
+  return { root, pieces, wheels, lights, smashedLens: mat.dark };
 }
