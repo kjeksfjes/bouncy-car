@@ -30,6 +30,10 @@ export class Input {
     };
   }
 
+  get shift(): boolean {
+    return this.any('ShiftLeft', 'ShiftRight');
+  }
+
   /** True once per key press. */
   consume(code: string): boolean {
     return this.pressed.delete(code);

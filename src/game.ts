@@ -42,6 +42,7 @@ export class Game {
   /** Shows the AI's chosen heading while the autopilot drives. */
   private readonly aiArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, -1), new THREE.Vector3(), 6, 0x2b7de9, 1.2, 0.7);
   private autopilot = false;
+  private showAiHeading = false;
   private accumulator = 0;
   private lastTime = 0;
 
@@ -85,7 +86,7 @@ export class Game {
 
     if (this.input.consume('KeyR')) this.car.resetUpright(this.field);
     if (this.input.consume('KeyN')) this.replaceCar();
-    if (this.input.consume('KeyP')) this.autopilot = !this.autopilot;
+    if (this.input.consume('KeyP')) this.toggleAutopilot(this.input.shift);
     this.input.endFrame();
 
     const controls = new Map<Car, CarInput>();
@@ -117,8 +118,8 @@ export class Game {
     this.debris.update(dt, pos, this.view);
     this.traffic.update(dt, pos, this.view);
     this.stage.follow(pos);
-    this.aiArrow.visible = this.autopilot;
-    if (this.autopilot) {
+    this.aiArrow.visible = this.autopilot && this.showAiHeading;
+    if (this.aiArrow.visible) {
       this.aiArrow.position.copy(pos).setY(pos.y + 1.6);
       this.aiArrow.setDirection(this.ai.heading);
     }
@@ -126,6 +127,17 @@ export class Game {
     this.stage.render();
     requestAnimationFrame(this.frame);
   };
+
+  /** P toggles the autopilot; Shift+P toggles its heading arrow (switching the autopilot on if needed). */
+  private toggleAutopilot(withHeading: boolean): void {
+    if (withHeading) {
+      this.showAiHeading = !this.autopilot || !this.showAiHeading;
+      this.autopilot = true;
+    } else {
+      this.autopilot = !this.autopilot;
+      this.showAiHeading = false;
+    }
+  }
 
   private drive(driver: AiDriver, car: Car, dt: number): CarInput {
     const decision = driver.update(dt, car);
