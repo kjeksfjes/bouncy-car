@@ -34,8 +34,11 @@ export interface LightFixtureDef {
   group: THREE.Group;
   /** The glowing part; goes dark when smashed. */
   lens: THREE.Mesh;
-  /** Dark recess left behind as a hole; child of the car root, hidden by the fixture while it's there. */
-  socket: THREE.Mesh;
+  /**
+   * Dark patch left behind where the body has no real opening (side markers); child of the car
+   * root, hidden by the fixture while it's there. Head- and taillights sit in real openings instead.
+   */
+  socket?: THREE.Mesh;
   /** Car-local direction the light faces. */
   normal: THREE.Vector3;
 }
@@ -45,6 +48,13 @@ interface Fixture extends LightFixtureDef {
   damage: number;
   /** Car-local rest positions of the fixture and its socket. */
   mountRest: THREE.Vector3;
+  /**
+   * Car-local rest positions of the fixture's two ends along its long axis (x for head- and
+   * taillights, z for side markers), and where they are now. A wide fixture follows the body
+   * at both ends, so it tilts with a crumpled panel and pops out when either end is pushed in.
+   */
+  endsRest: [THREE.Vector3, THREE.Vector3];
+  endsNow: [THREE.Vector3, THREE.Vector3];
   socketRest: THREE.Vector3;
   /** Dent displacement picked up by the mount (car-local), on top of the crush. */
   dent: THREE.Vector3;
@@ -79,9 +89,17 @@ const MAX_DT = 1 / 30;
 /** Seconds after dropping out before a swing can snap the wire: the pop out of the socket isn't a yank. */
 const WIRE_GRACE = 0.25;
 
+/** How far outside the socket's rest spot a surface ray starts (m): more than the deepest dent or crush wrinkle. */
+const SOCKET_RAY_START = 0.4;
+/** An empty socket sits this far (m) proud of the surface it's snapped to. */
+const SOCKET_LIFT = 0.004;
+
 const wireMaterial = new THREE.LineBasicMaterial({ color: '#141416' });
+const raycaster = new THREE.Raycaster();
 const _w = new THREE.Vector3();
 const _local = new THREE.Vector3();
+const _n = new THREE.Vector3();
+const _seg = new THREE.Line3();
 const _v = new THREE.Vector3();
 const _d = new THREE.Vector3();
 const _box = new THREE.Box3();
@@ -104,18 +122,27 @@ export class CarLights {
     private readonly smashedLens: Record<LightKind, THREE.Material>,
     private readonly outline: BodyOutline,
     private readonly field: TerrainField,
+    /** The body panel the sockets sit in; empty sockets are snapped onto its surface. */
+    private readonly shell: THREE.Mesh,
   ) {
     this.fixtures = defs.map((def) => {
+      // The root still sits at the origin here, so the box is in car-local space.
       _box.setFromObject(def.group, true);
       const half = _box.getSize(new THREE.Vector3()).multiplyScalar(0.5).max(new THREE.Vector3(0.02, 0.02, 0.02));
+      const centre = _box.getCenter(new THREE.Vector3());
+      const along = half.x >= half.z ? new THREE.Vector3(half.x, 0, 0) : new THREE.Vector3(0, 0, half.z);
+      const endsRest: [THREE.Vector3, THREE.Vector3] = [centre.clone().sub(along), centre.clone().add(along)];
       return {
         ...def,
         state: 'intact',
         damage: 0,
         mountRest: def.group.position.clone(),
-        socketRest: def.socket.position.clone(),
+        endsRest,
+        endsNow: [endsRest[0].clone(), endsRest[1].clone()],
+        // Without a socket patch the wire is tied at the mount: the centre of the body's opening.
+        socketRest: (def.socket ?? def.group).position.clone(),
         dent: new THREE.Vector3(),
-        socketNow: def.socket.position.clone(),
+        socketNow: (def.socket ?? def.group).position.clone(),
         pos: new THREE.Vector3(),
         prev: new THREE.Vector3(),
         socketPrev: new THREE.Vector3(),
@@ -147,14 +174,27 @@ export class CarLights {
    */
   follow(crush: Crush, velocityAt: (world: THREE.Vector3) => THREE.Vector3): void {
     for (const f of this.fixtures) {
-      if (f.state === 'gone') continue;
       f.socketNow.copy(crush.displace(_v.copy(f.socketRest))).add(f.dent);
-      f.socket.position.copy(f.socketNow);
-      if (!this.mounted(f)) continue;
-      f.group.position.copy(crush.displace(_v.copy(f.mountRest))).add(f.dent);
-      // Pushed far by crush or dent, a light would sink into the panel around it (the panel is
-      // coarser than the fixture follows): it pops out of its socket instead.
-      if (f.group.position.distanceTo(f.mountRest) > this.tuning.lightDropAtCrush) this.dropOut(f, velocityAt);
+      f.socket?.position.copy(f.socketNow);
+      if (!this.mounted(f)) {
+        this.snapSocket(f);
+        continue;
+      }
+      // Both ends ride on the body; the fixture sits between them, tilted along the line through them.
+      let pushed = 0;
+      for (let k = 0; k < 2; k++) {
+        f.endsNow[k].copy(crush.displace(_v.copy(f.endsRest[k]))).add(f.dent);
+        pushed = Math.max(pushed, f.endsNow[k].distanceTo(f.endsRest[k]));
+      }
+      _v.addVectors(f.endsNow[0], f.endsNow[1]).multiplyScalar(0.5);
+      _d.addVectors(f.endsRest[0], f.endsRest[1]).multiplyScalar(0.5);
+      f.group.position.copy(f.mountRest).add(_v.sub(_d));
+      _v.subVectors(f.endsRest[1], f.endsRest[0]).normalize();
+      _d.subVectors(f.endsNow[1], f.endsNow[0]).normalize();
+      f.group.quaternion.setFromUnitVectors(_v, _d);
+      // Pushed far at either end, a light would sink into (or stick out of) the crumpled panel
+      // around it: it pops out of its socket instead.
+      if (pushed > this.tuning.lightDropAtCrush) this.dropOut(f, velocityAt);
     }
   }
 
@@ -163,7 +203,8 @@ export class CarLights {
     const T = this.tuning;
     for (const f of this.fixtures) {
       if (f.state === 'gone') continue;
-      const d = (f.state === 'dangling' ? f.socketNow : f.group.position).distanceTo(local);
+      // Wide fixtures (taillight halves) count hits along their whole length.
+      const d = f.state === 'dangling' ? f.socketNow.distanceTo(local) : _seg.set(f.endsNow[0], f.endsNow[1]).closestPointToPoint(local, true, _v).distanceTo(local);
       if (d >= T.lightReach) continue;
       f.damage += damage * (1 - d / T.lightReach);
       if (f.state === 'intact' && f.damage >= T.lightLensHp) this.smash(f, velocityAt);
@@ -264,6 +305,7 @@ export class CarLights {
   private dropOut(f: Fixture, velocityAt: (world: THREE.Vector3) => THREE.Vector3): void {
     if (f.state === 'intact') this.smash(f, velocityAt);
     f.state = 'dangling';
+    this.snapSocket(f);
     this.root.updateMatrixWorld();
     this.scene.attach(f.group);
     // Starts just outside the body, leaving with the car's velocity there plus a small pop.
@@ -287,6 +329,28 @@ export class CarLights {
     f.wire = new THREE.Line(geometry, wireMaterial);
     f.wire.frustumCulled = false;
     this.scene.add(f.wire);
+  }
+
+  /**
+   * Lays an empty socket patch flat on the body surface it belongs to. Following its rest
+   * point through crush and dents isn't enough once it's visible: the panel around it is
+   * coarser (long side strips, crumple wrinkles), so the patch would sink behind it or float.
+   */
+  private snapSocket(f: Fixture): void {
+    if (!f.socket) return;
+    this.root.updateMatrixWorld(true);
+    const origin = this.root.localToWorld(_v.copy(f.socketNow).addScaledVector(f.normal, SOCKET_RAY_START));
+    const inward = _d.copy(f.normal).negate().transformDirection(this.root.matrixWorld);
+    raycaster.set(origin, inward);
+    raycaster.far = SOCKET_RAY_START * 2;
+    const hit = raycaster.intersectObject(this.shell, false)[0];
+    if (!hit?.face) return;
+    // The shell is an unrotated child of the root, so its face normals are car-local directions.
+    const normal = _n.copy(hit.face.normal);
+    if (normal.dot(f.normal) < 0) normal.negate();
+    f.socketNow.copy(this.root.worldToLocal(hit.point)).addScaledVector(normal, SOCKET_LIFT);
+    f.socket.position.copy(f.socketNow);
+    f.socket.quaternion.setFromUnitVectors(f.normal, normal);
   }
 
   /** Keeps a dangling fixture out of its own car's body and above the snow (it has no collider). */

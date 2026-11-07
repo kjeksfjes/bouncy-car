@@ -257,7 +257,8 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
       geos.push(g);
-      materials.push(mat[m satisfies PanelMaterial]);
+      // Lamp recesses are thin-walled but look like the rest of the dark inner panels.
+      materials.push(m === 'recess' ? mat.dark : mat[m satisfies Exclude<PanelMaterial, 'recess'>]);
     }
     const merged = mergeGeometries(geos, true);
     if (!merged) throw new Error(`Body part "${part}" failed to merge`);
@@ -283,8 +284,9 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   add('grille-frame', box(0.92, 0.26, 0.03, 8), mat.chrome, at(0, 0.69, bp.front - 0.005));
   add('grille', box(0.86, 0.2, 0.03, 8), mat.dark, at(0, 0.69, bp.front - 0.02));
 
-  // Lights are rigid fixtures (see CarLights), each with a dark socket that shows once it's gone.
-  // Geometry is posed relative to the mount point; the socket sits just proud of the body surface.
+  // Lights are rigid fixtures (see CarLights), posed relative to their mount point. Head- and
+  // taillights cover real openings in the end panels (see the blueprint's lamps); side markers
+  // get a dark socket patch just proud of the body surface instead.
   const lights: LightFixtureDef[] = [];
   const fixture = (
     name: string,
@@ -292,7 +294,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     mount: THREE.Vector3,
     normal: THREE.Vector3,
     parts: [THREE.BufferGeometry, THREE.Material, THREE.Vector3][],
-    socketGeometry: THREE.BufferGeometry,
+    socketGeometry?: THREE.BufferGeometry,
   ) => {
     const group = new THREE.Group();
     group.position.copy(mount);
@@ -304,26 +306,35 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
       return mesh;
     });
     root.add(group);
-    const socket = new THREE.Mesh(socketGeometry, mat.dark);
-    socket.position.copy(mount).addScaledVector(normal, 0.003);
-    root.add(socket);
+    let socket: THREE.Mesh | undefined;
+    if (socketGeometry) {
+      socket = new THREE.Mesh(socketGeometry, mat.dark);
+      socket.position.copy(mount).addScaledVector(normal, 0.003);
+      root.add(socket);
+    }
     // The lens is the last part (the ring, if any, comes first).
     lights.push({ name, kind, group, lens: meshes[meshes.length - 1], socket, normal });
   };
   const disc = (r: number, depth: number) => new THREE.CylinderGeometry(r, r, depth, 10).rotateX(Math.PI / 2);
   const back = new THREE.Vector3(0, 0, 1);
   const forward = new THREE.Vector3(0, 0, -1);
-  for (const x of [-0.77, -0.56, 0.56, 0.77]) {
-    fixture(`headlight-${x}`, 'head', at(x, 0.7, bp.front), forward, [
-      [disc(0.085, 0.04), mat.chrome, new THREE.Vector3(0, 0, -0.01)],
-      [disc(0.065, 0.05), mat.headlight, new THREE.Vector3(0, 0, -0.02)],
-    ], disc(0.075, 0.01));
+  // Chrome ring wider than the opening so it covers the rim; lens just inside the opening.
+  const head = bp.lamps.head;
+  for (const side of [-1, 1]) {
+    for (const hx of head.x) {
+      const x = side * hx;
+      fixture(`headlight-${x}`, 'head', at(x, head.h, bp.front), forward, [
+        [disc(head.radius * 1.3, 0.04), mat.chrome, new THREE.Vector3(0, 0, -0.01)],
+        [disc(head.radius * 0.98, 0.05), mat.headlight, new THREE.Vector3(0, 0, -0.02)],
+      ]);
+    }
   }
   // The 70s full-width taillight strip, in two halves so each side can go on its own.
+  const tail = bp.lamps.tail;
   for (const side of [-1, 1]) {
-    fixture(`taillight-${side}`, 'tail', at(side * 0.39, 0.7, bp.rear), back, [
-      [box(0.76, 0.1, 0.03, 3), mat.taillight, new THREE.Vector3(0, 0, 0.01)],
-    ], box(0.74, 0.09, 0.01));
+    fixture(`taillight-${side}`, 'tail', at(side * tail.x, tail.h, bp.rear), back, [
+      [box(tail.width + 0.02, tail.height + 0.01, 0.03, 3), mat.taillight, new THREE.Vector3(0, 0, 0.01)],
+    ]);
   }
   for (const side of [-1, 1]) {
     const out = new THREE.Vector3(side, 0, 0);

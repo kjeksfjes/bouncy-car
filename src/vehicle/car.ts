@@ -203,6 +203,7 @@ export class Car {
     this.lights = new CarLights(
       this.model.lights, this.model.root, scene, debris, cfg.damage, this.model.smashedLens,
       new BodyOutline(cfg.blueprint, this.crush, this.model.pieces), debris.field,
+      this.model.pieces.find((p) => p.name === 'shell')!.mesh,
     );
 
     const W = cfg.wheels;

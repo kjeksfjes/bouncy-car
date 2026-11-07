@@ -163,6 +163,12 @@ const COUPE_BLUEPRINT: CarBlueprint = {
     quarterGlass: [0.52, 0.86],
   },
   mirror: { z: -0.62, size: [0.1, 0.08, 0.16] },
+  // The outer headlights sit just inside the nose panel's rounded corner (x + radius < 0.82 there).
+  lamps: {
+    head: { x: [0.56, 0.76], h: 0.7, radius: 0.066 },
+    tail: { x: 0.39, h: 0.7, width: 0.74, height: 0.09 },
+    depth: 0.06,
+  },
   hoodBulge: { from: -2.1, to: -0.95, halfWidth: 0.45, height: 0.05 },
 };
 

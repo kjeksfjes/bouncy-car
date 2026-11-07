@@ -43,6 +43,18 @@ export interface CarBlueprint {
     quarterGlass: readonly [number, number];
   };
   mirror: { z: number; size: readonly [number, number, number] };
+  /**
+   * Light openings cut into the nose and tail panels, mirrored to both sides. Each gets a
+   * dark recess behind it; the light fixture covers it until it breaks out.
+   */
+  lamps: {
+    /** Round headlight holes: x of each per side, centre height, radius. */
+    head: { x: readonly number[]; h: number; radius: number };
+    /** One rectangular taillight hole per side: centre x and height, size. */
+    tail: { x: number; h: number; width: number; height: number };
+    /** Depth of the recess behind each opening (m). */
+    depth: number;
+  };
   hoodBulge: { from: number; to: number; halfWidth: number; height: number };
 }
 
@@ -58,12 +70,13 @@ export function sample(curve: Curve, z: number): number {
   return curve[curve.length - 1][1];
 }
 
-export type PanelMaterial = 'paint' | 'dark' | 'glass';
+/** `recess` is drawn like `dark` but thin-walled: lamp recesses sit right behind the panel edges. */
+export type PanelMaterial = 'paint' | 'dark' | 'glass' | 'recess';
 /** Body triangles (flat position arrays, car-local) grouped by part, then material. */
 export type Panels = Map<string, Map<PanelMaterial, number[]>>;
 
 /** Wall thickness per surface type (m): sheet metal reads as a visible edge, glass is thin. */
-const THICKNESS: Record<PanelMaterial, number> = { paint: 0.03, dark: 0.03, glass: 0.01 };
+const THICKNESS: Record<PanelMaterial, number> = { paint: 0.03, dark: 0.03, glass: 0.01, recess: 0.005 };
 /** Firewall and rear bulkhead are scaled down by this much to sit inside the skin. */
 const INNER_WALL_SCALE = 0.93;
 
@@ -206,8 +219,8 @@ export function buildPanels(bp: CarBlueprint): Panels {
     }
   }
 
-  // Nose and tail caps (paint), firewall and rear-seat bulkhead (dark): fans over the
-  // full cross-section, closing the engine bay, cabin and trunk off from each other.
+  // Nose and tail caps (paint), firewall and rear-seat bulkhead (dark), closing the engine
+  // bay, cabin and trunk off from each other. The caps have the light openings cut out.
   const walls = [
     { z: bp.front, inward: 1, mat: 'paint' },
     { z: bp.rear, inward: -1, mat: 'paint' },
@@ -224,6 +237,10 @@ export function buildPanels(bp: CarBlueprint): Panels {
     const ring = [...s.map(([x, h]) => at(x, h)), ...s.slice(1, -1).reverse().map(([x, h]) => at(-x, h))];
     const center = v(0, mid, z);
     const ref = v(0, mid, z + inward * 0.2);
+    if (mat === 'paint') {
+      capWithOpenings(ring, lampOpenings(bp, z === bp.front ? 'front' : 'rear'), z, inward, bp.lamps.depth, ref, tri);
+      continue;
+    }
     for (let k = 0; k < ring.length; k++) tri('shell', mat, center, ring[k], ring[(k + 1) % ring.length], ref);
   }
 
@@ -305,6 +322,118 @@ export function buildPanels(bp: CarBlueprint): Panels {
   );
 
   return panels;
+}
+
+type Tri = (part: string, mat: PanelMaterial, a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, ref: THREE.Vector3) => void;
+
+/** Segments of a round lamp opening; matches the fixtures' 10-sided cylinders. */
+const ROUND_SEGMENTS = 10;
+/** Recess walls sit this far (m) inside the opening, so they don't share a plane with the panel's rim. */
+const RECESS_INSET = 0.003;
+/**
+ * The recess starts this far (m) behind the panel's outer surface: solidify closes its open
+ * front edge with a dark ring as wide as its wall thickness, which would z-fight with the paint
+ * if it lay in the panel's plane. Behind it, the ring is hidden inside the panel's thickness.
+ * Its walls are thin (`recess` thickness) and grow outward, so an opening near the panel's
+ * edge doesn't poke out through the corner.
+ */
+const RECESS_START = 0.006;
+
+/** Lamp openings in an end panel, as (x, y) outlines in car-local coordinates. */
+function lampOpenings(bp: CarBlueprint, end: 'front' | 'rear'): THREE.Vector2[][] {
+  const L = bp.lamps;
+  const openings: THREE.Vector2[][] = [];
+  if (end === 'front') {
+    for (const side of [-1, 1]) {
+      for (const x of L.head.x) {
+        const cx = side * x;
+        const cy = L.head.h + bp.groundY;
+        const ring: THREE.Vector2[] = [];
+        for (let i = 0; i < ROUND_SEGMENTS; i++) {
+          const a = (i / ROUND_SEGMENTS) * Math.PI * 2;
+          ring.push(new THREE.Vector2(cx + Math.cos(a) * L.head.radius, cy + Math.sin(a) * L.head.radius));
+        }
+        openings.push(ring);
+      }
+    }
+  } else {
+    const { x, h, width, height } = L.tail;
+    for (const side of [-1, 1]) {
+      const cx = side * x;
+      const cy = h + bp.groundY;
+      openings.push([
+        new THREE.Vector2(cx - width / 2, cy - height / 2),
+        new THREE.Vector2(cx + width / 2, cy - height / 2),
+        new THREE.Vector2(cx + width / 2, cy + height / 2),
+        new THREE.Vector2(cx - width / 2, cy + height / 2),
+      ]);
+    }
+  }
+  return openings;
+}
+
+/**
+ * An end panel (nose or tail cap) as a polygon with lamp openings, plus a dark recess
+ * behind each opening: walls facing the opening's axis and a back face toward the hole.
+ */
+function capWithOpenings(
+  ring: THREE.Vector3[],
+  openings: THREE.Vector2[][],
+  z: number,
+  inward: number,
+  depth: number,
+  ref: THREE.Vector3,
+  tri: Tri,
+): void {
+  // The cross-section repeats points where a segment has no length (no arch at the tips).
+  const contour: THREE.Vector2[] = [];
+  for (const p of ring) {
+    const q = new THREE.Vector2(p.x, p.y);
+    if (!contour.length || contour[contour.length - 1].distanceTo(q) > 1e-6) contour.push(q);
+  }
+  if (contour[0].distanceTo(contour[contour.length - 1]) <= 1e-6) contour.pop();
+  for (const opening of openings) {
+    for (const p of opening) {
+      if (!insidePolygon(p, contour)) {
+        throw new Error(`Lamp opening at (${p.x.toFixed(3)}, ${p.y.toFixed(3)}) sticks out of the end panel at z=${z}`);
+      }
+    }
+  }
+  const points = [...contour, ...openings.flat()].map((p) => new THREE.Vector3(p.x, p.y, z));
+  for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(contour, openings)) {
+    tri('shell', 'paint', points[a], points[b], points[c], ref);
+  }
+
+  for (const opening of openings) {
+    const centre = opening.reduce((sum, p) => sum.add(p), new THREE.Vector2()).divideScalar(opening.length);
+    // Inset toward the centre, then a front ring (at the panel) and a back ring (at depth).
+    const rim = opening.map((p) => p.clone().sub(centre).setLength(p.distanceTo(centre) - RECESS_INSET).add(centre));
+    const front = rim.map((p) => new THREE.Vector3(p.x, p.y, z + inward * RECESS_START));
+    const back = rim.map((p) => new THREE.Vector3(p.x, p.y, z + inward * depth));
+    const axis = new THREE.Vector3(centre.x, centre.y, z + (inward * depth) / 2);
+    for (let i = 0; i < rim.length; i++) {
+      const j = (i + 1) % rim.length;
+      // A reference outside the wall makes its face point at the axis (seen from the hole).
+      const mid = front[i].clone().add(front[j]).multiplyScalar(0.5);
+      const out = new THREE.Vector3(mid.x - centre.x, mid.y - centre.y, 0).setLength(0.2).add(mid).setZ(axis.z);
+      tri('shell', 'recess', front[i], front[j], back[j], out);
+      tri('shell', 'recess', front[i], back[j], back[i], out);
+    }
+    const backCentre = new THREE.Vector3(centre.x, centre.y, z + inward * depth);
+    const behind = backCentre.clone().setZ(backCentre.z + inward * 0.2);
+    for (let i = 0; i < rim.length; i++) tri('shell', 'recess', backCentre, back[i], back[(i + 1) % rim.length], behind);
+  }
+}
+
+/** Even-odd point-in-polygon test. */
+function insidePolygon(p: THREE.Vector2, polygon: readonly THREE.Vector2[]): boolean {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const a = polygon[i];
+    const b = polygon[j];
+    if (a.y > p.y !== b.y > p.y && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) inside = !inside;
+  }
+  return inside;
 }
 
 export interface HullBox {
