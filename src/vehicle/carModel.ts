@@ -7,8 +7,10 @@ import type { CarConfig } from './carConfig';
 export interface CarPiece {
   name: string;
   mesh: THREE.Mesh;
-  /** Rest-state vertex positions, used to cap how far a dent can push. */
+  /** Rest-state vertex positions (piece-local), as built. */
   original: Float32Array;
+  /** Rest shape after crumple-zone crush (see Crush); dents are capped against it. */
+  base: Float32Array;
   /** Car-local bounds at build time, for hit proximity. */
   bounds: THREE.Box3;
   detachable: boolean;
@@ -226,6 +228,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
       name,
       mesh,
       original: Float32Array.from(geometry.getAttribute('position').array),
+      base: Float32Array.from(geometry.getAttribute('position').array),
       bounds: geometry.boundingBox!.clone().translate(mesh.position),
       detachable: DETACHABLE.has(name),
       state: 'closed',
@@ -265,9 +268,10 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   add('bumper-front', box(2.0, 0.12, 0.13, 10), mat.chrome, at(0, 0.5, bp.front - 0.06));
   add('bumper-rear', box(1.98, 0.12, 0.13, 10), mat.chrome, at(0, 0.56, bp.rear + 0.06));
 
-  // Grille with a chrome surround, quad headlights in chrome rings.
-  add('grille-frame', box(0.92, 0.26, 0.03), mat.chrome, at(0, 0.69, bp.front - 0.005));
-  add('grille', box(0.86, 0.2, 0.03), mat.dark, at(0, 0.69, bp.front - 0.02));
+  // Grille with a chrome surround, quad headlights in chrome rings. Subdivided across so a
+  // crumpled nose bends them along with it.
+  add('grille-frame', box(0.92, 0.26, 0.03, 8), mat.chrome, at(0, 0.69, bp.front - 0.005));
+  add('grille', box(0.86, 0.2, 0.03, 8), mat.dark, at(0, 0.69, bp.front - 0.02));
   for (const x of [-0.77, -0.56, 0.56, 0.77]) {
     add(`headlight-ring-${x}`, new THREE.CylinderGeometry(0.085, 0.085, 0.04, 10).rotateX(Math.PI / 2), mat.chrome, at(x, 0.7, bp.front - 0.01));
     add(`headlight-${x}`, new THREE.CylinderGeometry(0.065, 0.065, 0.05, 10).rotateX(Math.PI / 2), mat.headlight, at(x, 0.7, bp.front - 0.02));
@@ -317,7 +321,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     [put(new THREE.BoxGeometry(0.16, 0.08, 0.7), -0.26, 0.86, -1.45, 0, 0.5), mat.chrome],
     [put(new THREE.BoxGeometry(0.16, 0.08, 0.7), 0.26, 0.86, -1.45, 0, -0.5), mat.chrome],
     [put(new THREE.CylinderGeometry(0.2, 0.2, 0.06, 12), 0, 0.88, -1.45), mat.chrome],
-    [put(new THREE.BoxGeometry(1.1, 0.4, 0.08), 0, 0.66, -2.18), mat.dark],
+    [put(new THREE.BoxGeometry(1.1, 0.4, 0.08, 8), 0, 0.66, -2.18), mat.dark],
     [put(new THREE.BoxGeometry(0.24, 0.2, 0.18), 0.55, 0.62, -2.0), mat.dark],
     [put(new THREE.BoxGeometry(0.04, 0.03, 0.04), 0.6, 0.735, -2.04), mat.taillight],
   ]);

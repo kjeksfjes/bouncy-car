@@ -141,32 +141,44 @@ export function buildPanels(bp: CarBlueprint): Panels {
   };
 
   // Lower body cross-section (right half, x ≥ 0), from floor centre round to deck centre.
+  // The floor and the deck between the sills are split into several strips: crumple zones
+  // push the middle in further than the sides, and one wide strip would shear into slivers.
+  const DECK_STRIPS = 4;
   const lower = (z: number): [number, number][] => {
     const hw = sample(bp.halfWidth, z);
     const deck = sample(bp.deck, z);
     const rocker = sample(bp.rocker, z);
     const bottom = Math.max(rocker, archHeight(z));
+    const sill = deck + bp.crown * (1 - gh.sillHalf / (hw * 0.92));
+    const centre = deck + bp.crown;
+    const inner: [number, number][] = [];
+    for (let k = 1; k < DECK_STRIPS; k++) {
+      const f = k / DECK_STRIPS;
+      inner.push([gh.sillHalf * (1 - f), sill + (centre - sill) * f]);
+    }
     return [
       [0, rocker], // 0 floor centre
-      [bp.wellHalf, rocker], // 1 floor edge
-      [bp.wellHalf, bottom], // 2 top of inner wheel-well wall
-      [hw * 0.96, bottom], // 3 outer lower lip
-      [hw, bottom + (deck - bottom) * 0.3], // 4 lower side
-      [hw, deck - 0.1], // 5 shoulder crease
-      [hw * 0.97, deck - 0.02], // 6 rounded top edge
-      [hw * 0.92, deck], // 7 deck edge
-      [gh.sillHalf, deck + bp.crown * (1 - gh.sillHalf / (hw * 0.92))], // 8 window sill line
-      [0, deck + bp.crown], // 9 deck centre
+      [bp.wellHalf / 2, rocker], // 1 floor middle
+      [bp.wellHalf, rocker], // 2 floor edge
+      [bp.wellHalf, bottom], // 3 top of inner wheel-well wall
+      [hw * 0.96, bottom], // 4 outer lower lip
+      [hw, bottom + (deck - bottom) * 0.3], // 5 lower side
+      [hw, deck - 0.1], // 6 shoulder crease
+      [hw * 0.97, deck - 0.02], // 7 rounded top edge
+      [hw * 0.92, deck], // 8 deck edge
+      [gh.sillHalf, sill], // 9 window sill line
+      ...inner, // 10.. deck between the sills
+      [0, centre], // deck centre
     ];
   };
-  /** Part and material for lower-body segment `seg`, or null where the cabin is open. */
+  /** Part and material for lower-body segment `seg` (between points seg and seg + 1), or null where the cabin is open. */
   const lowerPart = (zm: number, seg: number, side: number): [string, PanelMaterial] | null => {
-    if (seg <= 2) return ['shell', 'dark']; // floor and wheel wells
-    if (seg <= 5) return within(zm, bp.door) ? [`door-${sideName(side)}`, 'paint'] : ['shell', 'paint'];
-    if (seg >= 7 && within(zm, bp.hood)) return ['hood', 'paint'];
-    if (seg >= 7 && within(zm, bp.trunk)) return ['trunk', 'paint'];
+    if (seg <= 3) return ['shell', 'dark']; // floor and wheel wells
+    if (seg <= 6) return within(zm, bp.door) ? [`door-${sideName(side)}`, 'paint'] : ['shell', 'paint'];
+    if (seg >= 8 && within(zm, bp.hood)) return ['hood', 'paint'];
+    if (seg >= 8 && within(zm, bp.trunk)) return ['trunk', 'paint'];
     // Between the sills the cabin opens up into the greenhouse; only a beltline ledge remains.
-    if (seg === 8 && zm > ghFrom && zm < ghTo) return null;
+    if (seg >= 9 && zm > ghFrom && zm < ghTo) return null;
     return ['shell', 'paint'];
   };
 
@@ -287,7 +299,8 @@ export function buildPanels(bp: CarBlueprint): Panels {
   const pitch = Math.atan2(sample(bp.deck, b.to) - sample(bp.deck, b.from), b.to - b.from);
   addBox(
     'hood', 'paint',
-    new THREE.BoxGeometry(b.halfWidth * 2, b.height, b.to - b.from).rotateX(-pitch),
+    // Subdivided so a crumple-zone notch can bend it instead of shearing it.
+    new THREE.BoxGeometry(b.halfWidth * 2, b.height, b.to - b.from, 6, 1, 8).rotateX(-pitch),
     v(0, sample(bp.deck, bz) + bp.crown + b.height / 2 - 0.015, bz),
   );
 

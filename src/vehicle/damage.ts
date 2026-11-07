@@ -30,8 +30,8 @@ export function applyDent(
       if (d >= radius) continue;
       const falloff = (1 - d / radius) ** 2;
       _v.addScaledVector(dir, depth * falloff).sub(offset);
-      // Cap total displacement from the rest shape.
-      _o.fromArray(piece.original, i * 3);
+      // Cap total displacement from the (crushed) rest shape.
+      _o.fromArray(piece.base, i * 3);
       const delta = _v.sub(_o);
       if (delta.length() > maxDent) delta.setLength(maxDent);
       _v.addVectors(_o, delta);

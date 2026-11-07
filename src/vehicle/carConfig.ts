@@ -1,4 +1,5 @@
 import type { CarBlueprint } from './blueprint';
+import type { CrushTuning } from './crush';
 
 /**
  * Data-driven car definition. All values are gameplay tuning, not real-world
@@ -87,7 +88,8 @@ export interface CarConfig {
   };
   aeroDrag: number;
 
-  damage: {
+  /** Crumple zones: see CrushTuning. */
+  damage: CrushTuning & {
     /** Impact Δv (m/s, per physics step) the car shrugs off without a scratch. */
     toughness: number;
     /** Dent depth per m/s of Δv over toughness. */
@@ -249,5 +251,18 @@ export const COUPE_70S: CarConfig = {
     tearHp: 70,
     tearSwingSpeed: 16,
     panelAeroDrag: 0.3,
+    // A hard hit (severity ≈12) pushes a wall-wide front in ≈0.36 m; a tree ≈0.54 m in a notch.
+    crushPerDv: 0.03,
+    crushMaxFront: 0.65,
+    // The rear zone (tail to rear-seat wall) is only ≈0.9 m long.
+    crushMaxRear: 0.45,
+    // No sharper than the crush columns (≈0.24 m apart) and the body's strips across the deck.
+    crushSpreadTree: 0.3,
+    crushSpreadWide: 0.9,
+    crushTreeFactor: 1.5,
+    crushFold: 0.45,
+    crushBuckle: 0.2,
+    crushWrinkle: 0.06,
+    crushWrinkleSize: 0.2,
   },
 };

@@ -6,6 +6,7 @@ import type { TerrainField } from '../world/terrainField';
 import type { CarConfig } from './carConfig';
 import { buildCarModel, GLASS_OPACITY, GLASS_TINT, type CarModel, type CarPiece, type WheelVisual } from './carModel';
 import { hullBoxes } from './blueprint';
+import { Crush } from './crush';
 import { applyDent, inwardDirection } from './damage';
 import { HingedPanels, createPanelBody } from './panels';
 import { sample } from './blueprint';
@@ -87,6 +88,7 @@ const _imp = new THREE.Vector3();
 const _pt = new THREE.Vector3();
 const _tmp = new THREE.Vector3();
 const _contactLocal = new THREE.Vector3();
+const _contactNormal = new THREE.Vector3();
 
 /** Contacts closer than this (m) count as touching. */
 const CONTACT_TOUCH_DIST = 0.02;
@@ -105,6 +107,11 @@ export class Car {
   private readonly engineVent: THREE.Vector3;
   /** Wheel rays skip this car's own hanging panels. */
   private readonly rayFilter = (c: RAPIER.Collider) => !this.panels.owns(c);
+  /** Front and rear crumple zones. */
+  private readonly crush: Crush;
+  /** The lower-body box and its uncrushed shape: its ends follow the crumple zones in. */
+  private readonly lowerCollider: RAPIER.Collider;
+  private readonly lowerHull: { center: THREE.Vector3; half: THREE.Vector3 };
   /** Envelope used to aim dents inward. */
   private readonly hullCenter: THREE.Vector3;
   private readonly hullHalf: THREE.Vector3;
@@ -177,6 +184,8 @@ export class Car {
       this.colliders.set(collider.handle, collider);
       this.colliderOffsets.set(collider.handle, new THREE.Vector3(t.x, t.y, t.z));
     }
+    this.lowerCollider = this.colliders.values().next().value!;
+    this.lowerHull = { center: hull.lower.center.clone(), half: hull.lower.half.clone() };
     // Envelope of both boxes, used to aim dents inward.
     const envelope = new THREE.Box3();
     for (const { center, half } of [hull.lower, hull.cabin]) {
@@ -187,6 +196,7 @@ export class Car {
 
     this.model = buildCarModel(cfg, paint);
     scene.add(this.model.root);
+    this.crush = new Crush(cfg.blueprint, cfg.damage);
 
     const W = cfg.wheels;
     let i = 0;
@@ -452,40 +462,64 @@ export class Car {
       this.integrity = Math.max(0, this.integrity - severity * d.integrityPerDv);
 
       const sum = new THREE.Vector3();
+      const normal = new THREE.Vector3();
       let count = 0;
-      this.forEachContact(impact.own, impact.other, (local) => {
+      this.forEachContact(impact.own, impact.other, (local, n) => {
         sum.add(local);
+        normal.add(n);
         count++;
       });
       // The pair can separate within the step (bounce); then there's no point to dent.
-      if (count > 0) this.applyImpact(sum.divideScalar(count), severity, surfaceOf(impact.other));
+      if (count > 0) this.applyImpact(sum.divideScalar(count), normal.normalize(), severity, surfaceOf(impact.other));
     }
     this.pending.clear();
   }
 
   /**
    * Calls `fn` with each touching contact point between one of our colliders
-   * and `other`, in car-local space. Reads the narrow-phase contacts: solver
-   * contacts are already cleared by the time world.step() returns.
+   * and `other`, in car-local space, plus the contact normal pointing out of our
+   * collider (car-local too: colliders are unrotated). Reads the narrow-phase
+   * contacts: solver contacts are already cleared by the time world.step() returns.
    */
-  private forEachContact(own: RAPIER.Collider, other: RAPIER.Collider, fn: (local: THREE.Vector3) => void): void {
+  private forEachContact(
+    own: RAPIER.Collider,
+    other: RAPIER.Collider,
+    fn: (local: THREE.Vector3, normal: THREE.Vector3) => void,
+  ): void {
     const offset = this.colliderOffsets.get(own.handle)!;
     this.world.contactPair(own, other, (m, flipped) => {
+      const n = flipped ? m.localNormal2() : m.localNormal1();
+      _contactNormal.set(n.x, n.y, n.z);
       for (let k = 0; k < m.numContacts(); k++) {
         // Positive distances are predictive contacts that aren't touching yet.
         if (m.contactDist(k) > CONTACT_TOUCH_DIST) continue;
         const p = flipped ? m.localContactPoint2(k) : m.localContactPoint1(k);
-        if (p) fn(_contactLocal.set(p.x, p.y, p.z).add(offset));
+        if (p) fn(_contactLocal.set(p.x, p.y, p.z).add(offset), _contactNormal);
       }
     });
   }
 
-  private applyImpact(local: THREE.Vector3, severity: number, surface: ContactSurface): void {
+  /** @param normal contact normal pointing out of the car (car-local) */
+  private applyImpact(local: THREE.Vector3, normal: THREE.Vector3, severity: number, surface: ContactSurface): void {
     const d = this.cfg.damage;
     this.events?.impact(this, this.localToWorld(local), severity, surface);
+
+    // Hits squarely on the nose or tail crumple that end; the rest of the force dents locally.
+    // Squared, because box edges report diagonal normals: a nose-edge scrape on landing
+    // (normal ≈ −Y, a little forward) should barely crush, a head-on hit fully.
+    const end = this.crush.zoneAt(local.z);
+    const along = end === 'front' ? -normal.z : end === 'rear' ? normal.z : 0;
+    const square = Math.max(0, along) ** 2;
+    if (end && square > 0) {
+      this.crush.hit(end, local.x, severity * square, surface === 'tree');
+      this.crush.deform(this.model.pieces, this.model.root);
+      this.fitHullToCrush();
+    }
+
     const dir = inwardDirection(local, this.hullCenter, this.hullHalf);
     const radius = d.dentRadius * (1 + Math.min(severity, 10) * 0.05);
-    applyDent(this.model.pieces, local, dir, Math.min(d.maxDent, severity * d.dentPerDv), radius, d.maxDent);
+    const dent = Math.min(d.maxDent, severity * d.dentPerDv) * (1 - square);
+    if (dent > 0) applyDent(this.model.pieces, local, dir, dent, radius, d.maxDent);
 
     const reach = d.dentRadius * 1.3;
     for (const piece of this.model.pieces) {
@@ -512,6 +546,17 @@ export class Car {
       const dist = _tmp.distanceTo(local);
       if (dist < 1) this.damageWheel(wheel, severity * d.partDamagePerDv * (1 - dist));
     }
+  }
+
+  /** Pulls the lower body box's ends in with the crumple zones, so a crushed nose doesn't collide like an intact one. */
+  private fitHullToCrush(): void {
+    const { center, half } = this.lowerHull;
+    const front = center.z - half.z + this.crush.depth('front');
+    const rear = center.z + half.z - this.crush.depth('rear');
+    const offset = new THREE.Vector3(center.x, center.y, (front + rear) / 2);
+    this.lowerCollider.setHalfExtents({ x: half.x, y: half.y, z: (rear - front) / 2 });
+    this.lowerCollider.setTranslationWrtParent(offset);
+    this.colliderOffsets.set(this.lowerCollider.handle, offset);
   }
 
   private damageWheel(wheel: Wheel, amount: number): void {
