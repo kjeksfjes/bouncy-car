@@ -5,6 +5,7 @@ import { GameAudio } from './audio/audio';
 import { Hud } from './hud';
 import { Input } from './input';
 import { ChaseCamera } from './render/chaseCamera';
+import { HeliCamera } from './render/heliCamera';
 import { Juice } from './render/juice';
 import { Stage } from './render/stage';
 import { Visibility } from './render/visibility';
@@ -16,6 +17,9 @@ import { Debris } from './world/debris';
 import { LOAD_RADIUS, Terrain, type StreamCenter } from './world/terrain';
 import { TerrainField } from './world/terrainField';
 import { TreeLayout } from './world/trees';
+
+const CAMERA_MODES = ['chase', 'heli'] as const;
+type CameraMode = (typeof CAMERA_MODES)[number];
 
 /** No car legitimately goes this fast (m/s); beyond it the physics has blown up. */
 const SANE_SPEED = 400;
@@ -38,6 +42,9 @@ export class Game {
   private readonly terrain: Terrain;
   private readonly debris: Debris;
   private readonly chase: ChaseCamera;
+  private readonly heli: HeliCamera;
+  /** Active camera; C cycles through CAMERA_MODES. */
+  private cameraMode: CameraMode = 'chase';
   private readonly input = new Input();
   private readonly hud = new Hud();
   private readonly audio = new GameAudio();
@@ -70,6 +77,7 @@ export class Game {
     this.debris = new Debris(this.stage.scene, this.world, this.field);
     this.traffic = new Traffic(this.field, this.trees, this.terrain, (at, yaw, paint) => this.newCar(at, yaw, paint));
     this.chase = new ChaseCamera(this.stage.camera, this.field);
+    this.heli = new HeliCamera(this.stage.camera, this.field);
     this.juice = new Juice(
       this.stage.scene, this.field, this.chase, this.stage.camera,
       (car) => car === this.car,
@@ -133,6 +141,7 @@ export class Game {
     if (this.input.consume('KeyN')) this.replaceCar();
     if (this.input.consume('KeyP')) this.toggleAutopilot(this.input.shift);
     if (this.input.consume('KeyM')) this.audio.toggleMute();
+    if (this.input.consume('KeyC')) this.cycleCamera();
     this.input.endFrame();
 
     const controls = new Map<Car, CarInput>();
@@ -166,7 +175,8 @@ export class Game {
       ...this.traffic.cars.map((a) => ({ position: a.car.position, radius: AI_STREAM_RADIUS })),
     ];
     this.terrain.update(centers, STREAM_BUDGET);
-    this.chase.update(dt, this.car.model.root, this.car.velocity);
+    const camera = this.cameraMode === 'chase' ? this.chase : this.heli;
+    camera.update(dt, this.car.model.root, this.car.velocity);
     this.view.update(this.stage.camera, this.stage.viewDistance);
     this.debris.update(dt, pos, this.view);
     this.traffic.update(dt, pos, this.view);
@@ -182,6 +192,11 @@ export class Game {
     this.audio.update(dt, this.stage.camera, live);
     this.hud.update(dt, this.car, this.autopilot);
     this.stage.render();
+  }
+
+  private cycleCamera(): void {
+    this.cameraMode = CAMERA_MODES[(CAMERA_MODES.indexOf(this.cameraMode) + 1) % CAMERA_MODES.length];
+    (this.cameraMode === 'chase' ? this.chase : this.heli).reset();
   }
 
   /** P toggles the autopilot; Shift+P toggles its heading arrow (switching the autopilot on if needed). */

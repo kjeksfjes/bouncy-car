@@ -35,6 +35,14 @@ export class ChaseCamera {
     private readonly field: TerrainField,
   ) {}
 
+  /** Starts fresh (next update snaps behind the car instead of swooping in). */
+  reset(): void {
+    this.initialized = false;
+    this.trauma = 0;
+    this.kickY = 0;
+    this.kickVel = 0;
+  }
+
   /** Adds screen shake (0..1); repeated hits stack up to the cap. */
   addTrauma(amount: number): void {
     this.trauma = Math.min(1, this.trauma + amount);
