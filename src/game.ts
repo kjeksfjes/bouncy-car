@@ -9,7 +9,7 @@ import { Visibility } from './render/visibility';
 import { Traffic } from './traffic';
 import { AiDriver } from './vehicle/aiDriver';
 import { Car, type CarInput } from './vehicle/car';
-import { SEDAN_70S } from './vehicle/carConfig';
+import { COUPE_70S } from './vehicle/carConfig';
 import { Debris } from './world/debris';
 import { LOAD_RADIUS, Terrain, type StreamCenter } from './world/terrain';
 import { TerrainField } from './world/terrainField';
@@ -73,7 +73,7 @@ export class Game {
   }
 
   private newCar(position: THREE.Vector3, yaw: number, paint?: string): Car {
-    return new Car(SEDAN_70S, this.world, this.stage.scene, this.debris, position, yaw, paint);
+    return new Car(COUPE_70S, this.world, this.stage.scene, this.debris, position, yaw, paint);
   }
 
   private get allCars(): Car[] {

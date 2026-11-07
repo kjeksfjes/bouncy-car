@@ -1,3 +1,5 @@
+import type { CarBlueprint } from './blueprint';
+
 /**
  * Data-driven car definition. All values are gameplay tuning, not real-world
  * specs: the goal is a floaty, forgiving, Driver-style ride.
@@ -12,9 +14,9 @@ export interface CarConfig {
   /** Principal angular inertia about X (pitch), Y (yaw), Z (roll). */
   inertia: [number, number, number];
 
-  body: { width: number; length: number; height: number };
-  cabin: { width: number; length: number; height: number; z: number };
-  look: { paint: string; roof: string };
+  /** Body shape and part layout; colliders are derived from it. */
+  blueprint: CarBlueprint;
+  look: { paint: string };
 
   wheels: {
     radius: number;
@@ -107,23 +109,63 @@ export interface CarConfig {
   };
 }
 
-export const SEDAN_70S: CarConfig = {
-  name: '70s Sedan',
+/**
+ * 70s two-door coupe, traced from the user's orthographic reference drawing
+ * (side/top/front views, ≈287 px per metre in the side view). Heights are
+ * metres above the drawing's ground line.
+ */
+const COUPE_BLUEPRINT: CarBlueprint = {
+  groundY: -0.75,
+  front: -2.44,
+  rear: 2.44,
+  station: 0.1,
+  halfWidth: [[-2.44, 0.84], [-2.36, 0.92], [-2.1, 0.955], [-1.6, 0.96], [2.1, 0.96], [2.36, 0.94], [2.44, 0.88]],
+  deck: [
+    [-2.44, 0.78], [-2.4, 0.86], [-2.33, 0.91], [-1.6, 0.98], [-0.77, 1.04], [0, 1.03], [0.9, 1.04],
+    [1.53, 1.07], [2.0, 1.05], [2.32, 1.03], [2.4, 0.98], [2.44, 0.78],
+  ],
+  rocker: [[-2.44, 0.46], [-2.25, 0.37], [-2.0, 0.33], [2.0, 0.33], [2.3, 0.38], [2.44, 0.44]],
+  crown: 0.03,
+  wellHalf: 0.62,
+  arches: [
+    { z: -1.505, h: 0.31, radius: 0.42 },
+    { z: 1.335, h: 0.31, radius: 0.42 },
+  ],
+  hood: [-2.33, -0.8],
+  trunk: [1.56, 2.36],
+  door: [-0.76, 0.64],
+  greenhouse: {
+    roof: [[-0.77, 1.04], [-0.3, 1.39], [-0.18, 1.44], [0.7, 1.44], [0.9, 1.4], [1.2, 1.25], [1.53, 1.07]],
+    sillHalf: 0.8,
+    roofHalf: 0.7,
+    windshieldTo: -0.27,
+    rearGlassFrom: 0.92,
+    doorGlass: [-0.7, 0.46],
+    quarterGlass: [0.52, 0.86],
+  },
+  mirror: { z: -0.62, size: [0.1, 0.08, 0.16] },
+  hoodBulge: { from: -2.1, to: -0.95, halfWidth: 0.45, height: 0.05 },
+};
+
+export const COUPE_70S: CarConfig = {
+  name: '70s Coupe',
   mass: 1600,
-  centerOfMass: [0, -0.3, 0.05],
+  centerOfMass: [0, -0.45, -0.1],
   inertia: [3200, 3600, 850],
 
-  body: { width: 1.94, length: 5.1, height: 0.56 },
-  cabin: { width: 1.7, length: 2.3, height: 0.52, z: 0.2 },
-  look: { paint: '#d39b2a', roof: '#4a3426' },
+  blueprint: COUPE_BLUEPRINT,
+  look: { paint: '#d39b2a' },
 
   wheels: {
-    radius: 0.37,
-    width: 0.28,
-    halfTrack: 0.92,
-    frontZ: -1.58,
-    rearZ: 1.52,
-    mountY: -0.05,
+    radius: 0.34,
+    width: 0.24,
+    // Tyres sit inside the arches, like the drawing.
+    halfTrack: 0.8,
+    frontZ: -1.505,
+    rearZ: 1.335,
+    // Puts the resting wheel centre (mount − rest length + static sag ≈ 0.15) at y ≈ −0.5,
+    // slightly below the arch centre for a lifted, bouncy stance.
+    mountY: -0.227,
     // AWD is an arcade liberty: rear-only traction (≈ rear load × mu) can't climb out of dips.
     drive: 'all',
   },

@@ -5,6 +5,7 @@ import type { Debris } from '../world/debris';
 import type { TerrainField } from '../world/terrainField';
 import type { CarConfig } from './carConfig';
 import { buildCarModel, type CarModel, type CarPiece, type WheelVisual } from './carModel';
+import { hullBoxes } from './blueprint';
 import { applyDent, inwardDirection } from './damage';
 
 export interface CarInput {
@@ -110,17 +111,13 @@ export class Car {
         .setCcdEnabled(true),
     );
 
-    const B = cfg.body;
-    const C = cfg.cabin;
     // Report contacts whose force corresponds to at least ~2 m/s of Δv in one step.
     const forceThreshold = (cfg.mass * 2) / PHYSICS_STEP;
-    const shell = RAPIER.ColliderDesc.cuboid(B.width / 2, B.height / 2, B.length / 2 + 0.1);
-    const cabin = RAPIER.ColliderDesc.cuboid((C.width / 2) * 0.95, C.height / 2, (C.length / 2) * 0.9).setTranslation(
-      0,
-      B.height / 2 + C.height / 2,
-      C.z,
+    const hull = hullBoxes(cfg.blueprint);
+    const boxes = [hull.lower, hull.cabin].map(({ center: c, half: h }) =>
+      RAPIER.ColliderDesc.cuboid(h.x, h.y, h.z).setTranslation(c.x, c.y, c.z),
     );
-    for (const desc of [shell, cabin]) {
+    for (const desc of boxes) {
       const t = desc.translation;
       desc
         .setDensity(0)
@@ -133,8 +130,13 @@ export class Car {
       this.colliders.set(collider.handle, collider);
       this.colliderOffsets.set(collider.handle, new THREE.Vector3(t.x, t.y, t.z));
     }
-    this.hullCenter = new THREE.Vector3(0, C.height / 2, 0);
-    this.hullHalf = new THREE.Vector3(B.width / 2, B.height / 2 + C.height / 2, B.length / 2 + 0.1);
+    // Envelope of both boxes, used to aim dents inward.
+    const envelope = new THREE.Box3();
+    for (const { center, half } of [hull.lower, hull.cabin]) {
+      envelope.union(new THREE.Box3(center.clone().sub(half), center.clone().add(half)));
+    }
+    this.hullCenter = envelope.getCenter(new THREE.Vector3());
+    this.hullHalf = envelope.getSize(new THREE.Vector3()).multiplyScalar(0.5);
 
     this.model = buildCarModel(cfg, paint);
     scene.add(this.model.root);
@@ -479,10 +481,9 @@ export class Car {
     const yaw = _fwd.lengthSq() > 1e-4 ? Math.atan2(-_fwd.x, -_fwd.z) : 0;
     _q.setFromAxisAngle(UP, yaw);
     // Clear the highest ground under the footprint, so steep slopes don't trap the body.
-    const B = this.cfg.body;
     let ground = field.height(t.x, t.z);
     for (const [x, z] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
-      _tmp.set((x * B.width) / 2, 0, (z * B.length) / 2).applyQuaternion(_q);
+      _tmp.set(x * this.hullHalf.x, 0, z * this.hullHalf.z).applyQuaternion(_q);
       ground = Math.max(ground, field.height(t.x + _tmp.x, t.z + _tmp.z));
     }
     this.body.setTranslation({ x: t.x, y: ground + 1.5, z: t.z }, true);

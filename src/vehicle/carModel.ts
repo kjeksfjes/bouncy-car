@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { buildPanels, sample, type PanelMaterial } from './blueprint';
 import type { CarConfig } from './carConfig';
 
 /** A dentable mesh on the car. Detachable pieces can be knocked off. */
@@ -29,14 +31,17 @@ export interface CarModel {
 
 interface CarMaterials {
   paint: THREE.Material;
-  roof: THREE.Material;
   glass: THREE.Material;
   chrome: THREE.Material;
   dark: THREE.Material;
   tire: THREE.Material;
   headlight: THREE.Material;
   taillight: THREE.Material;
+  marker: THREE.Material;
 }
+
+/** Body parts that can be knocked off. Everything else stays on and only dents. */
+const DETACHABLE = new Set(['hood', 'trunk', 'door-left', 'door-right', 'bumper-front', 'bumper-rear']);
 
 // Materials are shared between every car built from the same config and paint (and their
 // debris), so they are never disposed with an individual car.
@@ -49,97 +54,95 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
   if (!m) {
     const std = (color: string, extra: THREE.MeshStandardMaterialParameters = {}) =>
       new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.55, metalness: 0.1, ...extra });
+    // Body panels are double-sided so a missing door or hood never reveals see-through holes.
+    // Shadows come from back faces only; double-sided casting causes acne on the panels.
+    const twoSided = { side: THREE.DoubleSide, shadowSide: THREE.BackSide } as const;
     m = {
-      paint: std(paint, { roughness: 0.4, metalness: 0.25 }),
-      roof: std(cfg.look.roof, { roughness: 0.85 }),
-      glass: std('#1e2a33', { roughness: 0.08, metalness: 0.4 }),
+      paint: std(paint, { roughness: 0.4, metalness: 0.25, ...twoSided }),
+      glass: std('#1e2a33', { roughness: 0.08, metalness: 0.4, ...twoSided }),
       chrome: std('#d9dde2', { roughness: 0.2, metalness: 0.9 }),
-      dark: std('#1c1d20', { roughness: 0.7 }),
+      dark: std('#1c1d20', { roughness: 0.7, ...twoSided }),
       tire: std('#1a1a1c', { roughness: 0.9 }),
       headlight: std('#fff6d8', { emissive: '#fff1c4', emissiveIntensity: 0.6 }),
       taillight: std('#a3121b', { emissive: '#7a0a10', emissiveIntensity: 0.5 }),
+      marker: std('#e08a1e', { emissive: '#7a4208', emissiveIntensity: 0.4 }),
     };
     byPaint.set(paint, m);
   }
   return m;
 }
 
-/** Procedural boxy 70s sedan. Boxes are subdivided so dents have vertices to push. */
+/** Builds the car from its blueprint: lofted body parts plus lights, grille, bumpers and wheels. */
 export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   const mat = materialsFor(cfg, paint);
+  const bp = cfg.blueprint;
+  const gy = bp.groundY;
   const root = new THREE.Group();
   const pieces: CarPiece[] = [];
-  const B = cfg.body;
-  const C = cfg.cabin;
-  const hy = B.height / 2;
 
-  const add = (
-    name: string,
-    geometry: THREE.BufferGeometry,
-    material: THREE.Material,
-    position: [number, number, number],
-    detachable: boolean,
-  ) => {
+  /** Adds a piece. Geometry is recentred on its bounds so the mesh position is the part's centre. */
+  const add = (name: string, geometry: THREE.BufferGeometry, material: THREE.Material | THREE.Material[], at?: THREE.Vector3) => {
+    geometry.computeBoundingBox();
+    const center = at ?? geometry.boundingBox!.getCenter(new THREE.Vector3());
+    if (!at) geometry.translate(-center.x, -center.y, -center.z);
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
     const mesh = new THREE.Mesh(geometry, material);
-    mesh.position.set(...position);
+    mesh.position.copy(center);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     root.add(mesh);
-    geometry.computeBoundingBox();
-    const bounds = geometry.boundingBox!.clone().translate(mesh.position);
-    const original = Float32Array.from(geometry.getAttribute('position').array);
-    pieces.push({ name, mesh, original, bounds, detachable, attached: true, hp: cfg.damage.partHp });
+    pieces.push({
+      name,
+      mesh,
+      original: Float32Array.from(geometry.getAttribute('position').array),
+      bounds: geometry.boundingBox!.clone().translate(mesh.position),
+      detachable: DETACHABLE.has(name),
+      attached: true,
+      hp: cfg.damage.partHp,
+    });
   };
 
-  add('shell', new THREE.BoxGeometry(B.width, B.height, B.length, 6, 3, 16), mat.paint, [0, 0, 0], false);
-
-  // Greenhouse: tapered box, top pulled in and back for a sloped windscreen.
-  const cabin = new THREE.BoxGeometry(C.width, C.height, C.length, 4, 2, 6);
-  const cp = cabin.getAttribute('position');
-  for (let i = 0; i < cp.count; i++) {
-    if (cp.getY(i) > 0) {
-      cp.setX(i, cp.getX(i) * 0.88);
-      cp.setZ(i, cp.getZ(i) * 0.78 + 0.1);
+  // Lofted body parts, one mesh per part with a material group per surface type.
+  for (const [part, byMaterial] of buildPanels(bp)) {
+    const geos: THREE.BufferGeometry[] = [];
+    const materials: THREE.Material[] = [];
+    for (const [m, positions] of byMaterial) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      geos.push(g);
+      materials.push(mat[m satisfies PanelMaterial]);
     }
+    const merged = mergeGeometries(geos, true);
+    if (!merged) throw new Error(`Body part "${part}" failed to merge`);
+    add(part, merged, materials);
   }
-  add('cabin', cabin, mat.glass, [0, hy + C.height / 2, C.z], false);
-  add(
-    'roof',
-    new THREE.BoxGeometry(C.width * 0.9, 0.07, C.length * 0.8, 4, 1, 5),
-    mat.roof,
-    [0, hy + C.height + 0.035, C.z + 0.1],
-    false,
-  );
 
-  add('hood', new THREE.BoxGeometry(B.width - 0.1, 0.06, 1.55, 5, 1, 5), mat.paint, [0, hy + 0.03, -B.length / 2 + 0.8], true);
-  add('trunk', new THREE.BoxGeometry(B.width - 0.1, 0.06, 1.15, 5, 1, 4), mat.paint, [0, hy + 0.03, B.length / 2 - 0.62], true);
+  const box = (w: number, h: number, d: number, segX = 1) => new THREE.BoxGeometry(w, h, d, segX, 1, 1);
+  const at = (x: number, h: number, z: number) => new THREE.Vector3(x, h + gy, z);
 
+  // Chrome bumpers, subdivided along their length so they can bend.
+  add('bumper-front', box(2.0, 0.12, 0.13, 10), mat.chrome, at(0, 0.5, bp.front - 0.06));
+  add('bumper-rear', box(1.98, 0.12, 0.13, 10), mat.chrome, at(0, 0.56, bp.rear + 0.06));
+
+  // Grille with a chrome surround, quad headlights in chrome rings.
+  add('grille-frame', box(0.92, 0.26, 0.03), mat.chrome, at(0, 0.69, bp.front - 0.005));
+  add('grille', box(0.86, 0.2, 0.03), mat.dark, at(0, 0.69, bp.front - 0.02));
+  for (const x of [-0.77, -0.56, 0.56, 0.77]) {
+    add(`headlight-ring-${x}`, new THREE.CylinderGeometry(0.085, 0.085, 0.04, 10).rotateX(Math.PI / 2), mat.chrome, at(x, 0.7, bp.front - 0.01));
+    add(`headlight-${x}`, new THREE.CylinderGeometry(0.065, 0.065, 0.05, 10).rotateX(Math.PI / 2), mat.headlight, at(x, 0.7, bp.front - 0.02));
+  }
+
+  // Full-width 70s taillight strip and side marker lights.
+  add('taillights', box(1.55, 0.1, 0.03, 6), mat.taillight, at(0, 0.7, bp.rear + 0.01));
   for (const side of [-1, 1]) {
-    add(
-      side < 0 ? 'door-left' : 'door-right',
-      new THREE.BoxGeometry(0.05, B.height * 0.86, 2.1, 1, 2, 6),
-      mat.paint,
-      [side * (B.width / 2 + 0.025), 0.02, 0.05],
-      true,
-    );
+    const zf = bp.front + 0.25;
+    const zr = bp.rear - 0.25;
+    add(`marker-front-${side}`, box(0.02, 0.05, 0.14), mat.marker, at(side * (sample(bp.halfWidth, zf) + 0.01), 0.72, zf));
+    add(`marker-rear-${side}`, box(0.02, 0.05, 0.14), mat.taillight, at(side * (sample(bp.halfWidth, zr) + 0.01), 0.74, zr));
   }
 
-  for (const end of [-1, 1]) {
-    add(
-      end < 0 ? 'bumper-front' : 'bumper-rear',
-      new THREE.BoxGeometry(B.width + 0.06, 0.16, 0.16, 8, 1, 1),
-      mat.chrome,
-      [0, -hy + 0.14, end * (B.length / 2 + 0.06)],
-      true,
-    );
-  }
-
-  add('grille', new THREE.BoxGeometry(B.width * 0.55, B.height * 0.45, 0.04, 4, 1, 1), mat.dark, [0, 0.04, -B.length / 2 - 0.015], false);
-  for (const side of [-1, 1]) {
-    add(`headlight-${side}`, new THREE.BoxGeometry(0.26, 0.16, 0.04), mat.headlight, [side * 0.75, 0.05, -B.length / 2 - 0.015], false);
-    add(`taillight-${side}`, new THREE.BoxGeometry(0.4, 0.13, 0.04), mat.taillight, [side * 0.68, 0.08, B.length / 2 + 0.015], false);
-  }
-
+  // Wheels: tyre, chrome rim and five lug nuts on the outer face.
   const W = cfg.wheels;
   const wheels: WheelVisual[] = [];
   for (const z of [W.frontZ, W.rearZ]) {
@@ -148,13 +151,19 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
       pivot.position.set(side * W.halfTrack, W.mountY - cfg.suspension.restLength, z);
       const spin = new THREE.Group();
       // Per-wheel geometry: a lost wheel takes (and later disposes) its own buffers.
-      const tireGeo = new THREE.CylinderGeometry(W.radius, W.radius, W.width, 14).rotateZ(Math.PI / 2);
-      const hubGeo = new THREE.CylinderGeometry(W.radius * 0.55, W.radius * 0.55, W.width + 0.02, 8).rotateZ(Math.PI / 2);
-      const tire = new THREE.Mesh(tireGeo, mat.tire);
-      const hub = new THREE.Mesh(hubGeo, mat.chrome);
-      tire.castShadow = true;
-      hub.castShadow = true;
-      spin.add(tire, hub);
+      const tire = new THREE.Mesh(new THREE.CylinderGeometry(W.radius, W.radius, W.width, 16).rotateZ(Math.PI / 2), mat.tire);
+      const rim = new THREE.Mesh(
+        new THREE.CylinderGeometry(W.radius * 0.6, W.radius * 0.6, W.width + 0.02, 10).rotateZ(Math.PI / 2),
+        mat.chrome,
+      );
+      spin.add(tire, rim);
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * Math.PI * 2;
+        const lug = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.035, 0.035), mat.dark);
+        lug.position.set(side * (W.width / 2 + 0.02), Math.cos(a) * W.radius * 0.28, Math.sin(a) * W.radius * 0.28);
+        spin.add(lug);
+      }
+      spin.traverse((o) => (o.castShadow = true));
       pivot.add(spin);
       root.add(pivot);
       wheels.push({ pivot, spin });
