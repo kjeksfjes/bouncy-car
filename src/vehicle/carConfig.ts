@@ -68,6 +68,12 @@ export interface CarConfig {
   };
 
   air: {
+    /**
+     * 'auto': levelling is always on and S lifts the nose.
+     * 'hold': free physics in the air; holding S engages the levelling.
+     */
+    leveling: 'auto' | 'hold';
+    /** Nose-up torque from S (only in 'auto' mode). */
     pitchTorque: number;
     rollTorque: number;
     angularDamping: number;
@@ -153,6 +159,7 @@ export const SEDAN_70S: CarConfig = {
   steering: { maxAngle: 0.55, minAngle: 0.13, fullSpeed: 40, rate: 2.6 },
 
   air: {
+    leveling: 'hold',
     pitchTorque: 5000,
     rollTorque: 1400,
     angularDamping: 0.3,

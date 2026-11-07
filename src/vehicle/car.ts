@@ -306,10 +306,14 @@ export class Car {
     if (grounded === 0) {
       // Lying on the roof or side isn't air: only count truly airborne time.
       this.airTime = this.bodyTouching ? 0 : this.airTime + dt;
-      // Throttle is usually held through jumps, so W does nothing here; S lifts the nose.
-      _imp.copy(_right).multiplyScalar(input.brake * cfg.air.pitchTorque * dt);
-      _imp.addScaledVector(_fwd, -input.steer * cfg.air.rollTorque * dt);
-      if (!this.bodyTouching) this.addAirLeveling(_imp, dt);
+      // Throttle is usually held through jumps, so W does nothing here.
+      // S either lifts the nose ('auto') or engages the levelling ('hold').
+      const A = cfg.air;
+      const holdLevel = input.brake > 0;
+      _imp.set(0, 0, 0);
+      if (A.leveling === 'auto') _imp.addScaledVector(_right, input.brake * A.pitchTorque * dt);
+      _imp.addScaledVector(_fwd, -input.steer * A.rollTorque * dt);
+      if (!this.bodyTouching && (A.leveling === 'auto' || holdLevel)) this.addAirLeveling(_imp, dt);
       this.body.applyTorqueImpulse(_imp, true);
     } else {
       if (this.airTime > 0.6) {
