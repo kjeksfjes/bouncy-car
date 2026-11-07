@@ -1,6 +1,7 @@
 import { createNoise2D } from 'simplex-noise';
 import * as THREE from 'three';
 import type { TerrainField } from '../world/terrainField';
+import { SightLiftFilter, sightLift } from './sightLine';
 
 /**
  * Feel values for the helicopter shot. Distance, height and orbit speed each drift
@@ -59,7 +60,28 @@ const MANUAL = {
   follow: 6,
 };
 
+/**
+ * Line of sight: the helicopter climbs when terrain would hide the car. Acts as a soft
+ * floor under the drag height too: dragging down stops where the view would be blocked.
+ */
+const SIGHT = {
+  /** Height above the car's origin that must stay visible (m): about the roofline. */
+  aimHeight: 1.0,
+  /** Clearance kept between the sight line and the snow (m). */
+  margin: 1.5,
+  /** Sample spacing (m); with maxSamples it covers the full 160 m at ≈4 m spacing. */
+  step: 3,
+  maxSamples: 40,
+  /** Ground under the car itself (m) doesn't count. */
+  skipNear: 3,
+  /** Climb and sink rates (1/s): slower than the chase cam, it's a lazy helicopter. */
+  rise: 4,
+  fall: 0.8,
+  max: 60,
+};
+
 const _desired = new THREE.Vector3();
+const _aim = new THREE.Vector3();
 const _lead = new THREE.Vector3();
 
 /**
@@ -88,6 +110,7 @@ export class HeliCamera {
   private sinceInput = Infinity;
   private zoom = 1;
   private heightBias = 0;
+  private readonly lift = new SightLiftFilter(SIGHT.rise, SIGHT.fall, SIGHT.max);
 
   constructor(
     private readonly camera: THREE.PerspectiveCamera,
@@ -127,6 +150,7 @@ export class HeliCamera {
   /** Starts the shot fresh (next update cuts straight to position). */
   reset(): void {
     this.initialized = false;
+    this.lift.reset();
   }
 
   update(dt: number, target: THREE.Object3D, velocity: THREE.Vector3): void {
@@ -174,10 +198,13 @@ export class HeliCamera {
     this.pos.lerp(_desired, 1 - Math.exp(-follow * dt));
     const ground = this.field.height(this.pos.x, this.pos.z) + H.clearance;
     if (this.pos.y < ground) this.pos.y = ground;
+    _aim.copy(target.position);
+    _aim.y += SIGHT.aimHeight;
+    const lift = this.lift.update(sightLift(this.field, this.pos, _aim, SIGHT), dt);
     this.look.lerp(target.position, 1 - Math.exp(-H.aim * dt));
 
     const n = (seed: number) => this.noise(this.time * H.wobbleSpeed, seed) * H.wobble;
-    this.camera.position.set(this.pos.x + n(1), this.pos.y + n(2), this.pos.z + n(3));
+    this.camera.position.set(this.pos.x + n(1), this.pos.y + lift + n(2), this.pos.z + n(3));
     this.camera.lookAt(this.look);
     // Zoom partly compensates for distance: the car stays readable, but you still feel it.
     const fov = H.fov * Math.sqrt(H.fovDistance / Math.max(1, this.pos.distanceTo(target.position)));

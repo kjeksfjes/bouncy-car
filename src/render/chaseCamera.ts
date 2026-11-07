@@ -1,6 +1,7 @@
 import { createNoise2D } from 'simplex-noise';
 import * as THREE from 'three';
 import type { TerrainField } from '../world/terrainField';
+import { SightLiftFilter, sightLift } from './sightLine';
 
 /** Screen shake: trauma (0..1) decays over time; shake strength is trauma². */
 const SHAKE = {
@@ -12,11 +13,27 @@ const SHAKE = {
 };
 /** Landing dip: a damped spring pulling the camera back to rest. */
 const KICK = { stiffness: 90, damping: 14 };
+/** Line of sight: the camera rises when a crest or bump would hide the car. */
+const SIGHT = {
+  /** Height above the car's origin the camera must see (m): about the roofline. */
+  aimHeight: 1.0,
+  /** Clearance kept between the sight line and the snow (m). */
+  margin: 0.4,
+  step: 1,
+  maxSamples: 16,
+  /** Ground under the car itself (m, about half its length) doesn't count. */
+  skipNear: 2.5,
+  /** Rise and sink rates (1/s) and the most it ever rises (m). */
+  rise: 10,
+  fall: 1.5,
+  max: 8,
+};
 
 const _fwd = new THREE.Vector3();
 const _velDir = new THREE.Vector3();
 const _desired = new THREE.Vector3();
 const _look = new THREE.Vector3();
+const _aim = new THREE.Vector3();
 
 /** Smoothed third-person camera that trails the car and stays above the snow. */
 export class ChaseCamera {
@@ -29,6 +46,7 @@ export class ChaseCamera {
   private kickY = 0;
   private kickVel = 0;
   private readonly noise = createNoise2D();
+  private readonly lift = new SightLiftFilter(SIGHT.rise, SIGHT.fall, SIGHT.max);
 
   constructor(
     private readonly camera: THREE.PerspectiveCamera,
@@ -41,6 +59,7 @@ export class ChaseCamera {
     this.trauma = 0;
     this.kickY = 0;
     this.kickVel = 0;
+    this.lift.reset();
   }
 
   /** Adds screen shake (0..1); repeated hits stack up to the cap. */
@@ -85,6 +104,9 @@ export class ChaseCamera {
     this.look.lerp(_look, 1 - Math.exp(-14 * dt));
     const ground = this.field.height(this.pos.x, this.pos.z) + 1.2;
     if (this.pos.y < ground) this.pos.y = ground;
+    _aim.copy(target.position);
+    _aim.y += SIGHT.aimHeight;
+    const lift = this.lift.update(sightLift(this.field, this.pos, _aim, SIGHT), dt);
 
     this.kickVel += (-this.kickY * KICK.stiffness - this.kickVel * KICK.damping) * dt;
     this.kickY += this.kickVel * dt;
@@ -93,7 +115,7 @@ export class ChaseCamera {
     this.trauma = Math.max(0, this.trauma - SHAKE.decay * dt);
     const n = (seed: number) => this.noise(this.time * SHAKE.frequency, seed);
     this.camera.position.copy(this.pos);
-    this.camera.position.y += this.kickY;
+    this.camera.position.y += this.kickY + lift;
     this.camera.position.x += n(1) * shake * SHAKE.offset;
     this.camera.position.y += n(2) * shake * SHAKE.offset;
     this.camera.position.z += n(3) * shake * SHAKE.offset;
