@@ -543,9 +543,16 @@ export class Car {
     const reach = d.dentRadius * 1.3;
     for (const piece of this.model.pieces) {
       if (!piece.detachable || piece.state === 'gone') continue;
-      // A mirror's bounds are only valid on a closed door; on a hanging or lost door it goes along.
-      if (piece.rides && this.piece(piece.rides).state !== 'closed') continue;
-      const dist = piece.bounds.distanceToPoint(local);
+      let dist: number;
+      if (piece.rides) {
+        // A mirror goes along with a door that's torn off; on a closed or hanging door it takes
+        // hits where it is now (a hanging door swings it away from its build-time bounds).
+        if (this.piece(piece.rides).state === 'gone') continue;
+        const at = this.model.root.worldToLocal(piece.mesh.getWorldPosition(_tmp));
+        dist = Math.max(0, at.distanceTo(local) - piece.bounds.getSize(_pt).length() / 2);
+      } else {
+        dist = piece.bounds.distanceToPoint(local);
+      }
       if (dist >= reach) continue;
       // Hanging panels keep taking damage; HingedPanels tears them off past their limit.
       piece.hp -= severity * d.partDamagePerDv * (1 - dist / reach);
@@ -603,9 +610,9 @@ export class Car {
     this.snapRootToPhysics();
     this.scene.attach(hubcap);
     const vel = this.pointVelocity(hubcap.position);
-    // Out along the axle (away from the car) and a little up.
+    // Flung out along the axle and up, clear of the wheel arch, so it's seen leaving.
     const axle = new THREE.Vector3(Math.sign(wheel.anchor.x), 0, 0).applyQuaternion(this.currQuat);
-    vel.addScaledVector(axle, 1.5).add(_tmp.set(0, 1, 0));
+    vel.addScaledVector(axle, 3.5).add(_tmp.set(0, 1.5, 0));
     // The wheel rolls about its own axis; the visual spins as rotation.x −= spinSpeed·dt.
     const spin = new THREE.Vector3(1, 0, 0).applyQuaternion(this.currQuat).multiplyScalar(-wheel.spinSpeed);
     const r = this.cfg.wheels.radius * 0.62;

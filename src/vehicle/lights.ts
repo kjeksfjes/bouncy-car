@@ -18,10 +18,11 @@ export interface LightTuning {
   lightDropAtCrush: number;
   /** Chance a fixture that comes out of its socket snaps off at once instead of dangling. */
   lightSnapChance: number;
-  /** Wire length (m), air drag on a dangling fixture (1/s), and the swing speed (m/s, relative to its socket) that snaps the wire. */
+  /** Wire length (m) and air drag on a dangling fixture (1/s). */
   wireLength: number;
   wireDrag: number;
-  wireTearSpeed: number;
+  /** Pull on the wire (as the acceleration it gives the lamp, m/s²; hanging still ≈ g) that snaps it. */
+  wireTearAccel: number;
 }
 
 export type LightKind = 'head' | 'tail' | 'marker';
@@ -71,6 +72,10 @@ interface Fixture extends LightFixtureDef {
   fresh: boolean;
   /** Seconds spent dangling. */
   hangTime: number;
+  /** Damage taken since it started dangling; the wire has its own budget (lightWireHp). */
+  wireDamage: number;
+  /** Smoothed pull on the wire (m/s²). */
+  tension: number;
   /** Collision box for when it is ripped off (group-local). */
   half: THREE.Vector3;
   /** Size of the sphere kept outside the body while dangling (m). */
@@ -86,8 +91,10 @@ const SHARD_TINT: Record<LightKind, THREE.Color> = {
 };
 /** Longest frame step the pendulum takes (s): a stalled frame shouldn't fling a light off. */
 const MAX_DT = 1 / 30;
-/** Seconds after dropping out before a swing can snap the wire: the pop out of the socket isn't a yank. */
+/** Seconds after dropping out before a yank can snap the wire: the pop out of the socket isn't a yank. */
 const WIRE_GRACE = 0.25;
+/** Time constant (s) the wire's pull is smoothed over, so one uneven frame isn't a yank. */
+const TENSION_SMOOTHING = 0.05;
 
 /** How far outside the socket's rest spot a surface ray starts (m): more than the deepest dent or crush wrinkle. */
 const SOCKET_RAY_START = 0.4;
@@ -150,6 +157,8 @@ export class CarLights {
         snap: false,
         fresh: false,
         hangTime: 0,
+        wireDamage: 0,
+        tension: 0,
         half,
         // Vertical half size: the lamp hangs face-down, so this is roughly its footprint.
         radius: half.y,
@@ -206,10 +215,15 @@ export class CarLights {
       // Wide fixtures (taillight halves) count hits along their whole length.
       const d = f.state === 'dangling' ? f.socketNow.distanceTo(local) : _seg.set(f.endsNow[0], f.endsNow[1]).closestPointToPoint(local, true, _v).distanceTo(local);
       if (d >= T.lightReach) continue;
-      f.damage += damage * (1 - d / T.lightReach);
+      const dealt = damage * (1 - d / T.lightReach);
+      if (f.state === 'dangling') {
+        f.wireDamage += dealt;
+        if (f.wireDamage >= T.lightWireHp) this.rip(f, f.pos.clone().sub(f.prev).divideScalar(PHYSICS_STEP));
+        continue;
+      }
+      f.damage += dealt;
       if (f.state === 'intact' && f.damage >= T.lightLensHp) this.smash(f, velocityAt);
       if (this.mounted(f) && f.damage >= T.lightMountHp) this.dropOut(f, velocityAt);
-      if (f.state === 'dangling' && f.damage >= T.lightWireHp) this.rip(f, f.pos.clone().sub(f.prev).divideScalar(PHYSICS_STEP));
     }
   }
 
@@ -241,18 +255,23 @@ export class CarLights {
       f.prev.copy(f.pos);
       f.pos.add(_v);
       f.pos.y -= GRAVITY * dt * dt;
-      // The wire only pulls, it doesn't push.
+      // The wire only pulls, it doesn't push. How far it has to pull the lamp back this step is
+      // its pull, as an acceleration: ≈ g hanging still, far more when the car yanks it.
       _d.subVectors(f.pos, socket);
       const len = _d.length();
-      if (len > T.wireLength) f.pos.copy(socket).addScaledVector(_d, T.wireLength / len);
+      let pull = 0;
+      if (len > T.wireLength) {
+        pull = (len - T.wireLength) / (dt * dt);
+        f.pos.copy(socket).addScaledVector(_d, T.wireLength / len);
+      }
+      f.tension += (pull - f.tension) * (1 - Math.exp(-dt / TENSION_SMOOTHING));
+      // Pushing it out of the body is a position fix, not a kick: it keeps its velocity.
+      _v.copy(f.pos);
       this.keepOutside(f);
-
-      // Swing speed relative to the socket: a violent yank snaps the wire.
-      _v.subVectors(f.pos, f.prev).divideScalar(dt);
-      const swing = _d.subVectors(socket, f.socketPrev).divideScalar(dt).sub(_v).length();
+      f.prev.add(_d.subVectors(f.pos, _v));
       f.socketPrev.copy(socket);
-      if (f.hangTime > WIRE_GRACE && swing > T.wireTearSpeed) {
-        this.rip(f, _v.clone());
+      if (f.hangTime > WIRE_GRACE && f.tension > T.wireTearAccel) {
+        this.rip(f, _v.subVectors(f.pos, f.prev).divideScalar(dt).clone());
         continue;
       }
 
@@ -324,6 +343,8 @@ export class CarLights {
     f.socketPrev.copy(socket);
     f.fresh = true;
     f.hangTime = 0;
+    f.wireDamage = 0;
+    f.tension = 0;
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute([...f.socketPrev.toArray(), ...f.pos.toArray()], 3));
     f.wire = new THREE.Line(geometry, wireMaterial);

@@ -284,13 +284,14 @@ export const COUPE_70S: CarConfig = {
     lightReach: 0.6,
     lightLensHp: 25,
     lightMountHp: 100,
-    lightWireHp: 180,
+    // Counted from when the light starts dangling (it has its own budget).
+    lightWireHp: 120,
     lightDropAtCrush: 0.15,
     lightSnapChance: 0.4,
     wireLength: 0.25,
     // Linear air drag on a dangling light: ≈3 m/s² at 15 m/s, well under gravity, so it hangs and swings.
     wireDrag: 0.25,
-    // Swing speed relative to the socket: survives ordinary landings, snaps on hard ones.
-    wireTearSpeed: 12,
+    // Measured while driving: ≈10 hanging still, 100–180 on bumps (95th pct), 400–800 on jump landings.
+    wireTearAccel: 300,
   },
 };
