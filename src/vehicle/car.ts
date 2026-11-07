@@ -227,6 +227,7 @@ export class Car {
 
   /** Applies suspension, tyre, engine and air-control impulses. Call before world.step(). */
   step(dt: number, input: CarInput): void {
+    this.assertLive();
     const cfg = this.cfg;
     const t = this.body.translation();
     const r = this.body.rotation();
@@ -423,6 +424,7 @@ export class Car {
 
   /** Resolves impacts from this step and snapshots the transform. Call after world.step(). */
   afterStep(): void {
+    this.assertLive();
     this.captureTransform();
     this.panels.afterStep();
     // A door window goes when its door is torn off.
@@ -711,11 +713,23 @@ export class Car {
   }
 
   get velocity(): THREE.Vector3 {
+    this.assertLive();
     const v = this.body.linvel();
     return new THREE.Vector3(v.x, v.y, v.z);
   }
 
+  /**
+   * Touching a removed body is a Rapier panic that poisons the whole physics world,
+   * so a disposed car refuses physics access with a plain error instead.
+   */
+  private assertLive(): void {
+    if (this.disposed) throw new Error('A removed car was used (its physics body is gone)');
+  }
+
+  private disposed = false;
+
   dispose(): void {
+    this.disposed = true;
     this.panels.dispose();
     this.smoke.dispose();
     for (const piece of this.model.pieces) this.disposeCrack(piece);

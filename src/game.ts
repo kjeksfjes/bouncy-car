@@ -119,7 +119,9 @@ export class Game {
     this.reportedErrors.add(message);
     console.error(error);
     const box = document.getElementById('error')!;
-    box.textContent = `Something broke: ${message} (details in the browser console)`;
+    // A Rapier (WebAssembly) panic leaves the physics world unusable; only a reload helps.
+    const fatal = error instanceof WebAssembly.RuntimeError || /recursive use of an object/.test(message);
+    box.textContent = `Something broke: ${message}${fatal ? ' – please reload the page' : ''} (details in the browser console)`;
     box.hidden = false;
   }
 
@@ -155,7 +157,9 @@ export class Game {
     this.checkPhysicsSanity(cars);
 
     const alpha = this.accumulator / PHYSICS_STEP;
-    for (const car of cars) car.syncVisual(alpha, dt);
+    // The sanity check can remove cars, so take a fresh list: touching a removed car's
+    // physics body is a fatal Rapier panic.
+    for (const car of this.allCars) car.syncVisual(alpha, dt);
     const pos = this.car.position;
     const centers: StreamCenter[] = [
       { position: pos, radius: LOAD_RADIUS },
@@ -172,8 +176,10 @@ export class Game {
       this.aiArrow.position.copy(pos).setY(pos.y + 1.6);
       this.aiArrow.setDirection(this.ai.heading);
     }
-    this.juice.update(dt, cars, this.stage.renderer.getDrawingBufferSize(this.bufferSize).y / 2);
-    this.audio.update(dt, this.stage.camera, cars);
+    // Traffic may have despawned cars just now; again use a fresh list.
+    const live = this.allCars;
+    this.juice.update(dt, live, this.stage.renderer.getDrawingBufferSize(this.bufferSize).y / 2);
+    this.audio.update(dt, this.stage.camera, live);
     this.hud.update(dt, this.car, this.autopilot);
     this.stage.render();
   }
