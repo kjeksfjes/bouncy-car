@@ -109,6 +109,13 @@ export interface CarConfig {
     /** Glass panes: hit points, and the fraction of them left when a pane cracks. */
     glassHp: number;
     crackAt: number;
+    /**
+     * How far hits reach the glass grows with severity: reach × (1 + growth × severity),
+     * severity capped at `glassReachCap`. Lets hard frontal crashes (bumper ≈1.8 m from the
+     * windshield) crack or shatter it through the body, while light knocks don't.
+     */
+    glassReachGrowth: number;
+    glassReachCap: number;
     /** Below this integrity the engine steams. */
     steamBelow: number;
     /** Hinged panels: see PanelTuning. */
@@ -235,6 +242,9 @@ export const COUPE_70S: CarConfig = {
     engineDeathAt: 0.12,
     glassHp: 45,
     crackAt: 0.6,
+    // Tuned against probed bumper hits: severity ≈12.6 shatters the windshield, ≈9 cracks it, ≈6 leaves it.
+    glassReachGrowth: 0.08,
+    glassReachCap: 15,
     steamBelow: 0.5,
     tearHp: 70,
     tearSwingSpeed: 16,

@@ -496,8 +496,8 @@ export class Car {
       piece.hp -= severity * d.partDamagePerDv * (1 - dist / reach);
       if (piece.state === 'closed' && piece.hp <= 0) this.breakLoose(piece, local);
     }
-    // Glass is more fragile and feels hits from further away.
-    const glassReach = d.dentRadius * 1.6;
+    // Glass is more fragile and feels hits from further away; hard hits carry through the body.
+    const glassReach = d.dentRadius * 1.6 * (1 + d.glassReachGrowth * Math.min(severity, d.glassReachCap));
     for (const piece of this.model.pieces) {
       if (!piece.glass || piece.state === 'gone') continue;
       const dist = piece.bounds.distanceToPoint(local);
