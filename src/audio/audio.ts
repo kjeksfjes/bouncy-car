@@ -1,27 +1,28 @@
 import * as THREE from 'three';
-import type { Car, CarEvents } from '../vehicle/car';
+import type { Car, CarEvents, ContactSurface } from '../vehicle/car';
+import { ENGINE_PROCESSOR, loadEngineWorklet } from './engineWorklet';
 
 /** Mix levels. Everything is synthesised; these are by-ear starting points. */
 const MIX = {
   master: 0.7,
-  engine: 0.16,
+  engine: 0.2,
   /** AI engines sit under the player's own. */
   aiEngine: 0.45,
   tyres: 0.3,
   scrape: 0.35,
   wind: 0.35,
-  crunch: 0.9,
+  crunch: 1,
+  /** How far engine and wind dip under a full-strength hit (0..1). */
+  duck: 0.6,
   glass: 0.6,
   clank: 0.5,
   thud: 0.8,
 };
 
 /** Simulated gearbox for engine pitch: upper speed (m/s) of each gear. */
-const GEAR_TOPS = [11, 20, 30, 41, 60];
+const GEAR_TOPS = [9, 17, 27, 40, 70];
 const IDLE_RPM = 800;
 const SHIFT_RPM = 5800;
-/** A V8 fires four times per crank revolution. */
-const FIRINGS_PER_REV = 4;
 
 /** Panners: full volume within `ref` metres, fading with distance. */
 const PANNER: PannerOptions = {
@@ -32,14 +33,21 @@ const PANNER: PannerOptions = {
   rolloffFactor: 1.2,
 };
 
+/**
+ * Landing speeds (m/s downward) mapped onto the thunk's strength: on this steep,
+ * fast mountain ordinary jumps land at 10–20 m/s.
+ */
+const LANDING = { from: 3, full: 22 };
+
 /** Minimum gap between crunches from the same car, so scraping contacts don't machine-gun. */
 const CRUNCH_GAP = 0.09;
 
 /** Engine, tyre and scrape loops for one car. */
 class CarVoice {
   readonly panner: PannerNode;
-  private readonly oscs: OscillatorNode[];
-  private readonly engineFilter: BiquadFilterNode;
+  private readonly engine: AudioWorkletNode;
+  private readonly rasp: BiquadFilterNode;
+  private readonly muffler: BiquadFilterNode;
   private readonly engineGain: GainNode;
   private readonly tyreGain: GainNode;
   private readonly scrapeGain: GainNode;
@@ -51,22 +59,21 @@ class CarVoice {
     this.panner = new PannerNode(ctx, PANNER);
     this.panner.connect(out);
 
-    // Engine: saw + sub-octave saw + square, soft-clipped and low-passed. Pitch follows RPM.
+    // Engine: combustion pulses (worklet) → exhaust resonances → soft saturation → muffler.
+    this.engine = new AudioWorkletNode(ctx, ENGINE_PROCESSOR, { numberOfInputs: 0, outputChannelCount: [1] });
+    this.rasp = new BiquadFilterNode(ctx, { type: 'peaking', frequency: 750, Q: 1.2, gain: 0 });
+    this.muffler = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 600, Q: 0.8 });
     this.engineGain = new GainNode(ctx, { gain: 0 });
-    this.engineFilter = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 400, Q: 2 });
-    const shaper = new WaveShaperNode(ctx, { curve: softClip(), oversample: '2x' });
-    const mix = new GainNode(ctx, { gain: 0.5 });
-    this.oscs = [
-      new OscillatorNode(ctx, { type: 'sawtooth' }),
-      new OscillatorNode(ctx, { type: 'sawtooth', detune: -8 }),
-      new OscillatorNode(ctx, { type: 'square', detune: 5 }),
-    ];
-    const oscLevels = [0.6, 0.8, 0.25];
-    this.oscs.forEach((o, i) => {
-      o.connect(new GainNode(ctx, { gain: oscLevels[i] })).connect(mix);
-      o.start();
-    });
-    mix.connect(shaper).connect(this.engineFilter).connect(this.engineGain).connect(this.panner);
+    this.engine
+      .connect(new BiquadFilterNode(ctx, { type: 'highpass', frequency: 30 }))
+      // Chest: the big, low exhaust resonance that makes a V8 rumble.
+      .connect(new BiquadFilterNode(ctx, { type: 'peaking', frequency: 130, Q: 1.1, gain: 8 }))
+      .connect(this.rasp)
+      .connect(new GainNode(ctx, { gain: 0.6 }))
+      .connect(new WaveShaperNode(ctx, { curve: softClip(), oversample: '2x' }))
+      .connect(this.muffler)
+      .connect(this.engineGain)
+      .connect(this.panner);
 
     // Tyres on snow: a low, crunchy band of noise. Scrape: a harsh, higher band.
     this.tyreGain = new GainNode(ctx, { gain: 0 });
@@ -96,12 +103,14 @@ class CarVoice {
     const target = !car.engineAlive ? 0 : airborne && throttle > 0 ? SHIFT_RPM : gearRpm(speed, throttle);
     this.rpm += (target - this.rpm) * Math.min(1, dt * (target > this.rpm ? 6 : 3));
     const alive = car.engineAlive ? 1 : 0;
-    const freq = Math.max(20, (this.rpm / 60) * FIRINGS_PER_REV);
-    const ratios = [1, 0.5, 1];
-    this.oscs.forEach((o, i) => o.frequency.setTargetAtTime(freq * ratios[i], now, 0.03));
     const load = throttle * alive;
-    this.engineFilter.frequency.setTargetAtTime(250 + (this.rpm / SHIFT_RPM) * 1400 + load * 1500, now, 0.05);
-    this.engineGain.gain.setTargetAtTime(MIX.engine * this.level * alive * (0.55 + 0.45 * load), now, 0.08);
+    const revs = this.rpm / SHIFT_RPM;
+    this.engine.parameters.get('rpm')!.setTargetAtTime(this.rpm, now, 0.03);
+    this.engine.parameters.get('load')!.setTargetAtTime(load, now, 0.05);
+    // Open throttle brings out the rasp; revs and throttle open the muffler up.
+    this.rasp.gain.setTargetAtTime(-4 + load * 10, now, 0.06);
+    this.muffler.frequency.setTargetAtTime(350 + revs * 1800 + load * 1400, now, 0.05);
+    this.engineGain.gain.setTargetAtTime(MIX.engine * this.level * alive * (0.7 + 0.3 * load), now, 0.08);
 
     const grounded = car.groundedWheels / 4;
     const rolling = Math.min(1, speed / 20) * 0.15;
@@ -114,7 +123,8 @@ class CarVoice {
   dispose(): void {
     const now = this.ctx.currentTime;
     this.panner.disconnect();
-    this.oscs.forEach((o) => o.stop(now + 0.05));
+    this.engine.port.postMessage('stop');
+    this.engine.disconnect();
     this.sources.forEach((s) => s.stop(now + 0.05));
   }
 }
@@ -149,8 +159,8 @@ export class GameAudio implements CarEvents {
     this.engine?.update(dt, camera, cars);
   }
 
-  impact(car: Car, at: THREE.Vector3, severity: number): void {
-    this.engine?.impact(car, at, severity);
+  impact(car: Car, at: THREE.Vector3, severity: number, surface: ContactSurface): void {
+    this.engine?.impact(car, at, severity, surface);
   }
 
   glass(car: Car, at: THREE.Vector3, shattered: boolean): void {
@@ -173,17 +183,30 @@ class AudioEngine {
   private readonly voices = new Map<Car, CarVoice>();
   private readonly windGain: GainNode;
   private readonly windFilter: BiquadFilterNode;
+  /** Engines, tyres and wind; ducked under hits so impacts punch through. */
+  private readonly loops: GainNode;
+  /** The car the listener is following (first in `update`'s list). */
+  private player: Car | null = null;
+  /** Car voices need the engine worklet, which loads asynchronously. */
+  private engineReady = false;
 
   constructor() {
-    const limiter = new DynamicsCompressorNode(this.ctx, { threshold: -10, knee: 6, ratio: 12, attack: 0.003, release: 0.2 });
+    loadEngineWorklet(this.ctx).then(
+      () => (this.engineReady = true),
+      (error) => console.error('Engine sound failed to load', error),
+    );
+    // Safety limiter only: set high so it catches peaks without flattening every hit.
+    const limiter = new DynamicsCompressorNode(this.ctx, { threshold: -4, knee: 4, ratio: 8, attack: 0.002, release: 0.15 });
     this.master = new GainNode(this.ctx, { gain: MIX.master });
     this.master.connect(limiter).connect(this.ctx.destination);
+    this.loops = new GainNode(this.ctx, { gain: 1 });
+    this.loops.connect(this.master);
     this.noise = whiteNoise(this.ctx, 2);
 
     this.windGain = new GainNode(this.ctx, { gain: 0 });
     this.windFilter = new BiquadFilterNode(this.ctx, { type: 'lowpass', frequency: 500, Q: 0.5 });
     const wind = new AudioBufferSourceNode(this.ctx, { buffer: this.noise, loop: true });
-    wind.connect(this.windFilter).connect(this.windGain).connect(this.master);
+    wind.connect(this.windFilter).connect(this.windGain).connect(this.loops);
     wind.start();
   }
 
@@ -193,7 +216,7 @@ class AudioEngine {
 
   /** Call once per frame with every car that should be heard; the first is the player's. */
   update(dt: number, camera: THREE.Camera, cars: readonly Car[]): void {
-    if (this.ctx.state !== 'running') return;
+    if (this.ctx.state !== 'running' || !this.engineReady) return;
     this.placeListener(camera);
 
     for (const [car, voice] of this.voices) {
@@ -204,11 +227,12 @@ class AudioEngine {
     }
     cars.forEach((car, i) => {
       let voice = this.voices.get(car);
-      if (!voice) this.voices.set(car, (voice = new CarVoice(this.ctx, this.master, this.noise, i === 0 ? 1 : MIX.aiEngine)));
+      if (!voice) this.voices.set(car, (voice = new CarVoice(this.ctx, this.loops, this.noise, i === 0 ? 1 : MIX.aiEngine)));
       voice.update(dt, car);
     });
 
     const player = cars[0];
+    this.player = player;
     const speed = player.velocity.length();
     const now = this.ctx.currentTime;
     this.windGain.gain.setTargetAtTime(MIX.wind * Math.min(1, (speed / 45) ** 2), now, 0.1);
@@ -217,18 +241,28 @@ class AudioEngine {
 
   // --- Positional one-shots for car events.
 
-  impact(car: Car, at: THREE.Vector3, severity: number): void {
+  impact(car: Car, at: THREE.Vector3, severity: number, surface: ContactSurface): void {
     const voice = this.voices.get(car);
     const now = this.ctx.currentTime;
     if (!voice || now - voice.lastCrunch < CRUNCH_GAP) return;
     voice.lastCrunch = now;
     const k = Math.min(1, severity / 10);
-    const out = this.oneShotOut(at, MIX.crunch * (0.35 + 0.65 * k));
-    // Body of the crunch: band of noise; crackle on top; a low thump; a short metallic ring.
-    this.noiseBurst(out, 'bandpass', 700 + Math.random() * 700, 0.8, 1, 0.2 + 0.4 * k);
-    this.noiseBurst(out, 'highpass', 3000, 0.7, 0.35, 0.1);
-    this.sweep(out, 'sine', 120, 38, 0.9 * k + 0.2, 0.3);
-    for (let i = 0; i < 3; i++) this.tone(out, 'triangle', 300 + Math.random() * 700, 0.12 * k, 0.25 + 0.3 * k);
+    const out = this.oneShotOut(at, MIX.crunch * (0.2 + 0.8 * k), true);
+    if (surface === 'ground') {
+      // Belly-flopping into snow: a muffled whumpf. Metal only joins in on violent hits.
+      this.bodyHit(out, 0.3 * k, 0.4 + 0.5 * k, 0.12 + 0.15 * k);
+      this.noiseBurst(out, 'lowpass', 500, 0.7, 0.9, 0.12 + 0.15 * k);
+      if (k > 0.5) this.crumple(out, (k - 0.5) * 2);
+      this.duck(car, k * 0.5);
+      return;
+    }
+    // Trees and cars: click for the attack, a heavy body hit, sheet metal crumpling,
+    // then the panels ringing.
+    this.noiseBurst(out, 'highpass', 1800, 0.7, 0.9, 0.025);
+    this.bodyHit(out, k, 0.5 + 0.7 * k, 0.25 + 0.35 * k);
+    this.crumple(out, k);
+    this.panelRing(out, k);
+    this.duck(car, k);
   }
 
   glass(_car: Car, at: THREE.Vector3, shattered: boolean): void {
@@ -250,12 +284,59 @@ class AudioEngine {
     this.noiseBurst(out, 'bandpass', 1500, 1.5, 0.5, 0.12);
   }
 
-  land(_car: Car, at: THREE.Vector3, strength: number): void {
-    const k = Math.min(1, strength / 10);
-    if (k < 0.1) return;
-    const out = this.oneShotOut(at, MIX.thud * k);
-    this.sweep(out, 'sine', 90, 32, 1, 0.28);
-    this.noiseBurst(out, 'lowpass', 300, 0.7, 0.8, 0.18);
+  land(car: Car, at: THREE.Vector3, strength: number): void {
+    const k = THREE.MathUtils.clamp((strength - LANDING.from) / (LANDING.full - LANDING.from), 0, 1);
+    if (k <= 0) return;
+    const out = this.oneShotOut(at, MIX.thud * (0.3 + 0.7 * k), true);
+    // A firm suspension thunk, never a sub boom: landings happen constantly.
+    this.bodyHit(out, 0, 0.3 + 0.4 * k, 0.1 + 0.08 * k);
+    this.noiseBurst(out, 'bandpass', 320, 1, 0.7, 0.09);
+    this.tone(out, 'triangle', 210 + Math.random() * 40, 0.35, 0.08);
+    this.duck(car, k * k * 0.4);
+  }
+
+  // --- Impact layers.
+
+  /**
+   * The weight of a hit: a falling thump plus an octave above it (so small speakers
+   * hear it). `depth` 0..1: light hits stay a higher thunk, heavy ones drop to a sub boom.
+   */
+  private bodyHit(out: AudioNode, depth: number, peak: number, decay: number): void {
+    // Floor at ~45 Hz: lower is felt more than heard, and just sounds odd on headphones.
+    const from = THREE.MathUtils.lerp(150, 100, depth);
+    const to = THREE.MathUtils.lerp(85, 45, depth);
+    this.sweep(out, 'sine', from, to, peak, decay);
+    this.sweep(out, 'triangle', from * 1.8, to * 1.8, peak * 0.45, decay * 0.7);
+  }
+
+  /** Sheet metal folding: a cluster of short, differently pitched noise grains. */
+  private crumple(out: AudioNode, k: number): void {
+    const grains = 3 + Math.round(7 * k);
+    const spread = 0.08 + 0.2 * k;
+    for (let i = 0; i < grains; i++) {
+      this.noiseBurst(out, 'bandpass', 400 + Math.random() * 2200, 1.6, 0.5 + Math.random() * 0.5, 0.02 + Math.random() * 0.05, Math.random() * spread);
+    }
+  }
+
+  /** Body panels ringing after the hit: a few inharmonic partials. */
+  private panelRing(out: AudioNode, k: number): void {
+    for (const f of [173, 281, 397, 563, 811]) {
+      this.tone(out, 'triangle', f * (0.85 + Math.random() * 0.3), 0.06 + 0.1 * k, 0.3 + 0.6 * k * Math.random());
+    }
+  }
+
+  /**
+   * Dips engines and wind for a moment so a hit punches through the mix. Only the
+   * player's own car ducks: other cars' hits pumping your engine sounds like a fault.
+   */
+  private duck(car: Car, k: number): void {
+    if (car !== this.player || k < 0.05) return;
+    const g = this.loops.gain;
+    const t = this.ctx.currentTime;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(1 - MIX.duck * k, t + 0.01);
+    g.setTargetAtTime(1, t + 0.06, 0.15);
   }
 
   // --- Building blocks.
@@ -277,17 +358,23 @@ class AudioEngine {
     l.upZ.setTargetAtTime(u.z, now, 0.02);
   }
 
-  /** A short-lived panner at `at` feeding the master bus; disconnects itself when done. */
-  private oneShotOut(at: THREE.Vector3, level: number): GainNode {
+  /**
+   * A short-lived panner at `at` feeding the master bus; disconnects itself when done.
+   * `saturate` drives the layers through a soft clipper, which glues them and adds
+   * harmonics so low thumps are audible on small speakers.
+   */
+  private oneShotOut(at: THREE.Vector3, level: number, saturate = false): GainNode {
     const gain = new GainNode(this.ctx, { gain: level });
     const panner = new PannerNode(this.ctx, { ...PANNER, positionX: at.x, positionY: at.y, positionZ: at.z });
-    gain.connect(panner).connect(this.master);
+    if (saturate) gain.connect(new WaveShaperNode(this.ctx, { curve: softClip(), oversample: '2x' })).connect(panner);
+    else gain.connect(panner);
+    panner.connect(this.master);
     setTimeout(() => panner.disconnect(), 2000);
     return gain;
   }
 
-  private noiseBurst(out: AudioNode, type: BiquadFilterType, freq: number, q: number, peak: number, decay: number): void {
-    const t = this.ctx.currentTime;
+  private noiseBurst(out: AudioNode, type: BiquadFilterType, freq: number, q: number, peak: number, decay: number, delay = 0): void {
+    const t = this.ctx.currentTime + delay;
     const src = new AudioBufferSourceNode(this.ctx, { buffer: this.noise });
     const env = envelope(this.ctx, t, peak, decay);
     src.connect(new BiquadFilterNode(this.ctx, { type, frequency: freq, Q: q })).connect(env).connect(out);
