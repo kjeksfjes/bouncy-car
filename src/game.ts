@@ -1,6 +1,7 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import { GRAVITY, PHYSICS_STEP } from './constants';
+import { GameAudio } from './audio/audio';
 import { Hud } from './hud';
 import { Input } from './input';
 import { ChaseCamera } from './render/chaseCamera';
@@ -36,6 +37,7 @@ export class Game {
   private readonly chase: ChaseCamera;
   private readonly input = new Input();
   private readonly hud = new Hud();
+  private readonly audio = new GameAudio();
   private readonly trees: TreeLayout;
   /** Drives the player's car while the autopilot is on. */
   private readonly ai: AiDriver;
@@ -73,7 +75,9 @@ export class Game {
   }
 
   private newCar(position: THREE.Vector3, yaw: number, paint?: string): Car {
-    return new Car(COUPE_70S, this.world, this.stage.scene, this.debris, position, yaw, paint);
+    const car = new Car(COUPE_70S, this.world, this.stage.scene, this.debris, position, yaw, paint);
+    car.events = this.audio;
+    return car;
   }
 
   private get allCars(): Car[] {
@@ -87,6 +91,7 @@ export class Game {
     if (this.input.consume('KeyR')) this.car.resetUpright(this.field);
     if (this.input.consume('KeyN')) this.replaceCar();
     if (this.input.consume('KeyP')) this.toggleAutopilot(this.input.shift);
+    if (this.input.consume('KeyM')) this.audio.toggleMute();
     this.input.endFrame();
 
     const controls = new Map<Car, CarInput>();
@@ -123,6 +128,7 @@ export class Game {
       this.aiArrow.position.copy(pos).setY(pos.y + 1.6);
       this.aiArrow.setDirection(this.ai.heading);
     }
+    this.audio.update(dt, this.stage.camera, cars);
     this.hud.update(dt, this.car, this.autopilot);
     this.stage.render();
     requestAnimationFrame(this.frame);

@@ -32,6 +32,8 @@ const _s = new THREE.Vector3();
 export class HingedPanels {
   private readonly panels: HingedPanel[] = [];
   private readonly bodies = new Set<number>();
+  /** Called when a panel tears off its hinge (mesh already in world space). */
+  onTear?: (piece: CarPiece) => void;
 
   constructor(
     private readonly world: RAPIER.World,
@@ -144,6 +146,7 @@ export class HingedPanels {
     this.bodies.delete(body.handle);
     piece.state = 'gone';
     this.debris.adopt(piece.mesh, body);
+    this.onTear?.(piece);
   }
 }
 

@@ -35,6 +35,16 @@ interface Wheel {
   visual: WheelVisual;
 }
 
+/** Things a car reports as they happen (e.g. for sound). Positions are world space. */
+export interface CarEvents {
+  impact(car: Car, at: THREE.Vector3, severity: number): void;
+  glass(car: Car, at: THREE.Vector3, shattered: boolean): void;
+  /** A panel breaking loose or tearing off, or a wheel coming off; size 0..1. */
+  clank(car: Car, at: THREE.Vector3, size: number): void;
+  /** Touching down after a jump; strength = downward speed (m/s). */
+  land(car: Car, at: THREE.Vector3, strength: number): void;
+}
+
 interface PendingImpact {
   own: RAPIER.Collider;
   other: RAPIER.Collider;
@@ -92,6 +102,11 @@ export class Car {
   jumpCount = 0;
   lastJumpAirTime = 0;
   forwardSpeed = 0;
+  /** Controls applied in the last physics step. */
+  lastInput: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false };
+  /** Average sideways slip of the grounded tyres (m/s). */
+  slip = 0;
+  events?: CarEvents;
   /** Whether the body itself (not the wheels) touched anything in the last step. */
   private bodyTouching = false;
 
@@ -122,6 +137,7 @@ export class Car {
     );
 
     this.panels = new HingedPanels(world, scene, debris, this.body, cfg.damage);
+    this.panels.onTear = (piece) => this.events?.clank(this, piece.mesh.position.clone(), 1);
     this.smoke = new Smoke(scene);
     const bp = cfg.blueprint;
     const ventZ = (bp.hood[0] + bp.hood[1]) / 2;
@@ -211,6 +227,7 @@ export class Car {
 
     const forwardSpeed = _lin.dot(_fwd);
     this.forwardSpeed = forwardSpeed;
+    this.lastInput = input;
 
     // Steering: less lock at speed, rate-limited for a weighty feel.
     const S = cfg.steering;
@@ -238,6 +255,7 @@ export class Car {
     const mEff = cfg.mass / 4;
     _down.copy(_up).negate();
     let grounded = 0;
+    let slipSum = 0;
 
     for (const wheel of this.wheels) {
       if (!wheel.attached) continue;
@@ -320,6 +338,7 @@ export class Car {
       this.body.applyImpulseAtPoint(_imp, _pt, true);
 
       wheel.spinSpeed = handbrake ? 0 : vLong / radius;
+      slipSum += Math.abs(vLat);
     }
 
     // --- Air control (also works when stuck on the roof: a handy self-righting tool).
@@ -342,8 +361,10 @@ export class Car {
         this.lastJumpAirTime = this.airTime;
         this.jumpCount++;
       }
+      if (this.airTime > 0.25) this.events?.land(this, _p.clone(), Math.max(0, -_lin.y));
       this.airTime = 0;
     }
+    this.slip = grounded > 0 ? slipSum / grounded : 0;
 
     // --- Aerodynamic drag ∝ v².
     _imp.copy(_lin).multiplyScalar(-_lin.length() * cfg.aeroDrag * dt);
@@ -433,6 +454,7 @@ export class Car {
 
   private applyImpact(local: THREE.Vector3, severity: number): void {
     const d = this.cfg.damage;
+    this.events?.impact(this, this.localToWorld(local), severity);
     const dir = inwardDirection(local, this.hullCenter, this.hullHalf);
     const radius = d.dentRadius * (1 + Math.min(severity, 10) * 0.05);
     applyDent(this.model.pieces, local, dir, Math.min(d.maxDent, severity * d.dentPerDv), radius, d.maxDent);
@@ -475,6 +497,7 @@ export class Car {
       .setDensity(300)
       .setFriction(0.9);
     this.release(wheel.visual.pivot, [collider]);
+    this.events?.clank(this, wheel.visual.pivot.position.clone(), 1);
   }
 
   /** Swaps a pane's material for a crack pattern centred on the car-local hit point. */
@@ -494,6 +517,7 @@ export class Car {
       flatShading: true,
     });
     piece.mesh.material = pane.cracked;
+    this.events?.glass(this, piece.mesh.getWorldPosition(new THREE.Vector3()), false);
   }
 
   /** Removes a pane and bursts it into shards sampled across its surface. */
@@ -520,6 +544,7 @@ export class Car {
       points.push(a.clone().addScaledVector(b.sub(a), r1).addScaledVector(c.sub(a), r2).applyMatrix4(mesh.matrixWorld));
     }
     this.debris.shatter(points, this.velocity);
+    this.events?.glass(this, mesh.getWorldPosition(new THREE.Vector3()), true);
     mesh.removeFromParent();
     mesh.geometry.dispose();
     this.disposeCrack(piece);
@@ -544,6 +569,7 @@ export class Car {
     this.snapRootToPhysics();
     if (piece.hinge) {
       this.panels.hinge(piece, piece.hinge, impact, (p) => this.pointVelocity(p));
+      this.events?.clank(this, piece.mesh.position.clone(), 0.5);
       return;
     }
     piece.state = 'gone';
@@ -635,6 +661,15 @@ export class Car {
       }
     }
     this.smoke.update(dt);
+  }
+
+  /** True while the body itself drags along something (for scrape sounds). */
+  get scraping(): boolean {
+    return this.bodyTouching;
+  }
+
+  private localToWorld(local: THREE.Vector3): THREE.Vector3 {
+    return local.clone().applyQuaternion(this.currQuat).add(this.currPos);
   }
 
   get position(): THREE.Vector3 {

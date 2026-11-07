@@ -34,6 +34,7 @@ mountain. Hit bumps, catch air, land hard, lose a bumper, keep going. The fun is
 | AI traffic | Up to 4 AI cars come and go around the player, each with its own cruise speed. They spawn and despawn only out of the camera's sight (never in front of you). P hands the player's car to the same AI (autopilot). |
 | Controls | Keyboard: W/S or ↑/↓ for throttle and brake/reverse, A/D or ←/→ to steer, Space for handbrake, R to reset upright (keeps damage), N for a new car. In the air: hold S to level the car toward its flight path (otherwise free physics), A/D roll (W does nothing, since it's usually held). |
 | HUD | Speed, car integrity, airtime, controls hint. |
+| Audio | Synthesised live with the Web Audio API, positional: V8 engine (pitch from RPM through simulated gears), tyre crunch and sliding, body scrape, wind, plus one-shots for impacts, glass cracking/shattering, panels clanking loose and landings. M mutes. |
 
 ## Later (not v0.1)
 
