@@ -65,14 +65,27 @@ export class Traffic {
     return this.active;
   }
 
+  /** Removes a car right away (e.g. its physics blew up). */
+  remove(car: Car): void {
+    const i = this.active.findIndex((a) => a.car === car);
+    if (i < 0) return;
+    car.dispose();
+    this.active.splice(i, 1);
+  }
+
   update(dt: number, player: THREE.Vector3, view: Visibility): void {
     const T = TRAFFIC;
     for (let i = this.active.length - 1; i >= 0; i--) {
       const { car } = this.active[i];
       const pos = car.position;
-      const underground = pos.y < this.field.height(pos.x, pos.z) - T.underground;
-      const far = player.distanceTo(pos) > (car.engineAlive ? T.despawnDistance : T.wreckDespawnDistance);
-      if (underground || (far && !view.canSee(pos, T.carViewRadius))) {
+      // A car whose physics blew up (non-finite position) goes immediately, before any
+      // terrain lookup, which can't handle such positions.
+      const distance = player.distanceTo(pos);
+      const blewUp = !Number.isFinite(distance);
+      if (blewUp) console.warn('AI car physics blew up; removing it', { position: { ...pos } });
+      const underground = !blewUp && pos.y < this.field.height(pos.x, pos.z) - T.underground;
+      const far = distance > (car.engineAlive ? T.despawnDistance : T.wreckDespawnDistance);
+      if (blewUp || underground || (far && !view.canSee(pos, T.carViewRadius))) {
         car.dispose();
         this.active.splice(i, 1);
       }

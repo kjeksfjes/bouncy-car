@@ -47,6 +47,11 @@
         background: #2b7de9; color: #fff; font-weight: 800; letter-spacing: 0.08em; display: none;
       }
       #autopilot.visible { display: block; }
+      #error {
+        position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: min(640px, calc(100% - 32px));
+        padding: 10px 14px; border-radius: 8px; background: #b3261e; color: #fff; font-weight: 600;
+      }
+      #error[hidden] { display: none; }
     </style>
   </head>
   <body>
@@ -59,6 +64,7 @@
       </div>
       <div id="air"></div>
       <div id="autopilot">AUTOPILOT</div>
+      <div id="error" hidden></div>
       <div class="panel">
         <div class="speed"><span id="speed">0</span> <small>km/h</small></div>
         <div class="bar"><div id="integrity"></div></div>

@@ -17,6 +17,8 @@ import { LOAD_RADIUS, Terrain, type StreamCenter } from './world/terrain';
 import { TerrainField } from './world/terrainField';
 import { TreeLayout } from './world/trees';
 
+/** No car legitimately goes this fast (m/s); beyond it the physics has blown up. */
+const SANE_SPEED = 400;
 /** Avoid a spiral of death after a long stall (tab switch, breakpoint). */
 const MAX_STEPS_PER_FRAME = 5;
 /** Chunks built per frame while streaming; the first batch is built up front. */
@@ -42,6 +44,8 @@ export class Game {
   private readonly juice: Juice;
   /** Remaining hit-stop: the simulation is frozen while this is above zero. */
   private hitStop = 0;
+  /** Last sane position of the player's car, where N respawns if the physics blew up. */
+  private readonly lastSafe = new THREE.Vector3();
   private readonly bufferSize = new THREE.Vector2();
   private readonly trees: TreeLayout;
   /** Drives the player's car while the autopilot is on. */
@@ -94,7 +98,32 @@ export class Game {
     return [this.car, ...this.traffic.cars.map((a) => a.car)];
   }
 
+  /**
+   * One frame. Errors are shown on screen and logged (once per message) instead of
+   * silently killing the loop, so a crash leaves something to report.
+   */
   private frame = (now: number): void => {
+    try {
+      this.tick(now);
+    } catch (error) {
+      this.reportError(error);
+    }
+    requestAnimationFrame(this.frame);
+  };
+
+  private readonly reportedErrors = new Set<string>();
+
+  private reportError(error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    if (this.reportedErrors.has(message)) return;
+    this.reportedErrors.add(message);
+    console.error(error);
+    const box = document.getElementById('error')!;
+    box.textContent = `Something broke: ${message} (details in the browser console)`;
+    box.hidden = false;
+  }
+
+  private tick(now: number): void {
     const dt = Math.min(0.1, (now - this.lastTime) / 1000);
     this.lastTime = now;
 
@@ -123,6 +152,8 @@ export class Game {
       this.accumulator -= PHYSICS_STEP;
     }
 
+    this.checkPhysicsSanity(cars);
+
     const alpha = this.accumulator / PHYSICS_STEP;
     for (const car of cars) car.syncVisual(alpha, dt);
     const pos = this.car.position;
@@ -145,8 +176,7 @@ export class Game {
     this.audio.update(dt, this.stage.camera, cars);
     this.hud.update(dt, this.car, this.autopilot);
     this.stage.render();
-    requestAnimationFrame(this.frame);
-  };
+  }
 
   /** P toggles the autopilot; Shift+P toggles its heading arrow (switching the autopilot on if needed). */
   private toggleAutopilot(withHeading: boolean): void {
@@ -159,6 +189,26 @@ export class Game {
     }
   }
 
+  /**
+   * Catches a car whose simulation blew up (non-finite or absurd speed) before its
+   * garbage position reaches terrain, AI or audio code. AI cars are removed; the
+   * player's car is reported on screen.
+   */
+  private checkPhysicsSanity(cars: readonly Car[]): void {
+    for (const car of cars) {
+      const v = car.body.linvel();
+      const t = car.body.translation();
+      const speed = Math.hypot(v.x, v.y, v.z);
+      if (speed < SANE_SPEED && Number.isFinite(t.x + t.y + t.z)) {
+        if (car === this.car) this.lastSafe.set(t.x, t.y, t.z);
+        continue;
+      }
+      console.error('Car physics blew up', { player: car === this.car, position: { ...t }, velocity: { ...v } });
+      if (car !== this.car) this.traffic.remove(car);
+      else throw new Error(`Your car's physics blew up (speed ${speed.toFixed(0)} m/s). Press N for a new car.`);
+    }
+  }
+
   private drive(driver: AiDriver, car: Car, dt: number): CarInput {
     const decision = driver.update(dt, car);
     if (decision.reset) car.resetUpright(this.field);
@@ -166,7 +216,7 @@ export class Game {
   }
 
   private replaceCar(): void {
-    const t = this.car.body.translation();
+    const t = this.lastSafe;
     const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(this.car.model.root.quaternion);
     const yaw = Math.atan2(-fwd.x, -fwd.z);
     this.car.dispose();

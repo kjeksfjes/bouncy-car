@@ -109,10 +109,15 @@ export class Debris {
       item.restTime = resting ? item.restTime + dt : 0;
 
       _p.set(t.x, t.y, t.z);
-      const underground = t.y < this.field.height(t.x, t.z) - C.underground;
-      const visible = !underground && view.canSee(_p, C.viewRadius);
+      // `!(d <= max)` is also true for NaN/Infinity: a body that blew up is far by definition,
+      // and must go before the terrain lookup below, which can't handle such positions.
+      const distance = player.distanceTo(_p);
+      if (!Number.isFinite(distance)) console.warn('Debris body blew up; removing it', { position: { ...t }, velocity: { ...v } });
+      const far = !(distance <= C.hiddenMaxDistance);
+      const underground = !far && t.y < this.field.height(t.x, t.z) - C.underground;
+      const visible = !far && !underground && view.canSee(_p, C.viewRadius);
 
-      if (!visible && (underground || item.restTime > C.hiddenRestTime || player.distanceTo(_p) > C.hiddenMaxDistance)) {
+      if (!visible && (far || underground || item.restTime > C.hiddenRestTime)) {
         this.world.removeRigidBody(body);
         this.removeObject(item);
         return false;

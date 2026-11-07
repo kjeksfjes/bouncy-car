@@ -13,6 +13,8 @@ const AI = {
   /** How far ahead to look: base + per m/s of speed. */
   lookBase: 15,
   lookPerSpeed: 1.6,
+  /** Cap on the look-ahead (m); also bounds the scan if speed is ever garbage. */
+  lookMax: 80,
   sampleStep: 2.5,
   /** Gap to keep between the car's centre line and a trunk (≈ half car width + margin). */
   clearance: 2.2,
@@ -87,7 +89,7 @@ export class AiDriver {
     }
 
     const carYaw = Math.atan2(-_fwd.x, -_fwd.z);
-    const look = AI.lookBase + Math.max(0, speed) * AI.lookPerSpeed;
+    const look = Math.min(AI.lookMax, AI.lookBase + Math.max(0, speed) * AI.lookPerSpeed);
     let bestYaw = 0;
     let bestCost = Infinity;
     let bestTreeDist = Infinity;

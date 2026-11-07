@@ -29,6 +29,9 @@ const FEATURES = {
   waveScale: 220,
 };
 
+/** Slots beyond this (≈ 4500 km downhill) are treated as a bug, not terrain. */
+const MAX_SLOT = 10_000;
+
 interface Feature {
   /** Z where the drop begins (before the wave offset). */
   zStart: number;
@@ -53,6 +56,9 @@ export class DescentFeatures {
     if (z >= 0) return 0;
     const F = FEATURES;
     const k = Math.floor(-z / F.slot);
+    // The drop sum walks every slot up to k: refuse absurd positions (a body that blew
+    // up) loudly instead of looping for ever.
+    if (!(k <= MAX_SLOT)) throw new Error(`Terrain height requested at z=${z}, outside the playable range`);
     let h = -this.cumulativeDrop(k);
     const f = this.feature(k);
     if (!f) return h;
