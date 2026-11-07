@@ -20,7 +20,20 @@ export interface CarInput {
   handbrake: boolean;
 }
 
-interface Wheel {
+/** What a body contact touched: snow/rock ground, a tree trunk, or another moving body. */
+export type ContactSurface = 'ground' | 'tree' | 'metal';
+
+/** Read-only view of a tyre, for effects. */
+export interface TyreState {
+  readonly attached: boolean;
+  readonly grounded: boolean;
+  /** World-space contact patch (valid while grounded). */
+  readonly contact: THREE.Vector3;
+  /** Sideways slip speed (m/s). */
+  readonly slip: number;
+}
+
+interface Wheel extends TyreState {
   /** Suspension top mount, car-local. */
   anchor: THREE.Vector3;
   front: boolean;
@@ -32,12 +45,14 @@ interface Wheel {
   /** Current spring length, also drives the visual wheel position. */
   suspLen: number;
   spinSpeed: number;
+  contact: THREE.Vector3;
+  slip: number;
   visual: WheelVisual;
 }
 
 /** Things a car reports as they happen (e.g. for sound). Positions are world space. */
 export interface CarEvents {
-  impact(car: Car, at: THREE.Vector3, severity: number): void;
+  impact(car: Car, at: THREE.Vector3, severity: number, surface: ContactSurface): void;
   glass(car: Car, at: THREE.Vector3, shattered: boolean): void;
   /** A panel breaking loose or tearing off, or a wheel coming off; size 0..1. */
   clank(car: Car, at: THREE.Vector3, size: number): void;
@@ -188,6 +203,8 @@ export class Car {
           compression: 0,
           suspLen: cfg.suspension.restLength,
           spinSpeed: 0,
+          contact: new THREE.Vector3(),
+          slip: 0,
           visual: this.model.wheels[i++],
         });
       }
@@ -339,6 +356,8 @@ export class Car {
 
       wheel.spinSpeed = handbrake ? 0 : vLong / radius;
       slipSum += Math.abs(vLat);
+      wheel.contact.copy(_contact);
+      wheel.slip = Math.abs(vLat);
     }
 
     // --- Air control (also works when stuck on the roof: a handy self-righting tool).
@@ -412,9 +431,16 @@ export class Car {
       if (follows && piece.state !== 'gone' && this.piece(follows).state === 'gone') this.shatter(piece);
     }
     this.bodyTouching = false;
+    let scrapeFound = false;
     for (const own of this.colliders.values()) {
       this.world.contactPairsWith(own, (other) =>
-        this.forEachContact(own, other, () => (this.bodyTouching = true)),
+        this.forEachContact(own, other, (local) => {
+          this.bodyTouching = true;
+          if (scrapeFound) return;
+          scrapeFound = true;
+          this.scrapePoint.copy(this.localToWorld(local));
+          this.scrapeSurface = surfaceOf(other);
+        }),
       );
     }
     const d = this.cfg.damage;
@@ -430,7 +456,7 @@ export class Car {
         count++;
       });
       // The pair can separate within the step (bounce); then there's no point to dent.
-      if (count > 0) this.applyImpact(sum.divideScalar(count), severity);
+      if (count > 0) this.applyImpact(sum.divideScalar(count), severity, surfaceOf(impact.other));
     }
     this.pending.clear();
   }
@@ -452,9 +478,9 @@ export class Car {
     });
   }
 
-  private applyImpact(local: THREE.Vector3, severity: number): void {
+  private applyImpact(local: THREE.Vector3, severity: number, surface: ContactSurface): void {
     const d = this.cfg.damage;
-    this.events?.impact(this, this.localToWorld(local), severity);
+    this.events?.impact(this, this.localToWorld(local), severity, surface);
     const dir = inwardDirection(local, this.hullCenter, this.hullHalf);
     const radius = d.dentRadius * (1 + Math.min(severity, 10) * 0.05);
     applyDent(this.model.pieces, local, dir, Math.min(d.maxDent, severity * d.dentPerDv), radius, d.maxDent);
@@ -663,9 +689,17 @@ export class Car {
     this.smoke.update(dt);
   }
 
-  /** True while the body itself drags along something (for scrape sounds). */
+  /** True while the body itself drags along something (for scrape sounds and sparks). */
   get scraping(): boolean {
     return this.bodyTouching;
+  }
+
+  /** World-space point and surface of the body's current contact, while scraping. */
+  readonly scrapePoint = new THREE.Vector3();
+  scrapeSurface: ContactSurface = 'ground';
+
+  get tyres(): readonly TyreState[] {
+    return this.wheels;
   }
 
   private localToWorld(local: THREE.Vector3): THREE.Vector3 {
@@ -701,4 +735,10 @@ export class Car {
     this.currPos.set(t.x, t.y, t.z);
     this.currQuat.set(r.x, r.y, r.z, r.w);
   }
+}
+
+/** Classifies what a contact touched: moving bodies are cars or debris, cylinders are tree trunks. */
+function surfaceOf(other: RAPIER.Collider): ContactSurface {
+  if (other.parent()?.isDynamic()) return 'metal';
+  return other.shapeType() === RAPIER.ShapeType.Cylinder ? 'tree' : 'ground';
 }

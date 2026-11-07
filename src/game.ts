@@ -5,11 +5,12 @@ import { GameAudio } from './audio/audio';
 import { Hud } from './hud';
 import { Input } from './input';
 import { ChaseCamera } from './render/chaseCamera';
+import { Juice } from './render/juice';
 import { Stage } from './render/stage';
 import { Visibility } from './render/visibility';
 import { Traffic } from './traffic';
 import { AiDriver } from './vehicle/aiDriver';
-import { Car, type CarInput } from './vehicle/car';
+import { Car, type CarEvents, type CarInput } from './vehicle/car';
 import { COUPE_70S } from './vehicle/carConfig';
 import { Debris } from './world/debris';
 import { LOAD_RADIUS, Terrain, type StreamCenter } from './world/terrain';
@@ -38,6 +39,10 @@ export class Game {
   private readonly input = new Input();
   private readonly hud = new Hud();
   private readonly audio = new GameAudio();
+  private readonly juice: Juice;
+  /** Remaining hit-stop: the simulation is frozen while this is above zero. */
+  private hitStop = 0;
+  private readonly bufferSize = new THREE.Vector2();
   private readonly trees: TreeLayout;
   /** Drives the player's car while the autopilot is on. */
   private readonly ai: AiDriver;
@@ -61,6 +66,11 @@ export class Game {
     this.debris = new Debris(this.stage.scene, this.world, this.field);
     this.traffic = new Traffic(this.field, this.trees, this.terrain, (at, yaw, paint) => this.newCar(at, yaw, paint));
     this.chase = new ChaseCamera(this.stage.camera, this.field);
+    this.juice = new Juice(
+      this.stage.scene, this.field, this.chase, this.stage.camera,
+      (car) => car === this.car,
+      (seconds) => (this.hitStop = Math.max(this.hitStop, seconds)),
+    );
 
     const spawn = new THREE.Vector3(0, this.field.height(0, 0) + 1.5, 0);
     this.terrain.update([{ position: spawn, radius: LOAD_RADIUS }], INITIAL_CHUNKS);
@@ -76,7 +86,7 @@ export class Game {
 
   private newCar(position: THREE.Vector3, yaw: number, paint?: string): Car {
     const car = new Car(COUPE_70S, this.world, this.stage.scene, this.debris, position, yaw, paint);
-    car.events = this.audio;
+    car.events = fanOut(this.audio, this.juice);
     return car;
   }
 
@@ -99,7 +109,10 @@ export class Game {
     for (const a of this.traffic.cars) controls.set(a.car, this.drive(a.driver, a.car, dt));
 
     const cars = this.allCars;
-    this.accumulator = Math.min(this.accumulator + dt, PHYSICS_STEP * MAX_STEPS_PER_FRAME);
+    // Hit-stop freezes the simulation; the camera (and its shake) keeps running.
+    const simDt = this.hitStop > 0 ? 0 : dt;
+    this.hitStop = Math.max(0, this.hitStop - dt);
+    this.accumulator = Math.min(this.accumulator + simDt, PHYSICS_STEP * MAX_STEPS_PER_FRAME);
     while (this.accumulator >= PHYSICS_STEP) {
       for (const car of cars) car.step(PHYSICS_STEP, controls.get(car)!);
       this.world.step(this.events);
@@ -128,6 +141,7 @@ export class Game {
       this.aiArrow.position.copy(pos).setY(pos.y + 1.6);
       this.aiArrow.setDirection(this.ai.heading);
     }
+    this.juice.update(dt, cars, this.stage.renderer.getDrawingBufferSize(this.bufferSize).y / 2);
     this.audio.update(dt, this.stage.camera, cars);
     this.hud.update(dt, this.car, this.autopilot);
     this.stage.render();
@@ -159,4 +173,14 @@ export class Game {
     this.car = this.newCar(new THREE.Vector3(t.x, this.field.height(t.x, t.z) + 2, t.z), yaw);
     this.hud.reset();
   }
+}
+
+/** Forwards every car event to several listeners (sound, visual effects). */
+function fanOut(...targets: CarEvents[]): CarEvents {
+  return {
+    impact: (...args) => targets.forEach((t) => t.impact(...args)),
+    glass: (...args) => targets.forEach((t) => t.glass(...args)),
+    clank: (...args) => targets.forEach((t) => t.clank(...args)),
+    land: (...args) => targets.forEach((t) => t.land(...args)),
+  };
 }

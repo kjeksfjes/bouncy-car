@@ -122,15 +122,57 @@ class CarVoice {
 /**
  * All game sound, synthesised with the Web Audio API: per-car engine/tyre/scrape
  * loops, wind for the listener, and positional one-shots for car events.
+ *
+ * Browsers only allow an AudioContext after a user gesture, so the real engine is
+ * created on the first key press or click; until then every call is a no-op.
  */
 export class GameAudio implements CarEvents {
+  private engine: AudioEngine | null = null;
+  private muted = false;
+
+  constructor() {
+    const start = () => {
+      if (this.engine) return;
+      this.engine = new AudioEngine();
+      this.engine.setMuted(this.muted);
+    };
+    window.addEventListener('keydown', start, { once: true });
+    window.addEventListener('pointerdown', start, { once: true });
+  }
+
+  toggleMute(): void {
+    this.muted = !this.muted;
+    this.engine?.setMuted(this.muted);
+  }
+
+  update(dt: number, camera: THREE.Camera, cars: readonly Car[]): void {
+    this.engine?.update(dt, camera, cars);
+  }
+
+  impact(car: Car, at: THREE.Vector3, severity: number): void {
+    this.engine?.impact(car, at, severity);
+  }
+
+  glass(car: Car, at: THREE.Vector3, shattered: boolean): void {
+    this.engine?.glass(car, at, shattered);
+  }
+
+  clank(car: Car, at: THREE.Vector3, size: number): void {
+    this.engine?.clank(car, at, size);
+  }
+
+  land(car: Car, at: THREE.Vector3, strength: number): void {
+    this.engine?.land(car, at, strength);
+  }
+}
+
+class AudioEngine {
   private readonly ctx = new AudioContext();
   private readonly master: GainNode;
   private readonly noise: AudioBuffer;
   private readonly voices = new Map<Car, CarVoice>();
   private readonly windGain: GainNode;
   private readonly windFilter: BiquadFilterNode;
-  private muted = false;
 
   constructor() {
     const limiter = new DynamicsCompressorNode(this.ctx, { threshold: -10, knee: 6, ratio: 12, attack: 0.003, release: 0.2 });
@@ -143,20 +185,10 @@ export class GameAudio implements CarEvents {
     const wind = new AudioBufferSourceNode(this.ctx, { buffer: this.noise, loop: true });
     wind.connect(this.windFilter).connect(this.windGain).connect(this.master);
     wind.start();
-
-    // Browsers only allow audio after a user gesture.
-    const resume = () => void this.ctx.resume();
-    window.addEventListener('keydown', resume);
-    window.addEventListener('pointerdown', resume);
   }
 
-  toggleMute(): void {
-    this.muted = !this.muted;
-    this.master.gain.setTargetAtTime(this.muted ? 0 : MIX.master, this.ctx.currentTime, 0.05);
-  }
-
-  get isMuted(): boolean {
-    return this.muted;
+  setMuted(muted: boolean): void {
+    this.master.gain.setTargetAtTime(muted ? 0 : MIX.master, this.ctx.currentTime, 0.05);
   }
 
   /** Call once per frame with every car that should be heard; the first is the player's. */
@@ -183,7 +215,7 @@ export class GameAudio implements CarEvents {
     this.windFilter.frequency.setTargetAtTime(350 + speed * 25, now, 0.1);
   }
 
-  // --- CarEvents: positional one-shots.
+  // --- Positional one-shots for car events.
 
   impact(car: Car, at: THREE.Vector3, severity: number): void {
     const voice = this.voices.get(car);

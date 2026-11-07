@@ -1,5 +1,17 @@
+import { createNoise2D } from 'simplex-noise';
 import * as THREE from 'three';
 import type { TerrainField } from '../world/terrainField';
+
+/** Screen shake: trauma (0..1) decays over time; shake strength is trauma². */
+const SHAKE = {
+  decay: 1.4,
+  /** Max positional jitter (m) and roll (rad) at full trauma. */
+  offset: 0.35,
+  roll: 0.07,
+  frequency: 22,
+};
+/** Landing dip: a damped spring pulling the camera back to rest. */
+const KICK = { stiffness: 90, damping: 14 };
 
 const _fwd = new THREE.Vector3();
 const _velDir = new THREE.Vector3();
@@ -12,13 +24,29 @@ export class ChaseCamera {
   private readonly pos = new THREE.Vector3();
   private readonly look = new THREE.Vector3();
   private initialized = false;
+  private trauma = 0;
+  private time = 0;
+  private kickY = 0;
+  private kickVel = 0;
+  private readonly noise = createNoise2D();
 
   constructor(
     private readonly camera: THREE.PerspectiveCamera,
     private readonly field: TerrainField,
   ) {}
 
+  /** Adds screen shake (0..1); repeated hits stack up to the cap. */
+  addTrauma(amount: number): void {
+    this.trauma = Math.min(1, this.trauma + amount);
+  }
+
+  /** Dips the camera down (m/s of downward kick), e.g. on landing. */
+  kick(amount: number): void {
+    this.kickVel -= amount;
+  }
+
   update(dt: number, target: THREE.Object3D, velocity: THREE.Vector3): void {
+    this.time += dt;
     _fwd.set(0, 0, -1).applyQuaternion(target.quaternion).setY(0);
     _velDir.copy(velocity).setY(0);
     const speed = _velDir.length();
@@ -50,9 +78,21 @@ export class ChaseCamera {
     const ground = this.field.height(this.pos.x, this.pos.z) + 1.2;
     if (this.pos.y < ground) this.pos.y = ground;
 
+    this.kickVel += (-this.kickY * KICK.stiffness - this.kickVel * KICK.damping) * dt;
+    this.kickY += this.kickVel * dt;
+
+    const shake = this.trauma * this.trauma;
+    this.trauma = Math.max(0, this.trauma - SHAKE.decay * dt);
+    const n = (seed: number) => this.noise(this.time * SHAKE.frequency, seed);
     this.camera.position.copy(this.pos);
+    this.camera.position.y += this.kickY;
+    this.camera.position.x += n(1) * shake * SHAKE.offset;
+    this.camera.position.y += n(2) * shake * SHAKE.offset;
+    this.camera.position.z += n(3) * shake * SHAKE.offset;
     this.camera.lookAt(this.look);
-    const fov = 60 + Math.min(speed, 50) * 0.25;
+    this.camera.rotateZ(n(4) * shake * SHAKE.roll);
+    // Wider view at speed sells the velocity.
+    const fov = 60 + Math.min(speed, 55) * 0.32;
     this.camera.fov += (fov - this.camera.fov) * (1 - Math.exp(-2 * dt));
     this.camera.updateProjectionMatrix();
   }

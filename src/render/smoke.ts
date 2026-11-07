@@ -14,7 +14,7 @@ interface Puff {
 let softDot: THREE.Texture | null = null;
 
 /** Shared round, soft-edged sprite texture. */
-function softDotTexture(): THREE.Texture {
+export function softDotTexture(): THREE.Texture {
   if (softDot) return softDot;
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 64;
