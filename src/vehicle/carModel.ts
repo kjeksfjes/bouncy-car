@@ -141,7 +141,7 @@ function planarProjection(geometry: THREE.BufferGeometry): GlassPane {
 
 /** Body parts that can be knocked off. Everything else stays on and only dents. */
 /** Small trim that gets knocked clean off: fewer hit points, light debris. */
-const TRIM = new Set(['grille', 'grille-frame', 'mirror-left', 'mirror-right']);
+const TRIM = new Set(['grille', 'grille-frame', 'mirror-left', 'mirror-right', 'exhaust-tip-left', 'exhaust-tip-right']);
 const DETACHABLE = new Set(['hood', 'trunk', 'door-left', 'door-right', 'bumper-front', 'bumper-rear', ...TRIM]);
 const PANEL_MASS = 20;
 const TRIM_MASS = 3;
@@ -443,6 +443,9 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     [put(new THREE.BoxGeometry(0.16, 0.08, 0.7), -0.26, 0.86, -1.45, 0, 0.5), mat.chrome],
     [put(new THREE.BoxGeometry(0.16, 0.08, 0.7), 0.26, 0.86, -1.45, 0, -0.5), mat.chrome],
     [put(new THREE.CylinderGeometry(0.2, 0.2, 0.06, 12), 0, 0.88, -1.45), mat.chrome],
+    // Exhaust manifolds along the block's sides; the exhaust pipes start at their rear ends.
+    [put(new THREE.BoxGeometry(0.06, 0.07, 0.5), -0.31, 0.55, -1.5), mat.steel],
+    [put(new THREE.BoxGeometry(0.06, 0.07, 0.5), 0.31, 0.55, -1.5), mat.steel],
     [put(new THREE.BoxGeometry(1.1, 0.4, 0.08, 8), 0, 0.66, -2.18), mat.dark],
     [put(new THREE.BoxGeometry(0.24, 0.2, 0.18), 0.55, 0.62, -2.0), mat.dark],
     [put(new THREE.BoxGeometry(0.04, 0.03, 0.04), 0.6, 0.735, -2.04), mat.taillight],
@@ -453,6 +456,33 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     [put(new THREE.CylinderGeometry(0.32, 0.32, 0.2, 14), 0.35, 0.5, 2.0), mat.tire],
     [put(new THREE.CylinderGeometry(0.19, 0.19, 0.21, 10), 0.35, 0.5, 2.0), mat.chrome],
   ]);
+
+  // Twin exhaust (see the blueprint): a pipe with its muffler per side, and a chrome tip that
+  // can be knocked off, baring the pipe's dark open end. The pipe is subdivided along its
+  // length so it dents and crushes with the floor.
+  const ex = bp.exhaust;
+  const Y = new THREE.Vector3(0, 1, 0);
+  for (const side of [-1, 1]) {
+    const name = side > 0 ? 'right' : 'left';
+    const route = ex.route.map(([x, h, z]) => at(side * x, h, z));
+    const curve = new THREE.CatmullRomCurve3(route, false, 'centripetal');
+    const end = route[route.length - 1];
+    const dir = end.clone().sub(route[route.length - 2]).normalize();
+    const facing = new THREE.Quaternion().setFromUnitVectors(Y, dir);
+    const m = ex.muffler;
+    assemble(`exhaust-${name}`, [
+      [new THREE.TubeGeometry(curve, Math.ceil(curve.getLength() / 0.08), ex.pipeRadius, 6), mat.steel],
+      [put(new THREE.CylinderGeometry(0.5, 0.5, m.z[1] - m.z[0], 12, 4).scale(m.width, 1, m.height), side * m.x, m.h, (m.z[0] + m.z[1]) / 2, Math.PI / 2), mat.steel],
+      [new THREE.CylinderGeometry(ex.pipeRadius * 0.9, ex.pipeRadius * 0.9, 0.004, 6).applyQuaternion(facing).translate(end.x, end.y, end.z).translate(-dir.x * 0.005, -dir.y * 0.005, -dir.z * 0.005), mat.dark],
+    ]);
+    // The tip flares toward its mouth; a dark disc just proud of the mouth reads as the opening.
+    const tipCentre = end.clone().addScaledVector(dir, ex.tip.length / 2 - 0.04);
+    const mouth = end.clone().addScaledVector(dir, ex.tip.length - 0.04 + 0.002);
+    assemble(`exhaust-tip-${name}`, [
+      [new THREE.CylinderGeometry(ex.tip.radius, ex.tip.radius * 0.85, ex.tip.length, 10).applyQuaternion(facing).translate(tipCentre.x, tipCentre.y, tipCentre.z), mat.chrome],
+      [new THREE.CylinderGeometry(ex.tip.radius * 0.8, ex.tip.radius * 0.8, 0.004, 10).applyQuaternion(facing).translate(mouth.x, mouth.y, mouth.z), mat.dark],
+    ]);
+  }
 
   // Wheels: tyre, steel wheel with five lug nuts, and a chrome hubcap covering them.
   const W = cfg.wheels;

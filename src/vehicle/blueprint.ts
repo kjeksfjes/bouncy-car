@@ -59,6 +59,16 @@ export interface CarBlueprint {
     depth: number;
   };
   hoodBulge: { from: number; to: number; halfWidth: number; height: number };
+  /** Twin exhaust under the floor, mirrored to both sides. Heights as for the body. */
+  exhaust: {
+    /** Pipe centre line on the right side, [x, height, z], from the manifold to the tip. */
+    route: readonly (readonly [number, number, number])[];
+    pipeRadius: number;
+    /** One muffler per pipe: Z range, centre x and height, and its oval cross-section. */
+    muffler: { z: readonly [number, number]; x: number; h: number; width: number; height: number };
+    /** Chrome tip slid over the pipe's end: radius at the mouth, length. */
+    tip: { radius: number; length: number };
+  };
 }
 
 export function sample(curve: Curve, z: number): number {

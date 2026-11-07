@@ -209,6 +209,22 @@ const COUPE_BLUEPRINT: CarBlueprint = {
     depth: 0.06,
   },
   hoodBulge: { from: -2.1, to: -0.95, halfWidth: 0.45, height: 0.05 },
+  // Traced from the underside and rear views (ref/1970s-muscle-car/back-underside.png, ≈234 px/m measured
+  // between the axles). The underside drawing's rear overhang is shorter than the side view's,
+  // so the run past the rear axle is stretched to reach the tail. Out of the manifold, down
+  // through the floor beside the gearbox, in toward the driveshaft to a muffler ahead of the rear
+  // axle, then out again past the fuel tank. The rear view puts the tips at ±0.42 m, about 0.25 m
+  // below the bumper's centre.
+  exhaust: {
+    route: [
+      [0.33, 0.54, -1.3], [0.37, 0.42, -1.16], [0.38, 0.27, -1.0], [0.38, 0.265, -0.8], [0.22, 0.265, -0.52],
+      [0.22, 0.265, 0.95], [0.27, 0.265, 1.05], [0.42, 0.27, 1.2], [0.42, 0.29, 2.38],
+    ],
+    pipeRadius: 0.028,
+    // The muffler's top sits just under the floor (rocker 0.33).
+    muffler: { z: [0.38, 0.92], x: 0.22, h: 0.255, width: 0.21, height: 0.12 },
+    tip: { radius: 0.05, length: 0.16 },
+  },
 };
 
 export const COUPE_70S: CarConfig = {
