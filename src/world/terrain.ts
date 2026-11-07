@@ -12,7 +12,26 @@ export const LOAD_RADIUS = 4;
 
 const SNOW = new THREE.Color('#eef3f9');
 const SNOW_SHADE = new THREE.Color('#dde6f0');
+/** Wind-packed snow on steep faces (drop walls): a cooler blue hint, still light. */
+const ICE = new THREE.Color('#c4d7ea');
 const ROCK = new THREE.Color('#646872');
+
+/**
+ * Surface colour by face steepness, as normal.y (cos of the slope angle). Drop walls
+ * peak around 47° (base slope 0.32 + max drop gradient 0.75), so they stay snow with
+ * an icy tint; rock only shows on near-vertical faces.
+ */
+const SURFACE = {
+  /** SNOW_SHADE → SNOW from ≈32° to ≈14°. */
+  shadeFrom: 0.85,
+  shadeTo: 0.97,
+  /** Icy tint fades in from ≈30° and is full at ≈50°. */
+  iceFrom: 0.86,
+  iceTo: 0.64,
+  /** Rock fades in from ≈55° and is full at ≈63°. */
+  rockFrom: 0.57,
+  rockTo: 0.45,
+};
 
 /** A point the terrain must exist around, e.g. the player (full view) or an AI car (physics only). */
 export interface StreamCenter {
@@ -139,9 +158,10 @@ export class Terrain {
       vc.fromArray(verts, indices[f + 2] * 3);
       normal.subVectors(vb, va).cross(vc.clone().sub(va)).normalize();
 
-      const snowiness = smoothstep(0.66, 0.8, normal.y);
-      col.copy(SNOW_SHADE).lerp(SNOW, smoothstep(0.85, 0.97, normal.y));
-      col.lerp(ROCK, 1 - snowiness);
+      const S = SURFACE;
+      col.copy(SNOW_SHADE).lerp(SNOW, smoothstep(S.shadeFrom, S.shadeTo, normal.y));
+      col.lerp(ICE, smoothstep(S.iceFrom, S.iceTo, normal.y));
+      col.lerp(ROCK, smoothstep(S.rockFrom, S.rockTo, normal.y));
       const jitter = 1 + (hash2(f, cx * 7919 + cz, this.field.seed + 7) - 0.5) * 0.06;
       col.multiplyScalar(jitter);
 
