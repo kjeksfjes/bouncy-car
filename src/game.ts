@@ -78,6 +78,7 @@ export class Game {
     this.traffic = new Traffic(this.field, this.trees, this.terrain, (at, yaw, paint) => this.newCar(at, yaw, paint));
     this.chase = new ChaseCamera(this.stage.camera, this.field);
     this.heli = new HeliCamera(this.stage.camera, this.field);
+    this.heli.attach(this.stage.renderer.domElement);
     this.juice = new Juice(
       this.stage.scene, this.field, this.chase, this.stage.camera,
       (car) => car === this.car,
@@ -197,6 +198,8 @@ export class Game {
   private cycleCamera(): void {
     this.cameraMode = CAMERA_MODES[(CAMERA_MODES.indexOf(this.cameraMode) + 1) % CAMERA_MODES.length];
     (this.cameraMode === 'chase' ? this.chase : this.heli).reset();
+    this.heli.active = this.cameraMode === 'heli';
+    this.stage.renderer.domElement.style.cursor = this.heli.active ? 'grab' : '';
   }
 
   /** P toggles the autopilot; Shift+P toggles its heading arrow (switching the autopilot on if needed). */
