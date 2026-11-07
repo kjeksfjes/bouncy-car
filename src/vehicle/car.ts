@@ -117,6 +117,9 @@ export class Car {
   /** The lower-body box and its uncrushed shape: its ends follow the crumple zones in. */
   private readonly lowerCollider: RAPIER.Collider;
   private readonly lowerHull: { center: THREE.Vector3; half: THREE.Vector3 };
+  /** The cabin box and its uncrushed shape: its top comes down with the roof. */
+  private readonly cabinCollider: RAPIER.Collider;
+  private readonly cabinHull: { center: THREE.Vector3; half: THREE.Vector3 };
   /** Envelope used to aim dents inward. */
   private readonly hullCenter: THREE.Vector3;
   private readonly hullHalf: THREE.Vector3;
@@ -189,8 +192,9 @@ export class Car {
       this.colliders.set(collider.handle, collider);
       this.colliderOffsets.set(collider.handle, new THREE.Vector3(t.x, t.y, t.z));
     }
-    this.lowerCollider = this.colliders.values().next().value!;
+    [this.lowerCollider, this.cabinCollider] = [...this.colliders.values()];
     this.lowerHull = { center: hull.lower.center.clone(), half: hull.lower.half.clone() };
+    this.cabinHull = { center: hull.cabin.center.clone(), half: hull.cabin.half.clone() };
     // Envelope of both boxes, used to aim dents inward.
     const envelope = new THREE.Box3();
     for (const { center, half } of [hull.lower, hull.cabin]) {
@@ -468,9 +472,8 @@ export class Car {
     }
     const d = this.cfg.damage;
     for (const impact of this.pending.values()) {
-      if (impact.dv < d.toughness) continue;
-      const severity = impact.dv - d.toughness;
-      this.integrity = Math.max(0, this.integrity - severity * d.integrityPerDv);
+      if (impact.dv < Math.min(d.toughness, d.roofToughness)) continue;
+      this.integrity = Math.max(0, this.integrity - Math.max(0, impact.dv - d.toughness) * d.integrityPerDv);
 
       const sum = new THREE.Vector3();
       const normal = new THREE.Vector3();
@@ -481,7 +484,13 @@ export class Car {
         count++;
       });
       // The pair can separate within the step (bounce); then there's no point to dent.
-      if (count > 0) this.applyImpact(sum.divideScalar(count), normal.normalize(), severity, surfaceOf(impact.other));
+      if (count === 0) continue;
+      normal.normalize();
+      // The roof is the body's weak spot: a landing on it is spread over several steps, each
+      // under the chassis's toughness, so hits from above on the cabin use a lower threshold.
+      const threshold = impact.own === this.cabinCollider && normal.y > 0.5 ? d.roofToughness : d.toughness;
+      if (impact.dv < threshold) continue;
+      this.applyImpact(sum.divideScalar(count), normal, impact.dv - threshold, surfaceOf(impact.other));
     }
     this.pending.clear();
   }
@@ -520,11 +529,23 @@ export class Car {
     // (normal ≈ −Y, a little forward) should barely crush, a head-on hit fully.
     const end = this.crush.zoneAt(local.z);
     const along = end === 'front' ? -normal.z : end === 'rear' ? normal.z : 0;
-    const square = Math.max(0, along) ** 2;
+    let square = Math.max(0, along) ** 2;
     if (end && square > 0) {
       this.crush.hit(end, local.x, severity * square, surface === 'tree');
       this.crush.deform(this.model.pieces, this.model.root);
       this.fitHullToCrush();
+    }
+    // Hits from above on the cabin (landing on the roof) push the roof down, and a hit on its
+    // corner leans it over. The normal points out of the car, so "from above" is normal.y > 0.
+    if (this.crush.inRoof(local) && normal.y > 0) {
+      const down = normal.y ** 2;
+      this.crush.hitRoof(local.x, severity * down, -normal.x);
+      this.crush.deform(this.model.pieces, this.model.root);
+      this.fitHullToCrush();
+      if (this.crush.roofDepth() > d.roofGlassBreak) {
+        for (const piece of this.model.pieces) if (piece.glass && piece.state !== 'gone') this.shatter(piece);
+      }
+      square = Math.max(square, down);
     }
 
     const dir = inwardDirection(local, this.hullCenter, this.hullHalf);
@@ -576,7 +597,10 @@ export class Car {
     }
   }
 
-  /** Pulls the lower body box's ends in with the crumple zones, so a crushed nose doesn't collide like an intact one. */
+  /**
+   * Pulls the lower body box's ends in with the crumple zones and the cabin box's top down with
+   * the roof, so a crushed car doesn't collide like an intact one.
+   */
   private fitHullToCrush(): void {
     const { center, half } = this.lowerHull;
     const front = center.z - half.z + this.crush.depth('front');
@@ -585,6 +609,14 @@ export class Car {
     this.lowerCollider.setHalfExtents({ x: half.x, y: half.y, z: (rear - front) / 2 });
     this.lowerCollider.setTranslationWrtParent(offset);
     this.colliderOffsets.set(this.lowerCollider.handle, offset);
+
+    // The cabin box's bottom stays put; its top comes down with the roof.
+    const cabin = this.cabinHull;
+    const drop = Math.min(this.crush.roofDepth(), cabin.half.y * 1.5);
+    const cabinOffset = new THREE.Vector3(cabin.center.x, cabin.center.y - drop / 2, cabin.center.z);
+    this.cabinCollider.setHalfExtents({ x: cabin.half.x, y: cabin.half.y - drop / 2, z: cabin.half.z });
+    this.cabinCollider.setTranslationWrtParent(cabinOffset);
+    this.colliderOffsets.set(this.cabinCollider.handle, cabinOffset);
   }
 
   private damageWheel(wheel: Wheel, amount: number): void {

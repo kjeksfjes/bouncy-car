@@ -21,6 +21,12 @@ export interface CrushTuning {
   /** Crumple wrinkles: amplitude per metre of local crush, and their size (m). */
   crushWrinkle: number;
   crushWrinkleSize: number;
+  /** Most the roof can be pushed down toward the beltline (m). */
+  roofCrushMax: number;
+  /** Sideways lean of the roof (m) per metre of crush from a hit on its corner. */
+  roofLean: number;
+  /** Pillars bowing outward at mid-height, per metre of roof crush. */
+  roofBuckle: number;
 }
 
 export type CrushEnd = 'front' | 'rear';
@@ -35,6 +41,20 @@ interface Zone {
   /** Crush depth (m) per column across the car's width. */
   columns: Float32Array;
 }
+
+/** The roof: how far it's pushed down per column across the width, and its sideways lean. */
+interface Roof {
+  columns: Float32Array;
+  max: number;
+  /** Sideways shift of the roof line (m, car-local x). */
+  lean: number;
+  /** Z range of the greenhouse. */
+  from: number;
+  to: number;
+}
+
+/** A point counts as cabin (greenhouse) once it's this far above the beltline (m). */
+const ABOVE_BELTLINE = 0.05;
 
 /** Columns across the car's width the crush depth is tracked in. */
 const COLUMNS = 9;
@@ -63,6 +83,7 @@ const _p = new THREE.Vector3();
  */
 export class Crush {
   private readonly zones: Record<CrushEnd, Zone>;
+  private readonly roof: Roof;
   private readonly halfWidth: number;
   private readonly noise = [createNoise3D(), createNoise3D(), createNoise3D()];
   /** Per piece: indices of the vertices inside a crumple zone (computed on first use). */
@@ -85,6 +106,32 @@ export class Crush {
       rear: zone(1, bp.rear, rearWall, tuning.crushMaxRear),
     };
     this.halfWidth = Math.max(...bp.halfWidth.map(([, w]) => w));
+    this.roof = { columns: new Float32Array(COLUMNS), max: tuning.roofCrushMax, lean: 0, from: firewall, to: rearWall };
+  }
+
+  /** True for car-local points on the cabin above the beltline (where the roof crush applies). */
+  inRoof(p: THREE.Vector3): boolean {
+    return p.z > this.roof.from && p.z < this.roof.to && p.y > this.deckY(p.z) + ABOVE_BELTLINE;
+  }
+
+  /**
+   * Pushes the roof down around car-local `x`. `amount` is Δv over toughness (m/s), already
+   * scaled by how squarely the hit lands from above; `sideways` (−1..1) leans the roof that way.
+   */
+  hitRoof(x: number, amount: number, sideways: number): void {
+    const T = this.tuning;
+    const R = this.roof;
+    const depth = amount * T.crushPerDv;
+    for (let i = 0; i < COLUMNS; i++) {
+      const dx = this.columnX(i) - x;
+      R.columns[i] = Math.min(R.max, R.columns[i] + depth * Math.exp((-dx * dx) / (2 * T.crushSpreadWide * T.crushSpreadWide)));
+    }
+    R.lean = THREE.MathUtils.clamp(R.lean + sideways * depth * T.roofLean, -R.max, R.max);
+  }
+
+  /** How far (m) the roof has been pushed down at its deepest. */
+  roofDepth(): number {
+    return Math.max(...this.roof.columns);
   }
 
   /** Which zone a car-local point lies in, if any. */
@@ -179,7 +226,30 @@ export class Crush {
       p.x += Math.sign(p.x) * T.crushBuckle * crush * fold * out * (1 - up * 0.5) + nx * wrinkle;
       p.z += nz * wrinkle;
     }
+
+    // Roof: everything above the beltline sinks in proportion to its height over it (the roof
+    // the most, the beltline not at all), leans sideways, and the pillars bow out at mid-height.
+    const R = this.roof;
+    if (p.z > R.from && p.z < R.to) {
+      const deck = this.deckY(p.z);
+      if (p.y > deck) {
+        const roof = Math.max(deck + ABOVE_BELTLINE, sample(bp.greenhouse.roof, p.z) + bp.crown + bp.groundY);
+        const h = Math.min(1, (p.y - deck) / (roof - deck));
+        const crush = this.crushAt(R, p.x);
+        if (crush > 0 || R.lean !== 0) {
+          const s = 1 / T.crushWrinkleSize;
+          const wrinkle = T.crushWrinkle * crush * h;
+          p.y += -crush * h + this.noise[1](p.x * s, p.y * s, p.z * s) * wrinkle;
+          p.x += R.lean * h + Math.sign(p.x) * T.roofBuckle * crush * Math.sin(Math.PI * h) + this.noise[0](p.x * s, p.y * s, p.z * s) * wrinkle;
+        }
+      }
+    }
     return p;
+  }
+
+  /** Car-local height of the beltline (deck) at `z`. */
+  private deckY(z: number): number {
+    return sample(this.bp.deck, z) + this.bp.groundY;
   }
 
   /** Distance (m) from a zone's tip toward the cabin; negative beyond the tip (bumper overhang). */
@@ -192,7 +262,7 @@ export class Crush {
   }
 
   /** Crush depth at car-local `x`, interpolated between columns (clamped at the sides). */
-  private crushAt(zone: Zone, x: number): number {
+  private crushAt(zone: { columns: Float32Array }, x: number): number {
     const f = THREE.MathUtils.clamp(((x + this.halfWidth) / (2 * this.halfWidth)) * (COLUMNS - 1), 0, COLUMNS - 1);
     const i = Math.min(COLUMNS - 2, Math.floor(f));
     return THREE.MathUtils.lerp(zone.columns[i], zone.columns[i + 1], f - i);
@@ -203,8 +273,13 @@ export class Crush {
     if (!indices) {
       const list: number[] = [];
       const rest = piece.original;
-      const oz = piece.mesh.position.z;
-      for (let i = 0; i < rest.length / 3; i++) if (this.zoneAt(rest[i * 3 + 2] + oz)) list.push(i);
+      const o = piece.mesh.position;
+      const R = this.roof;
+      for (let i = 0; i < rest.length / 3; i++) {
+        const z = rest[i * 3 + 2] + o.z;
+        const y = rest[i * 3 + 1] + o.y;
+        if (this.zoneAt(z) || (z > R.from && z < R.to && y > this.deckY(z))) list.push(i);
+      }
       this.affected.set(piece, (indices = Uint32Array.from(list)));
     }
     return indices;

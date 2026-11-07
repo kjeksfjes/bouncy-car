@@ -93,6 +93,8 @@ export interface CarConfig {
   damage: CrushTuning & LightTuning & {
     /** Impact Δv (m/s, per physics step) the car shrugs off without a scratch. */
     toughness: number;
+    /** The same for hits from above on the cabin (landing on the roof), which is much weaker. */
+    roofToughness: number;
     /** Dent depth per m/s of Δv over toughness. */
     dentPerDv: number;
     maxDent: number;
@@ -123,6 +125,8 @@ export interface CarConfig {
      */
     glassReachGrowth: number;
     glassReachCap: number;
+    /** Roof crush (m) at which the windows, which can't bend with it, all shatter. */
+    roofGlassBreak: number;
     /** Below this integrity the engine steams. */
     steamBelow: number;
     /** Hinged panels: see PanelTuning. */
@@ -245,6 +249,8 @@ export const COUPE_70S: CarConfig = {
 
   damage: {
     toughness: 4.5,
+    // A 12 m/s drop onto the roof peaks at ≈5 m/s Δv per step, spread over several steps.
+    roofToughness: 1.5,
     dentPerDv: 0.035,
     maxDent: 0.24,
     dentRadius: 0.8,
@@ -279,6 +285,11 @@ export const COUPE_70S: CarConfig = {
     crushBuckle: 0.2,
     crushWrinkle: 0.06,
     crushWrinkleSize: 0.2,
+    // The cabin stands ≈0.4 m above the beltline; the roof can come most of the way down.
+    roofCrushMax: 0.25,
+    roofLean: 0.6,
+    roofBuckle: 0.15,
+    roofGlassBreak: 0.06,
     // Damage is severity × partDamagePerDv, fading with distance: a severity-6 hit right on
     // a light smashes it, ≈10 drops it out, and a dangling one snaps off on the next big hit.
     lightReach: 0.6,
