@@ -143,8 +143,9 @@ export const SEDAN_70S: CarConfig = {
   engine: {
     force: 16000,
     maxSpeed: 55,
-    reverseForce: 4500,
-    reverseMaxSpeed: 12,
+    // Must beat gravity on the slope (mass × g × sin 18° ≈ 5.4 kN) to back out of trees.
+    reverseForce: 10000,
+    reverseMaxSpeed: 14,
     brakeForce: 14000,
     handbrakeForce: 6000,
   },

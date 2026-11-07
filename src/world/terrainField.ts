@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { NoiseFunction2D } from 'simplex-noise';
+import { DescentFeatures } from './features';
 import { makeNoise, smoothstep } from './noise';
 
 /**
@@ -35,14 +36,17 @@ const SHAPE = {
 };
 
 /**
- * Trees thicken as you descend: none near the start, ramping to a cap.
+ * Like a real treeline: bare snow at the top, then sparse small trees that
+ * grow denser and taller further down, up to a cap.
  * Distance is measured downhill (−Z) from the spawn.
  */
 const TREES = {
-  rampStart: 150,
-  rampEnd: 1500,
+  rampStart: 400,
+  rampEnd: 2500,
   /** Max chance a candidate cell gets a tree, in the densest forest. */
   maxChance: 0.55,
+  /** Tree size multiplier at the treeline; reaches 1 at rampEnd. */
+  treelineScale: 0.4,
 };
 
 /**
@@ -57,6 +61,7 @@ export class TerrainField {
   private readonly ridge: NoiseFunction2D;
   private readonly ridgeMask: NoiseFunction2D;
   private readonly forest: NoiseFunction2D;
+  private readonly features: DescentFeatures;
   private readonly spawnHeight: number;
 
   constructor(readonly seed: number) {
@@ -66,6 +71,7 @@ export class TerrainField {
     this.ridge = makeNoise(seed + 3);
     this.ridgeMask = makeNoise(seed + 4);
     this.forest = makeNoise(seed + 5);
+    this.features = new DescentFeatures(seed, makeNoise(seed + 6));
     this.spawnHeight = this.rawHeight(0, 0);
   }
 
@@ -87,7 +93,7 @@ export class TerrainField {
     const ridgeShape = 1 - Math.abs(this.ridge(x / s.ridgeScaleX, z / s.ridgeScaleZ));
     const ridgeMask = smoothstep(-0.1, 0.5, this.ridgeMask(x / s.ridgeMaskScale, z / s.ridgeMaskScale));
     const ridge = Math.pow(ridgeShape, s.ridgeSharpness) * s.ridgeAmp * ridgeMask;
-    return z * s.slope + large + mid + small + ridge;
+    return z * s.slope + large + mid + small + ridge + this.features.height(x, z);
   }
 
   /** Surface normal via central differences. */
@@ -101,7 +107,16 @@ export class TerrainField {
   /** 0..TREES.maxChance: probability that a candidate cell here holds a tree. */
   treeDensity(x: number, z: number): number {
     const patches = smoothstep(-0.25, 0.45, this.forest(x / 160, z / 160));
-    const descent = smoothstep(TREES.rampStart, TREES.rampEnd, -z);
-    return patches * descent * TREES.maxChance;
+    return patches * this.treeline(z) * TREES.maxChance;
+  }
+
+  /** Tree size multiplier: small near the treeline, full size further down. */
+  treeScale(z: number): number {
+    return TREES.treelineScale + (1 - TREES.treelineScale) * this.treeline(z);
+  }
+
+  /** 0 above the treeline, rising to 1 at TREES.rampEnd. */
+  private treeline(z: number): number {
+    return smoothstep(TREES.rampStart, TREES.rampEnd, -z);
   }
 }

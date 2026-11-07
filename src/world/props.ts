@@ -99,7 +99,7 @@ export class PropScatter {
         if (hash2(cellX, cellZ, seed + 13) >= this.field.treeDensity(x, z)) continue;
         if (this.field.normal(x, z, n).y < 0.82) continue;
 
-        const scale = 0.8 + hash2(cellX, cellZ, seed + 14) * 0.8;
+        const scale = (0.8 + hash2(cellX, cellZ, seed + 14) * 0.8) * this.field.treeScale(z);
         const y = this.field.height(x, z) - 0.2;
         q.setFromAxisAngle(up, hash2(cellX, cellZ, seed + 15) * Math.PI * 2);
         matrices.push(new THREE.Matrix4().compose(p.set(x, y, z), q, s.setScalar(scale)));
