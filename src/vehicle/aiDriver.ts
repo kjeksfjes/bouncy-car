@@ -54,7 +54,11 @@ export class AiDriver {
   private flipped = 0;
   private reverseSteer = 0;
 
-  constructor(private readonly trees: TreeLayout) {}
+  /** @param cruiseSpeed preferred speed in m/s; varies per car so traffic spreads out */
+  constructor(
+    private readonly trees: TreeLayout,
+    private readonly cruiseSpeed = AI.cruiseSpeed,
+  ) {}
 
   update(dt: number, car: Car): AiDecision {
     const q = car.model.root.quaternion;
@@ -105,7 +109,7 @@ export class AiDriver {
     const error = wrapAngle(bestYaw - carYaw);
     const steer = THREE.MathUtils.clamp(error * AI.steerGain, -1, 1);
 
-    let target = bestTreeDist < AI.cautionDistance ? AI.cautiousSpeed : AI.cruiseSpeed;
+    let target = bestTreeDist < AI.cautionDistance ? AI.cautiousSpeed : this.cruiseSpeed;
     target *= 1 - Math.min(0.5, Math.abs(error) * 0.6);
     const input: CarInput = {
       throttle: speed < target ? 1 : 0,

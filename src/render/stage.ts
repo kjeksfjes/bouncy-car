@@ -60,6 +60,8 @@ export class Stage {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
+  /** Fog end: nothing further from the camera than this is visible. */
+  readonly viewDistance = 250;
   private readonly sun: THREE.DirectionalLight;
   private readonly sky: THREE.Mesh;
 
@@ -77,7 +79,7 @@ export class Stage {
     this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1500);
 
     // Fog far must stay inside the streamed terrain radius (see LOAD_RADIUS).
-    this.scene.fog = new THREE.Fog(PALETTE.horizon, 60, 250);
+    this.scene.fog = new THREE.Fog(PALETTE.horizon, 60, this.viewDistance);
     this.sky = makeSky(900);
     this.scene.add(this.sky);
 

@@ -83,6 +83,11 @@ export class Terrain {
     }
   }
 
+  /** Whether ground (with colliders) currently exists at (x, z). */
+  isLoadedAt(x: number, z: number): boolean {
+    return this.chunks.has(key(Math.floor(x / CHUNK_SIZE), Math.floor(z / CHUNK_SIZE)));
+  }
+
   private build(cx: number, cz: number): Chunk {
     const n = CHUNK_RES + 1;
     const step = CHUNK_SIZE / CHUNK_RES;

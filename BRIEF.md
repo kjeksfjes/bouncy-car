@@ -31,6 +31,7 @@ mountain. Hit bumps, catch air, land hard, lose a bumper, keep going. The fun is
 | Physics | Custom raycast suspension (spring + damper per wheel, bump stops), arcade tire model (lateral grip, friction circle, handbrake slides), air levelling toward the flight path while S is held (an always-on mode exists in the car config). |
 | Damage | Mesh **deformation** at impact points plus **detachable parts** (bumpers, hood, trunk lid, doors, wheels). Losing a wheel changes handling. Low integrity kills the engine; press N for a new car. |
 | Camera | Smoothed chase cam that stays above the terrain. |
+| AI traffic | Up to 4 AI cars come and go around the player, each with its own cruise speed. They spawn and despawn only out of the camera's sight (never in front of you). P hands the player's car to the same AI (autopilot). |
 | Controls | Keyboard: W/S or ↑/↓ for throttle and brake/reverse, A/D or ←/→ to steer, Space for handbrake, R to reset upright (keeps damage), N for a new car. In the air: hold S to level the car toward its flight path (otherwise free physics), A/D roll (W does nothing, since it's usually held). |
 | HUD | Speed, car integrity, airtime, controls hint. |
 

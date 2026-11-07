@@ -162,6 +162,8 @@ export class Car {
     this.captureTransform();
     this.prevPos.copy(this.currPos);
     this.prevQuat.copy(this.currQuat);
+    // Place the model now, so a car created mid-frame never renders at the origin.
+    this.syncVisual(1, 0);
   }
 
   get engineAlive(): boolean {

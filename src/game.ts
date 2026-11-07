@@ -5,6 +5,8 @@ import { Hud } from './hud';
 import { Input } from './input';
 import { ChaseCamera } from './render/chaseCamera';
 import { Stage } from './render/stage';
+import { Visibility } from './render/visibility';
+import { Traffic } from './traffic';
 import { AiDriver } from './vehicle/aiDriver';
 import { Car, type CarInput } from './vehicle/car';
 import { SEDAN_70S } from './vehicle/carConfig';
@@ -21,25 +23,13 @@ const INITIAL_CHUNKS = 25;
 /** AI cars only need ground under them (they're beyond the fog when far away). */
 const AI_STREAM_RADIUS = 1;
 
-/** AI cars at the start: offsets from the spawn (ahead = −Z) and 70s paint jobs. */
-const AI_START_GRID = [
-  { x: -6, z: -12, paint: '#c8552b' }, // burnt orange
-  { x: 6, z: -12, paint: '#6f8f3a' }, // avocado
-  { x: -4, z: -24, paint: '#4f7fb0' }, // sky blue
-  { x: 4, z: -24, paint: '#e6dcc2' }, // cream
-];
-
-interface AiCar {
-  car: Car;
-  driver: AiDriver;
-}
-
 export class Game {
   readonly stage: Stage;
   readonly world: RAPIER.World;
   readonly field: TerrainField;
   car: Car;
-  readonly aiCars: AiCar[] = [];
+  readonly traffic: Traffic;
+  private readonly view = new Visibility();
   private readonly events = new RAPIER.EventQueue(true);
   private readonly terrain: Terrain;
   private readonly debris: Debris;
@@ -65,16 +55,13 @@ export class Game {
     this.ai = new AiDriver(this.trees);
     this.aiArrow.visible = false;
     this.stage.scene.add(this.aiArrow);
-    this.debris = new Debris(this.stage.scene, this.world);
+    this.debris = new Debris(this.stage.scene, this.world, this.field);
+    this.traffic = new Traffic(this.field, this.trees, this.terrain, (at, yaw, paint) => this.newCar(at, yaw, paint));
     this.chase = new ChaseCamera(this.stage.camera, this.field);
 
     const spawn = new THREE.Vector3(0, this.field.height(0, 0) + 1.5, 0);
     this.terrain.update([{ position: spawn, radius: LOAD_RADIUS }], INITIAL_CHUNKS);
     this.car = this.newCar(spawn, 0);
-    for (const slot of AI_START_GRID) {
-      const at = new THREE.Vector3(slot.x, this.field.height(slot.x, slot.z) + 1.5, slot.z);
-      this.aiCars.push({ car: this.newCar(at, 0, slot.paint), driver: new AiDriver(this.trees) });
-    }
   }
 
   start(): void {
@@ -89,7 +76,7 @@ export class Game {
   }
 
   private get allCars(): Car[] {
-    return [this.car, ...this.aiCars.map((a) => a.car)];
+    return [this.car, ...this.traffic.cars.map((a) => a.car)];
   }
 
   private frame = (now: number): void => {
@@ -103,7 +90,7 @@ export class Game {
 
     const controls = new Map<Car, CarInput>();
     controls.set(this.car, this.autopilot ? this.drive(this.ai, this.car, dt) : this.input.car());
-    for (const a of this.aiCars) controls.set(a.car, this.drive(a.driver, a.car, dt));
+    for (const a of this.traffic.cars) controls.set(a.car, this.drive(a.driver, a.car, dt));
 
     const cars = this.allCars;
     this.accumulator = Math.min(this.accumulator + dt, PHYSICS_STEP * MAX_STEPS_PER_FRAME);
@@ -120,13 +107,15 @@ export class Game {
     const alpha = this.accumulator / PHYSICS_STEP;
     for (const car of cars) car.syncVisual(alpha, dt);
     const pos = this.car.position;
-    this.debris.update(dt, pos);
     const centers: StreamCenter[] = [
       { position: pos, radius: LOAD_RADIUS },
-      ...this.aiCars.map((a) => ({ position: a.car.position, radius: AI_STREAM_RADIUS })),
+      ...this.traffic.cars.map((a) => ({ position: a.car.position, radius: AI_STREAM_RADIUS })),
     ];
     this.terrain.update(centers, STREAM_BUDGET);
     this.chase.update(dt, this.car.model.root, this.car.velocity);
+    this.view.update(this.stage.camera, this.stage.viewDistance);
+    this.debris.update(dt, pos, this.view);
+    this.traffic.update(dt, pos, this.view);
     this.stage.follow(pos);
     this.aiArrow.visible = this.autopilot;
     if (this.autopilot) {
