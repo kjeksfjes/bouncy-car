@@ -47,6 +47,16 @@ const TREES = {
   maxChance: 0.55,
   /** Tree size multiplier at the treeline; reaches 1 at rampEnd. */
   treelineScale: 0.4,
+  /** Forest patchiness: smaller groves and gaps. */
+  patchScale: 160,
+  /**
+   * Large open meadows inside the forest zone. Where the meadow noise rises
+   * past `meadowFrom`, trees fade out, fully gone by `meadowTo`. Lower
+   * thresholds = more open land (noise is roughly −1..1).
+   */
+  meadowScale: 480,
+  meadowFrom: 0.05,
+  meadowTo: 0.3,
 };
 
 /**
@@ -61,6 +71,7 @@ export class TerrainField {
   private readonly ridge: NoiseFunction2D;
   private readonly ridgeMask: NoiseFunction2D;
   private readonly forest: NoiseFunction2D;
+  private readonly meadow: NoiseFunction2D;
   private readonly features: DescentFeatures;
   private readonly spawnHeight: number;
 
@@ -71,6 +82,7 @@ export class TerrainField {
     this.ridge = makeNoise(seed + 3);
     this.ridgeMask = makeNoise(seed + 4);
     this.forest = makeNoise(seed + 5);
+    this.meadow = makeNoise(seed + 7);
     this.features = new DescentFeatures(seed, makeNoise(seed + 6));
     this.spawnHeight = this.rawHeight(0, 0);
   }
@@ -106,8 +118,10 @@ export class TerrainField {
 
   /** 0..TREES.maxChance: probability that a candidate cell here holds a tree. */
   treeDensity(x: number, z: number): number {
-    const patches = smoothstep(-0.25, 0.45, this.forest(x / 160, z / 160));
-    return patches * this.treeline(z) * TREES.maxChance;
+    const T = TREES;
+    const patches = smoothstep(-0.25, 0.45, this.forest(x / T.patchScale, z / T.patchScale));
+    const open = smoothstep(T.meadowFrom, T.meadowTo, this.meadow(x / T.meadowScale, z / T.meadowScale));
+    return patches * (1 - open) * this.treeline(z) * T.maxChance;
   }
 
   /** Tree size multiplier: small near the treeline, full size further down. */

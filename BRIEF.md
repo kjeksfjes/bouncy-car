@@ -26,7 +26,7 @@ mountain. Hit bumps, catch air, land hard, lose a bumper, keep going. The fun is
 |---|---|
 | Stack | TypeScript + Vite + Three.js (rendering) + Rapier (`@dimforge/rapier3d-compat`, physics). Runs in the browser. |
 | Mode | **Sandbox**: free roam, no fail state, respawn anytime. Goals/scoring come later. |
-| World | Endless chunk-streamed terrain from seeded noise. Downhill along −Z. **Snowy mountain** biome: snow on gentle slopes, rock on steep ones. A treeline: bare snow at the top, then small sparse pines that grow taller and denser further down (up to a cap). Every ~450 m there's a chance of a set piece: a steep drop, half of them with a ski-jump-style launch lip. |
+| World | Endless chunk-streamed terrain from seeded noise. Downhill along −Z. **Snowy mountain** biome: snow on gentle slopes, rock on steep ones. A treeline: bare snow at the top, then small sparse pines that grow taller and denser further down (up to a cap), broken up by large open meadows. Every ~450 m there's a chance of a set piece: a steep drop, half of them with a ski-jump-style launch lip. |
 | Car | One car: **boxy 70s sedan** (soft, floaty, lots of body roll; all-wheel drive for arcade traction). Cars are data-driven configs, so more can be added. |
 | Physics | Custom raycast suspension (spring + damper per wheel, bump stops), arcade tire model (lateral grip, friction circle, handbrake slides), air levelling toward the flight path while S is held (an always-on mode exists in the car config). |
 | Damage | Mesh **deformation** at impact points plus **detachable parts** (bumpers, hood, trunk lid, doors, wheels). Losing a wheel changes handling. Low integrity kills the engine; press N for a new car. |
