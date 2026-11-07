@@ -231,7 +231,8 @@ export class Game {
   }
 
   private drive(driver: AiDriver, car: Car, dt: number): CarInput {
-    const decision = driver.update(dt, car);
+    const others = this.allCars.filter((c) => c !== car).map((c) => c.position);
+    const decision = driver.update(dt, car, others);
     if (decision.reset) car.resetUpright(this.field);
     return decision.input;
   }

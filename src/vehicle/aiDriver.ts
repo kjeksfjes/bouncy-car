@@ -22,6 +22,14 @@ const AI = {
   costOffDownhill: 0.8,
   costTurn: 0.6,
   costTree: 6,
+  /**
+   * Company: headings toward other cars within `companyRange` (m) cost less, nearer
+   * cars pulling harder. Inside `personalSpace` (m) the pull flips to a gentle push,
+   * so they run as a pack instead of ramming each other on purpose.
+   */
+  costCompany: 1.2,
+  companyRange: 100,
+  personalSpace: 10,
   /** Steering gain: steer input per radian of heading error. */
   steerGain: 2.2,
   cruiseSpeed: 24,
@@ -62,7 +70,8 @@ export class AiDriver {
     private readonly cruiseSpeed = AI.cruiseSpeed,
   ) {}
 
-  update(dt: number, car: Car): AiDecision {
+  /** @param others world positions of the other cars (the player included) */
+  update(dt: number, car: Car, others: readonly THREE.Vector3[]): AiDecision {
     const q = car.model.root.quaternion;
     _fwd.set(0, 0, -1).applyQuaternion(q);
     _up.set(0, 1, 0).applyQuaternion(q);
@@ -89,6 +98,7 @@ export class AiDriver {
     }
 
     const carYaw = Math.atan2(-_fwd.x, -_fwd.z);
+    const company = this.companyBearings(pos, others);
     const look = Math.min(AI.lookMax, AI.lookBase + Math.max(0, speed) * AI.lookPerSpeed);
     let bestYaw = 0;
     let bestCost = Infinity;
@@ -99,7 +109,8 @@ export class AiDriver {
       const cost =
         Math.abs(yaw) * AI.costOffDownhill +
         Math.abs(wrapAngle(yaw - carYaw)) * AI.costTurn +
-        (treeDist < look ? ((look - treeDist) / look) * AI.costTree : 0);
+        (treeDist < look ? ((look - treeDist) / look) * AI.costTree : 0) +
+        this.companyCost(yaw, company);
       if (cost < bestCost) {
         bestCost = cost;
         bestYaw = yaw;
@@ -128,6 +139,27 @@ export class AiDriver {
       this.reverseSteer = steer >= 0 ? -1 : 1;
     }
     return { input, reset: false };
+  }
+
+  /** Yaw toward each nearby car and how strongly it pulls (+) or pushes (−). */
+  private companyBearings(from: THREE.Vector3, others: readonly THREE.Vector3[]): { yaw: number; pull: number }[] {
+    const out: { yaw: number; pull: number }[] = [];
+    for (const o of others) {
+      const dx = o.x - from.x;
+      const dz = o.z - from.z;
+      const d = Math.hypot(dx, dz);
+      if (d >= AI.companyRange || d < 0.1) continue;
+      const pull = d < AI.personalSpace ? -(1 - d / AI.personalSpace) : 1 - d / AI.companyRange;
+      out.push({ yaw: Math.atan2(-dx, -dz), pull });
+    }
+    return out;
+  }
+
+  /** Lower for headings that point toward pulling cars (and away from pushing ones). */
+  private companyCost(yaw: number, company: readonly { yaw: number; pull: number }[]): number {
+    let cost = 0;
+    for (const c of company) cost += (Math.abs(wrapAngle(yaw - c.yaw)) / Math.PI) * c.pull * AI.costCompany;
+    return cost;
   }
 
   /** Distance along heading `yaw` to the first blocking tree, or Infinity. */
