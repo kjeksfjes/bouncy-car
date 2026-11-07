@@ -100,7 +100,11 @@ export interface CarConfig {
     /** Hit points removed from a nearby part per m/s of Δv over toughness. */
     partDamagePerDv: number;
     partHp: number;
+    /** Trim (grille, mirrors) knocked clean off: hit points. */
+    trimHp: number;
     wheelHp: number;
+    /** Wheel damage (hits near the wheel, bottoming out) that pops its hubcap off. */
+    hubcapHp: number;
     /** Wheel damage from slamming into the bump stop faster than this (m/s). */
     bottomOutSpeed: number;
     /** Wheel hit points removed per m/s of bump-stop speed over `bottomOutSpeed`. */
@@ -163,10 +167,12 @@ const COUPE_BLUEPRINT: CarBlueprint = {
     quarterGlass: [0.52, 0.86],
   },
   mirror: { z: -0.62, size: [0.1, 0.08, 0.16] },
-  // The outer headlights sit just inside the nose panel's rounded corner (x + radius < 0.82 there).
-  lamps: {
+  // The outer headlights sit just inside the nose panel's rounded corner (x + radius < 0.82 there);
+  // the grille opening stays under the nose panel's top edge (≈0.78 at the tip).
+  openings: {
     head: { x: [0.56, 0.76], h: 0.7, radius: 0.066 },
     tail: { x: 0.39, h: 0.7, width: 0.74, height: 0.09 },
+    grille: { h: 0.69, width: 0.82, height: 0.16 },
     depth: 0.06,
   },
   hoodBulge: { from: -2.1, to: -0.95, halfWidth: 0.45, height: 0.05 },
@@ -244,7 +250,9 @@ export const COUPE_70S: CarConfig = {
     dentRadius: 0.8,
     partDamagePerDv: 14,
     partHp: 100,
+    trimHp: 50,
     wheelHp: 100,
+    hubcapHp: 30,
     bottomOutSpeed: 12,
     bottomOutDamagePerDv: 6,
     integrityPerDv: 0.025,

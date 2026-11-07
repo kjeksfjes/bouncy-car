@@ -43,6 +43,8 @@ interface Wheel extends TyreState {
   driven: boolean;
   attached: boolean;
   hp: number;
+  /** Damage taken so far, for popping the hubcap. */
+  knocks: number;
   grounded: boolean;
   compression: number;
   /** Current spring length, also drives the visual wheel position. */
@@ -217,6 +219,7 @@ export class Car {
           driven: W.drive === 'all' || (W.drive === 'front') === front,
           attached: true,
           hp: cfg.damage.wheelHp,
+          knocks: 0,
           grounded: false,
           compression: 0,
           suspLen: cfg.suspension.restLength,
@@ -540,6 +543,8 @@ export class Car {
     const reach = d.dentRadius * 1.3;
     for (const piece of this.model.pieces) {
       if (!piece.detachable || piece.state === 'gone') continue;
+      // A mirror's bounds are only valid on a closed door; on a hanging or lost door it goes along.
+      if (piece.rides && this.piece(piece.rides).state !== 'closed') continue;
       const dist = piece.bounds.distanceToPoint(local);
       if (dist >= reach) continue;
       // Hanging panels keep taking damage; HingedPanels tears them off past their limit.
@@ -577,6 +582,8 @@ export class Car {
 
   private damageWheel(wheel: Wheel, amount: number): void {
     wheel.hp -= amount;
+    wheel.knocks += amount;
+    if (wheel.knocks >= this.cfg.damage.hubcapHp) this.popHubcap(wheel);
     if (wheel.hp > 0) return;
     wheel.attached = false;
     wheel.grounded = false;
@@ -587,6 +594,27 @@ export class Car {
       .setFriction(0.9);
     this.release(wheel.visual.pivot, [collider]);
     this.events?.clank(this, wheel.visual.pivot.position.clone(), 1);
+  }
+
+  /** Knocks a wheel's hubcap off; it leaves spinning with the wheel, so it rolls away on its rim. */
+  private popHubcap(wheel: Wheel): void {
+    const hubcap = wheel.visual.hubcap;
+    if (hubcap.parent !== wheel.visual.spin) return;
+    this.snapRootToPhysics();
+    this.scene.attach(hubcap);
+    const vel = this.pointVelocity(hubcap.position);
+    // Out along the axle (away from the car) and a little up.
+    const axle = new THREE.Vector3(Math.sign(wheel.anchor.x), 0, 0).applyQuaternion(this.currQuat);
+    vel.addScaledVector(axle, 1.5).add(_tmp.set(0, 1, 0));
+    // The wheel rolls about its own axis; the visual spins as rotation.x −= spinSpeed·dt.
+    const spin = new THREE.Vector3(1, 0, 0).applyQuaternion(this.currQuat).multiplyScalar(-wheel.spinSpeed);
+    const r = this.cfg.wheels.radius * 0.62;
+    const collider = RAPIER.ColliderDesc.cylinder(0.015, r)
+      .setRotation(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), Math.PI / 2))
+      .setDensity(400)
+      .setFriction(0.6);
+    this.debris.spawn(hubcap, [collider], vel, spin);
+    this.events?.clank(this, hubcap.position.clone(), 0.25);
   }
 
   /** Swaps a pane's material for a crack pattern centred on the car-local hit point. */
@@ -667,7 +695,8 @@ export class Car {
     }
     piece.state = 'gone';
     this.scene.attach(piece.mesh);
-    this.debris.adopt(piece.mesh, createPanelBody(this.world, piece.mesh, 20, this.pointVelocity(piece.mesh.position)));
+    this.debris.adopt(piece.mesh, createPanelBody(this.world, piece.mesh, piece.mass, this.pointVelocity(piece.mesh.position)));
+    if (piece.mass < 10) this.events?.clank(this, piece.mesh.position.clone(), 0.2);
   }
 
   /** Moves a part from the car into the world as a tumbling debris body. */

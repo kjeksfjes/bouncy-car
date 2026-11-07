@@ -15,6 +15,10 @@ export interface CarPiece {
   /** Car-local bounds at build time, for hit proximity. */
   bounds: THREE.Box3;
   detachable: boolean;
+  /** Debris mass (kg) once it's knocked off without a hinge. */
+  mass: number;
+  /** Another piece this one is mounted on (mirrors on doors); it only takes hits while that one is closed. */
+  rides?: string;
   /** closed = on the car and dentable; hinged = hanging on its hinge; gone = torn off. */
   state: 'closed' | 'hinged' | 'gone';
   hp: number;
@@ -60,6 +64,8 @@ export interface WheelVisual {
   pivot: THREE.Group;
   /** Child of pivot; rolls about X. */
   spin: THREE.Group;
+  /** Chrome cover on the outer face (child of spin); pops off on hard knocks. */
+  hubcap: THREE.Mesh;
 }
 
 export interface CarModel {
@@ -75,6 +81,7 @@ interface CarMaterials {
   paint: THREE.Material;
   glass: THREE.Material;
   chrome: THREE.Material;
+  steel: THREE.Material;
   dark: THREE.Material;
   tire: THREE.Material;
   headlight: THREE.Material;
@@ -133,7 +140,11 @@ function planarProjection(geometry: THREE.BufferGeometry): GlassPane {
 }
 
 /** Body parts that can be knocked off. Everything else stays on and only dents. */
-const DETACHABLE = new Set(['hood', 'trunk', 'door-left', 'door-right', 'bumper-front', 'bumper-rear']);
+/** Small trim that gets knocked clean off: fewer hit points, light debris. */
+const TRIM = new Set(['grille', 'grille-frame', 'mirror-left', 'mirror-right']);
+const DETACHABLE = new Set(['hood', 'trunk', 'door-left', 'door-right', 'bumper-front', 'bumper-rear', ...TRIM]);
+const PANEL_MASS = 20;
+const TRIM_MASS = 3;
 
 // The lofted, solidified body is identical for every car of a blueprint, so it's built once.
 // Each car still gets its own geometry buffers (copied from these arrays) to dent.
@@ -160,6 +171,7 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
       paint: std(paint, { roughness: 0.4, metalness: 0.25 }),
       glass: std(GLASS_TINT, { roughness: 0.05, metalness: 0.5, transparent: true, opacity: GLASS_OPACITY }),
       chrome: std('#d9dde2', { roughness: 0.2, metalness: 0.9 }),
+      steel: std('#4b5056', { roughness: 0.5, metalness: 0.6 }),
       dark: std('#1c1d20', { roughness: 0.7 }),
       tire: std('#1a1a1c', { roughness: 0.9 }),
       headlight: std('#fff6d8', { emissive: '#fff1c4', emissiveIntensity: 0.6 }),
@@ -243,7 +255,8 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
       bounds: geometry.boundingBox!.clone().translate(mesh.position),
       detachable: DETACHABLE.has(name),
       state: 'closed',
-      hp: glass ? cfg.damage.glassHp : cfg.damage.partHp,
+      hp: glass ? cfg.damage.glassHp : TRIM.has(name) ? cfg.damage.trimHp : cfg.damage.partHp,
+      mass: TRIM.has(name) ? TRIM_MASS : PANEL_MASS,
       hinge: hinges[name],
       glass,
     });
@@ -265,12 +278,15 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     add(part, merged, materials);
   }
 
-  // Door windows ride on their doors: they swing and fly off with them.
+  // Door windows and mirrors ride on their doors: they swing and fly off with them.
   for (const side of ['left', 'right']) {
     const door = pieces.find((p) => p.name === `door-${side}`)!;
     const pane = pieces.find((p) => p.name === `door-glass-${side}`)!;
     door.mesh.attach(pane.mesh);
     pane.glass!.follows = door.name;
+    const mirror = pieces.find((p) => p.name === `mirror-${side}`)!;
+    door.mesh.attach(mirror.mesh);
+    mirror.rides = door.name;
   }
 
   const box = (w: number, h: number, d: number, segX = 1) => new THREE.BoxGeometry(w, h, d, segX, 1, 1);
@@ -280,12 +296,14 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   add('bumper-front', box(2.0, 0.12, 0.13, 10), mat.chrome, at(0, 0.5, bp.front - 0.06));
   add('bumper-rear', box(1.98, 0.12, 0.13, 10), mat.chrome, at(0, 0.56, bp.rear + 0.06));
 
-  // Grille with a chrome surround. Subdivided across so a crumpled nose bends it along with it.
-  add('grille-frame', box(0.92, 0.26, 0.03, 8), mat.chrome, at(0, 0.69, bp.front - 0.005));
-  add('grille', box(0.86, 0.2, 0.03, 8), mat.dark, at(0, 0.69, bp.front - 0.02));
+  // Grille with a chrome surround, covering the grille opening (its frame overlaps the edge).
+  // Subdivided across so a crumpled nose bends it along with it.
+  const grille = bp.openings.grille;
+  add('grille-frame', box(grille.width + 0.1, grille.height + 0.1, 0.03, 8), mat.chrome, at(0, grille.h, bp.front - 0.005));
+  add('grille', box(grille.width + 0.04, grille.height + 0.04, 0.03, 8), mat.dark, at(0, grille.h, bp.front - 0.02));
 
   // Lights are rigid fixtures (see CarLights), posed relative to their mount point. Head- and
-  // taillights cover real openings in the end panels (see the blueprint's lamps); side markers
+  // taillights cover real openings in the end panels (see the blueprint's openings); side markers
   // get a dark socket patch just proud of the body surface instead.
   const lights: LightFixtureDef[] = [];
   const fixture = (
@@ -319,7 +337,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   const back = new THREE.Vector3(0, 0, 1);
   const forward = new THREE.Vector3(0, 0, -1);
   // Chrome ring wider than the opening so it covers the rim; lens just inside the opening.
-  const head = bp.lamps.head;
+  const head = bp.openings.head;
   for (const side of [-1, 1]) {
     for (const hx of head.x) {
       const x = side * hx;
@@ -330,7 +348,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     }
   }
   // The 70s full-width taillight strip, in two halves so each side can go on its own.
-  const tail = bp.lamps.tail;
+  const tail = bp.openings.tail;
   for (const side of [-1, 1]) {
     fixture(`taillight-${side}`, 'tail', at(side * tail.x, tail.h, bp.rear), back, [
       [box(tail.width + 0.02, tail.height + 0.01, 0.03, 3), mat.taillight, new THREE.Vector3(0, 0, 0.01)],
@@ -394,7 +412,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     [put(new THREE.CylinderGeometry(0.19, 0.19, 0.21, 10), 0.35, 0.5, 2.0), mat.chrome],
   ]);
 
-  // Wheels: tyre, chrome rim and five lug nuts on the outer face.
+  // Wheels: tyre, steel wheel with five lug nuts, and a chrome hubcap covering them.
   const W = cfg.wheels;
   const wheels: WheelVisual[] = [];
   for (const z of [W.frontZ, W.rearZ]) {
@@ -404,21 +422,25 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
       const spin = new THREE.Group();
       // Per-wheel geometry: a lost wheel takes (and later disposes) its own buffers.
       const tire = new THREE.Mesh(new THREE.CylinderGeometry(W.radius, W.radius, W.width, 16).rotateZ(Math.PI / 2), mat.tire);
-      const rim = new THREE.Mesh(
-        new THREE.CylinderGeometry(W.radius * 0.6, W.radius * 0.6, W.width + 0.02, 10).rotateZ(Math.PI / 2),
-        mat.chrome,
+      const steel = new THREE.Mesh(
+        new THREE.CylinderGeometry(W.radius * 0.6, W.radius * 0.6, W.width + 0.01, 10).rotateZ(Math.PI / 2),
+        mat.steel,
       );
-      spin.add(tire, rim);
+      spin.add(tire, steel);
       for (let i = 0; i < 5; i++) {
         const a = (i / 5) * Math.PI * 2;
         const lug = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.035, 0.035), mat.dark);
-        lug.position.set(side * (W.width / 2 + 0.02), Math.cos(a) * W.radius * 0.28, Math.sin(a) * W.radius * 0.28);
+        lug.position.set(side * (W.width / 2 + 0.012), Math.cos(a) * W.radius * 0.28, Math.sin(a) * W.radius * 0.28);
         spin.add(lug);
       }
+      // Its own geometry centred on the mesh, so it flies off spinning about its middle.
+      const hubcap = new THREE.Mesh(new THREE.CylinderGeometry(W.radius * 0.62, W.radius * 0.62, 0.03, 12).rotateZ(Math.PI / 2), mat.chrome);
+      hubcap.position.x = side * (W.width / 2 + 0.02);
+      spin.add(hubcap);
       spin.traverse((o) => (o.castShadow = true));
       pivot.add(spin);
       root.add(pivot);
-      wheels.push({ pivot, spin });
+      wheels.push({ pivot, spin, hubcap });
     }
   }
 

@@ -20,7 +20,8 @@ export function applyDent(
 ): void {
   for (const piece of pieces) {
     // Glass cracks instead of denting (see Car.applyImpact).
-    if (piece.glass || piece.state !== 'closed' || piece.bounds.distanceToPoint(point) > radius) continue;
+    // Pieces riding on another (mirrors on doors) aren't in car-local space.
+    if (piece.glass || piece.rides || piece.state !== 'closed' || piece.bounds.distanceToPoint(point) > radius) continue;
     const pos = piece.mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
     const offset = piece.mesh.position;
     let changed = false;

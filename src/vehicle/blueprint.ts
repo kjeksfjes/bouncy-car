@@ -44,15 +44,18 @@ export interface CarBlueprint {
   };
   mirror: { z: number; size: readonly [number, number, number] };
   /**
-   * Light openings cut into the nose and tail panels, mirrored to both sides. Each gets a
-   * dark recess behind it; the light fixture covers it until it breaks out.
+   * Openings cut into the nose and tail panels, covered by their fixture until it breaks out.
+   * Lamp openings (mirrored to both sides) get a dark recess behind them; the grille opening
+   * looks straight into the engine bay at the radiator.
    */
-  lamps: {
+  openings: {
     /** Round headlight holes: x of each per side, centre height, radius. */
     head: { x: readonly number[]; h: number; radius: number };
     /** One rectangular taillight hole per side: centre x and height, size. */
     tail: { x: number; h: number; width: number; height: number };
-    /** Depth of the recess behind each opening (m). */
+    /** The grille opening, centred: height and size. */
+    grille: { h: number; width: number; height: number };
+    /** Depth of the recess behind each lamp opening (m). */
     depth: number;
   };
   hoodBulge: { from: number; to: number; halfWidth: number; height: number };
@@ -238,7 +241,7 @@ export function buildPanels(bp: CarBlueprint): Panels {
     const center = v(0, mid, z);
     const ref = v(0, mid, z + inward * 0.2);
     if (mat === 'paint') {
-      capWithOpenings(ring, lampOpenings(bp, z === bp.front ? 'front' : 'rear'), z, inward, bp.lamps.depth, ref, tri);
+      capWithOpenings(ring, panelOpenings(bp, z === bp.front ? 'front' : 'rear'), z, inward, bp.openings.depth, ref, tri);
       continue;
     }
     for (let k = 0; k < ring.length; k++) tri('shell', mat, center, ring[k], ring[(k + 1) % ring.length], ref);
@@ -302,13 +305,14 @@ export function buildPanels(bp: CarBlueprint): Panels {
     for (const [mat, triangles] of byMaterial) target(panels, part, mat).push(...solidify(triangles, THICKNESS[mat]));
   }
 
-  // Body-coloured mirrors ride on the doors; the power bulge rides on the hood.
+  // Body-coloured mirrors are their own parts (they ride on the doors and can be knocked off);
+  // the power bulge rides on the hood.
   const [mw, mh, ml] = bp.mirror.size;
   for (const side of [1, -1]) {
     const deck = sample(bp.deck, bp.mirror.z);
-    const door = `door-${sideName(side)}`;
-    addBox(door, 'paint', new THREE.BoxGeometry(...bp.mirror.size), v(side * (gh.sillHalf + mw / 2 + 0.02), deck + mh / 2 + 0.06, bp.mirror.z));
-    addBox(door, 'paint', new THREE.BoxGeometry(mw + 0.04, 0.03, ml * 0.5), v(side * (gh.sillHalf + 0.03), deck + 0.04, bp.mirror.z));
+    const mirror = `mirror-${sideName(side)}`;
+    addBox(mirror, 'paint', new THREE.BoxGeometry(...bp.mirror.size), v(side * (gh.sillHalf + mw / 2 + 0.02), deck + mh / 2 + 0.06, bp.mirror.z));
+    addBox(mirror, 'paint', new THREE.BoxGeometry(mw + 0.04, 0.03, ml * 0.5), v(side * (gh.sillHalf + 0.03), deck + 0.04, bp.mirror.z));
   }
   // The bulge is tilted to follow the hood's slope so it sits flush along its length.
   const b = bp.hoodBulge;
@@ -339,11 +343,27 @@ const RECESS_INSET = 0.003;
  */
 const RECESS_START = 0.006;
 
-/** Lamp openings in an end panel, as (x, y) outlines in car-local coordinates. */
-function lampOpenings(bp: CarBlueprint, end: 'front' | 'rear'): THREE.Vector2[][] {
-  const L = bp.lamps;
-  const openings: THREE.Vector2[][] = [];
+interface Opening {
+  /** (x, y) outline in car-local coordinates. */
+  outline: THREE.Vector2[];
+  /** Lamp openings get a dark recess; the grille opens into the engine bay. */
+  recess: boolean;
+}
+
+const rect = (cx: number, cy: number, width: number, height: number) => [
+  new THREE.Vector2(cx - width / 2, cy - height / 2),
+  new THREE.Vector2(cx + width / 2, cy - height / 2),
+  new THREE.Vector2(cx + width / 2, cy + height / 2),
+  new THREE.Vector2(cx - width / 2, cy + height / 2),
+];
+
+/** Openings in an end panel. */
+function panelOpenings(bp: CarBlueprint, end: 'front' | 'rear'): Opening[] {
+  const L = bp.openings;
+  const openings: Opening[] = [];
   if (end === 'front') {
+    const g = L.grille;
+    openings.push({ outline: rect(0, g.h + bp.groundY, g.width, g.height), recess: false });
     for (const side of [-1, 1]) {
       for (const x of L.head.x) {
         const cx = side * x;
@@ -353,32 +373,23 @@ function lampOpenings(bp: CarBlueprint, end: 'front' | 'rear'): THREE.Vector2[][
           const a = (i / ROUND_SEGMENTS) * Math.PI * 2;
           ring.push(new THREE.Vector2(cx + Math.cos(a) * L.head.radius, cy + Math.sin(a) * L.head.radius));
         }
-        openings.push(ring);
+        openings.push({ outline: ring, recess: true });
       }
     }
   } else {
     const { x, h, width, height } = L.tail;
-    for (const side of [-1, 1]) {
-      const cx = side * x;
-      const cy = h + bp.groundY;
-      openings.push([
-        new THREE.Vector2(cx - width / 2, cy - height / 2),
-        new THREE.Vector2(cx + width / 2, cy - height / 2),
-        new THREE.Vector2(cx + width / 2, cy + height / 2),
-        new THREE.Vector2(cx - width / 2, cy + height / 2),
-      ]);
-    }
+    for (const side of [-1, 1]) openings.push({ outline: rect(side * x, h + bp.groundY, width, height), recess: true });
   }
   return openings;
 }
 
 /**
- * An end panel (nose or tail cap) as a polygon with lamp openings, plus a dark recess
- * behind each opening: walls facing the opening's axis and a back face toward the hole.
+ * An end panel (nose or tail cap) as a polygon with openings, plus a dark recess behind each
+ * lamp opening: walls facing the opening's axis and a back face toward the hole.
  */
 function capWithOpenings(
   ring: THREE.Vector3[],
-  openings: THREE.Vector2[][],
+  openings: Opening[],
   z: number,
   inward: number,
   depth: number,
@@ -392,19 +403,21 @@ function capWithOpenings(
     if (!contour.length || contour[contour.length - 1].distanceTo(q) > 1e-6) contour.push(q);
   }
   if (contour[0].distanceTo(contour[contour.length - 1]) <= 1e-6) contour.pop();
-  for (const opening of openings) {
-    for (const p of opening) {
+  const outlines = openings.map((o) => o.outline);
+  for (const outline of outlines) {
+    for (const p of outline) {
       if (!insidePolygon(p, contour)) {
-        throw new Error(`Lamp opening at (${p.x.toFixed(3)}, ${p.y.toFixed(3)}) sticks out of the end panel at z=${z}`);
+        throw new Error(`Panel opening at (${p.x.toFixed(3)}, ${p.y.toFixed(3)}) sticks out of the end panel at z=${z}`);
       }
     }
   }
-  const points = [...contour, ...openings.flat()].map((p) => new THREE.Vector3(p.x, p.y, z));
-  for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(contour, openings)) {
+  const points = [...contour, ...outlines.flat()].map((p) => new THREE.Vector3(p.x, p.y, z));
+  for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(contour, outlines)) {
     tri('shell', 'paint', points[a], points[b], points[c], ref);
   }
 
-  for (const opening of openings) {
+  for (const { outline: opening, recess } of openings) {
+    if (!recess) continue;
     const centre = opening.reduce((sum, p) => sum.add(p), new THREE.Vector2()).divideScalar(opening.length);
     // Inset toward the centre, then a front ring (at the panel) and a back ring (at depth).
     const rim = opening.map((p) => p.clone().sub(centre).setLength(p.distanceTo(centre) - RECESS_INSET).add(centre));
