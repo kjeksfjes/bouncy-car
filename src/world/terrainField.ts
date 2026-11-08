@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import type { NoiseFunction2D } from 'simplex-noise';
 import { SUN_DIR } from '../render/stage';
-import { Biome } from './biome';
+import { Biome, treeSuitability, type Stand } from './biome';
+import type { EnvSample } from './environment';
 import { Environment } from './environment';
 import { DescentFeatures, type TerrainPreset } from './features';
 import { Landform } from './landform';
@@ -86,6 +87,8 @@ const TREES = {
   meadowScale: 480,
   meadowFrom: 0.05,
   meadowTo: 0.3,
+  /** How far the forest patches' noise thresholds move per unit of tree suitability (see treeSuitability). */
+  suitabilityShift: 0.3,
 };
 
 /** See TerrainField.surface. */
@@ -95,6 +98,7 @@ export interface SurfaceLayers {
 }
 
 const _surface: SurfaceLayers = { moguls: 0, kickers: 0 };
+const _stand: Stand = { chance: 0, maturity: 0 };
 
 /** Kicker ridges at full height (m), for scaling them in the dev inspection view. */
 export const KICKER_HEIGHT = SHAPE.ridgeAmp;
@@ -210,15 +214,24 @@ export class TerrainField {
     return out.set(-dx, 2 * e, -dz).normalize();
   }
 
-  /** 0..1: probability that a candidate cell here holds a tree. */
-  treeDensity(x: number, z: number): number {
+  /**
+   * The tree stand at (x, z) on this ground: the chance a candidate cell holds a tree, and how
+   * mature its trees are (see Stand). The snow forest's patches spread where the ground suits trees,
+   * old in their dense middles.
+   */
+  treeStand(x: number, z: number, env: EnvSample, out: Stand = { chance: 0, maturity: 0 }): Stand {
     const T = TREES;
-    const patches = smoothstep(-0.25, 0.45, this.forest(x / T.patchScale, z / T.patchScale));
+    const shift = T.suitabilityShift * treeSuitability(env);
+    const patches = smoothstep(-0.25 - shift, 0.45 - shift, this.forest(x / T.patchScale, z / T.patchScale));
     const open = smoothstep(T.meadowFrom, T.meadowTo, this.meadow(x / T.meadowScale, z / T.meadowScale));
     const forest = patches * (1 - open) * this.treeline(z) * T.maxChance;
-    // In the grassland the trees gather into copses instead.
+    // In the grassland the trees gather into woods and groups instead.
     const g = this.biome.grassland(z);
-    return g > 0 ? forest + (this.biome.copseDensity(x, z) - forest) * g : forest;
+    if (g <= 0) return Object.assign(out, { chance: forest, maturity: patches });
+    const copse = this.biome.copseStand(x, z, env, _stand);
+    out.chance = forest + (copse.chance - forest) * g;
+    out.maturity = patches + (copse.maturity - patches) * g;
+    return out;
   }
 
   /** Tree size multiplier: small near the treeline, full size further down. */

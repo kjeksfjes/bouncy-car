@@ -4,6 +4,8 @@
 // Usage (with `npm run dev` running):
 //   node scripts/terrain-map.mjs [--seed 1977] [--z 0,5000] [--size 1024] [--preset classic] [--tag name] [--landform]
 // --landform maps the smooth landform alone (no moguls, kicker ridges or drops), to see its shapes.
+// --trees draws the trees over the map instead of the steepness (dark green spruce, orange pine,
+// light green broadleaf; dot size by tree size), rock tinted grey, and prints tree statistics.
 // For each downhill distance in --z, maps a size × size m square starting there, centred on x = 0,
 // at the 2 m mesh grid. Writes test-results/terrain/<tag>-<z>.png and prints:
 //   - steep: share of ground steeper than 25/30/35° with the drops left out (the climbs a car may
@@ -24,6 +26,7 @@ const size = Number(args.size ?? 1024);
 const preset = args.preset ?? 'classic';
 const tag = args.tag ?? 'map';
 const landformOnly = process.argv.includes('--landform');
+const withTrees = process.argv.includes('--trees');
 const outDir = 'test-results/terrain';
 mkdirSync(outDir, { recursive: true });
 
@@ -35,8 +38,9 @@ await page.goto('http://localhost:5291/package.json');
 
 for (const start of starts) {
   const result = await page.evaluate(
-    async ({ seed, start, size, preset, landformOnly }) => {
+    async ({ seed, start, size, preset, landformOnly, withTrees }) => {
       const { TerrainField } = await import('/src/world/terrainField.ts');
+      const { TreeLayout, TREE_CELL } = await import('/src/world/trees.ts');
       const field = new TerrainField(seed, preset);
       const step = 2;
       const n = size / step + 1;
@@ -82,12 +86,52 @@ for (const start of starts) {
           const s = 0.35 + 0.85 * shade;
           r *= s; gg *= s; b *= s;
           if (contour) { r *= 0.7; gg *= 0.7; b *= 0.7; }
-          if (g > Math.tan((30 * Math.PI) / 180)) { r = 220; gg = 40; b = 40; }
+          if (withTrees) {
+            const x = x0 + i * step, z = z0 - j * step;
+            if (field.biome.isRock(x, z, field.environment.at(x, z))) { const grey = 90 + 60 * shade; r = grey; gg = grey; b = grey; }
+          } else if (g > Math.tan((30 * Math.PI) / 180)) { r = 220; gg = 40; b = 40; }
           const o = ((j - 1) * (n - 2) + (i - 1)) * 4;
           img.data[o] = r; img.data[o + 1] = gg; img.data[o + 2] = b; img.data[o + 3] = 255;
         }
       }
       ctx.putImageData(img, 0, 0);
+      let trees = null;
+      if (withTrees) {
+        const layout = new TreeLayout(field);
+        const colour = { spruce: '#0f3d2a', pine: '#d9822b', broadleaf: '#8fd14f' };
+        const counts = { spruce: 0, pine: 0, broadleaf: 0 };
+        const scales = [];
+        // Open ground: share of 30 m squares without a tree.
+        const OPEN = 30;
+        const occupied = new Set();
+        const cells = size / TREE_CELL;
+        const c0x = Math.floor(x0 / TREE_CELL);
+        const c0z = Math.floor((z0 - size) / TREE_CELL);
+        for (let cz = c0z; cz < c0z + cells; cz++) {
+          for (let cx = c0x; cx < c0x + cells; cx++) {
+            const t = layout.inCell(cx, cz);
+            if (!t) continue;
+            counts[t.species]++;
+            scales.push(t.scale);
+            occupied.add(`${Math.floor((t.x - x0) / OPEN)},${Math.floor((z0 - t.z) / OPEN)}`);
+            ctx.fillStyle = colour[t.species];
+            ctx.beginPath();
+            ctx.arc((t.x - x0) / step - 1, (z0 - t.z) / step - 1, 0.6 + t.scale * 1.4, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
+        const total = scales.length;
+        const mean = scales.reduce((a, b) => a + b, 0) / Math.max(1, total);
+        const sd = Math.sqrt(scales.reduce((a, b) => a + (b - mean) ** 2, 0) / Math.max(1, total));
+        const squares = (size / OPEN) ** 2;
+        trees = {
+          perHa: total / ((size * size) / 10000),
+          shares: Object.fromEntries(Object.entries(counts).map(([k, v]) => [k, v / Math.max(1, total)])),
+          scaleMean: mean,
+          scaleSd: sd,
+          open: 1 - occupied.size / squares,
+        };
+      }
       const blob = await canvas.convertToBlob({ type: 'image/png' });
       const bytes = Array.from(new Uint8Array(await blob.arrayBuffer()));
       grads.sort((a, b) => a - b);
@@ -110,19 +154,22 @@ for (const start of starts) {
         usPerCall,
         relief: hi - lo,
         land,
+        trees,
         steep: { over25: share(25), over30: share(30), over35: share(35), p999: deg(grads[Math.floor(grads.length * 0.999)]), max: deg(grads[grads.length - 1]) },
       };
     },
-    { seed, start, size, preset, landformOnly },
+    { seed, start, size, preset, landformOnly, withTrees },
   );
   const file = `${outDir}/${tag}-${start}.png`;
   writeFileSync(file, Buffer.from(result.bytes));
   const pct = (v) => `${(v * 100).toFixed(2)}%`;
   const s = result.steep;
   const l = result.land;
+  const t = result.trees;
   console.log(
     `${file}: relief ${result.relief.toFixed(1)} m · >25° ${pct(s.over25)} · >30° ${pct(s.over30)} · >35° ${pct(s.over35)} · p99.9 ${s.p999.toFixed(1)}° · max ${s.max.toFixed(1)}° · ${result.usPerCall.toFixed(2)} µs/height` +
-      (l ? `\n  landform: >25° ${pct(l.over25)} · p99.9 ${l.p999.toFixed(1)}° · max ${l.max.toFixed(1)}°` : ''),
+      (l ? `\n  landform: >25° ${pct(l.over25)} · p99.9 ${l.p999.toFixed(1)}° · max ${l.max.toFixed(1)}°` : '') +
+      (t ? `\n  trees: ${t.perHa.toFixed(1)}/ha · spruce ${pct(t.shares.spruce)} pine ${pct(t.shares.pine)} broadleaf ${pct(t.shares.broadleaf)} · scale ${t.scaleMean.toFixed(2)} ± ${t.scaleSd.toFixed(2)} · open 30 m squares ${pct(t.open)}` : ''),
   );
 }
 await browser.close();

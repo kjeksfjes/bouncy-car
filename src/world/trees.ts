@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { Stand } from './biome';
 import { emptySample } from './environment';
 import { hash2 } from './noise';
 import type { TerrainField } from './terrainField';
@@ -17,6 +18,13 @@ export const SPECIES: Record<Species, { radius: number; halfHeight: number }> = 
 };
 /** The widest collider radius per unit of scale, for search reach. */
 const MAX_RADIUS = Math.max(...Object.values(SPECIES).map((s) => s.radius));
+/**
+ * Tree size by maturity: young trees (wood fringes) at `young`, old ones (wood cores, lone trees) at
+ * `old`, each varied by ±`vary`; then scaled by the treeline (TerrainField.treeScale, ≤ 1).
+ */
+const SIZE = { young: 0.6, old: 1.45, vary: 0.15 };
+/** The largest tree scale there can be. */
+const MAX_SCALE = SIZE.old * (1 + SIZE.vary);
 /** Cache cap; the cache is simply cleared when full (lookups are cheap to redo). */
 const CACHE_LIMIT = 20000;
 
@@ -35,6 +43,7 @@ export interface Tree {
 
 const _n = new THREE.Vector3();
 const _env = emptySample();
+const _stand: Stand = { chance: 0, maturity: 0 };
 
 /**
  * Deterministic tree placement. The single source of truth for where trees
@@ -57,14 +66,17 @@ export class TreeLayout {
     let tree: Tree | null = null;
     const x = (cellX + hash2(cellX, cellZ, seed + 11)) * TREE_CELL;
     const z = (cellZ + hash2(cellX, cellZ, seed + 12)) * TREE_CELL;
+    const env = this.field.environment.at(x, z, _env);
+    const stand = this.field.treeStand(x, z, env, _stand);
     if (
-      hash2(cellX, cellZ, seed + 13) < this.field.treeDensity(x, z) &&
+      hash2(cellX, cellZ, seed + 13) < stand.chance &&
       this.field.normal(x, z, _n).y >= 0.82 &&
       // No trees on bare rock (cliffs, rocky ridges).
-      !this.field.biome.isRock(x, z, this.field.environment.at(x, z, _env))
+      !this.field.biome.isRock(x, z, env)
     ) {
-      const species = this.field.biome.treeSpecies(x, z, hash2(cellX, cellZ, seed + 16), hash2(cellX, cellZ, seed + 17));
-      const scale = (0.8 + hash2(cellX, cellZ, seed + 14) * 0.8) * this.field.treeScale(z);
+      const species = this.field.biome.treeSpecies(x, z, env, hash2(cellX, cellZ, seed + 16), hash2(cellX, cellZ, seed + 17));
+      const vary = 1 + SIZE.vary * (2 * hash2(cellX, cellZ, seed + 14) - 1);
+      const scale = (SIZE.young + (SIZE.old - SIZE.young) * stand.maturity) * vary * this.field.treeScale(z);
       tree = {
         x,
         y: this.field.height(x, z) - 0.2,
@@ -72,7 +84,7 @@ export class TreeLayout {
         scale,
         yaw: hash2(cellX, cellZ, seed + 15) * Math.PI * 2,
         species,
-        snowy: species === 'spruce' && this.field.biome.snowCover(x, z, _n, _env) > 0.5,
+        snowy: species === 'spruce' && this.field.biome.snowCover(x, z, _n, env) > 0.5,
         radius: SPECIES[species].radius * scale,
       };
     }
@@ -88,7 +100,7 @@ export class TreeLayout {
 
   /** Nearest tree whose trunk comes within `clearance` of (x, z), or null. */
   blocking(x: number, z: number, clearance: number): Tree | null {
-    const reach = clearance + MAX_RADIUS * 1.6; // 1.6 = max tree scale
+    const reach = clearance + MAX_RADIUS * MAX_SCALE;
     let best: Tree | null = null;
     let bestGap = Infinity;
     for (let cz = Math.floor((z - reach) / TREE_CELL); cz <= Math.floor((z + reach) / TREE_CELL); cz++) {
