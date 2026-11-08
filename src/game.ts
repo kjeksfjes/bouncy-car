@@ -102,7 +102,7 @@ export class Game {
     this.orbit = new OrbitCamera(this.stage.camera, this.field, pointer);
     this.heli = new HeliCamera(this.stage.camera, this.field, pointer);
     this.juice = new Juice(
-      this.stage.scene, this.field, this.orbit, this.stage.camera,
+      this.stage.scene, this.field, this.trees, this.orbit, this.stage.camera,
       (car) => car === this.car,
       (seconds) => (this.hitStop = Math.max(this.hitStop, seconds)),
     );
