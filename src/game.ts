@@ -15,6 +15,7 @@ import { AiDriver } from './vehicle/aiDriver';
 import { Car, type CarEvents, type CarInput } from './vehicle/car';
 import { COUPE_70S } from './vehicle/carConfig';
 import { Debris } from './world/debris';
+import { BIOMES } from './world/biome';
 import { LOAD_RADIUS, Terrain, type StreamCenter } from './world/terrain';
 import { TerrainField } from './world/terrainField';
 import { TreeLayout } from './world/trees';
@@ -25,6 +26,12 @@ const SLOW_SPEEDS = [1 / 2, 1 / 4, 1 / 8, 1 / 16];
 const SLOW_LABELS = ['½×', '¼×', '⅛×', '1/16×'];
 /** How quickly slow motion eases in and out (1/s): about 0.3 s. */
 const SLOW_RAMP = 10;
+/**
+ * B starts the next biome this far ahead (m): just past the fog's end (250 m from the camera),
+ * so the change can't be seen happening; and ramps it in over `ramp` m. Shift+B looks up to
+ * `searchRange` m downhill for where the next biome starts.
+ */
+const BIOME_JUMP = { ahead: 260, ramp: 400, searchRange: 20_000 };
 type CameraMode = (typeof CAMERA_MODES)[number];
 
 /** No car legitimately goes this fast (m/s); beyond it the physics has blown up. */
@@ -157,10 +164,14 @@ export class Game {
     // While paused, only the camera and mute keys act; the rest are dropped, not queued.
     const reset = this.input.consume('KeyR');
     const replace = this.input.consume('KeyN');
+    const nextBiome = this.input.consume('KeyB');
+    const jumpBiome = this.input.consume('shift:KeyB');
     const autopilot = this.input.consume('KeyP');
     if (!this.paused) {
       if (reset) this.car.resetUpright(this.field);
       if (replace) this.replaceCar();
+      if (jumpBiome) this.jumpToNextBiome();
+      else if (nextBiome) this.startNextBiome();
       if (autopilot) this.toggleAutopilot(this.input.shift);
     }
     if (this.input.consume('KeyM')) this.audio.toggleMute();
@@ -290,6 +301,53 @@ export class Game {
     const decision = driver.update(dt, car, others);
     if (decision.reset) car.resetUpright(this.field);
     return decision.input;
+  }
+
+  /**
+   * B: the next biome starts. From just beyond the fog ahead, the biome progression jumps to where
+   * the next biome begins (from the last, back to the top), ramped in so it unfolds as you drive
+   * into it. The ground's shape doesn't change; chunks already built out there get rebuilt.
+   */
+  private startNextBiome(): void {
+    const biome = this.field.biome;
+    const here = -this.car.body.translation().z;
+    const from = here + BIOME_JUMP.ahead;
+    // Where the progression ends up past the ramp (earlier jumps included), and what comes next.
+    const reached = biome.distance(-(from + BIOME_JUMP.ramp));
+    const next = BIOMES.find((b) => b.from > reached + 50) ?? BIOMES[0];
+    biome.shift(from, next.from - reached, BIOME_JUMP.ramp);
+    this.trees.invalidate();
+    this.terrain.refreshBeyond(-from);
+    this.hud.toast(`${next.name} ahead`);
+  }
+
+  /**
+   * Shift+B: puts the car at the start of the next biome (from the last, back to the top), facing
+   * downhill and keeping its damage, with the terrain there built first. The start is the first
+   * spot downhill whose biome distance has reached it, so jumps made with B count.
+   */
+  private jumpToNextBiome(): void {
+    const biome = this.field.biome;
+    const t = this.car.body.translation();
+    const here = -t.z;
+    const next = BIOMES.find((b) => b.from > biome.distance(t.z) + 50) ?? BIOMES[0];
+    let target = 0;
+    if (next.from > 0) {
+      target = here + (next.from - biome.distance(t.z));
+      for (let d = here; d < here + BIOME_JUMP.searchRange; d += 10) {
+        if (biome.distance(-d) >= next.from) {
+          target = d;
+          break;
+        }
+      }
+    }
+    const to = new THREE.Vector3(t.x, this.field.height(t.x, -target), -target);
+    this.terrain.update([{ position: to, radius: LOAD_RADIUS }], INITIAL_CHUNKS);
+    this.car.resetUpright(this.field, { x: to.x, z: to.z, yaw: 0 });
+    this.lastSafe.copy(to);
+    (this.cameraMode === 'orbit' ? this.orbit : this.heli).reset();
+    this.hud.reset();
+    this.hud.toast(next.name);
   }
 
   private replaceCar(): void {

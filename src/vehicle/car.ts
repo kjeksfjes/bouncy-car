@@ -796,11 +796,14 @@ export class Car {
     this.model.root.updateMatrixWorld(true);
   }
 
-  /** Puts the car back on its wheels at the current spot, keeping heading and damage. */
-  resetUpright(field: TerrainField): void {
-    const t = this.body.translation();
+  /**
+   * Puts the car back on its wheels, keeping its damage: where it is and as it's facing, or at
+   * `to` with heading `to.yaw` (0 = downhill).
+   */
+  resetUpright(field: TerrainField, to?: { x: number; z: number; yaw: number }): void {
+    const t = to ? { x: to.x, y: 0, z: to.z } : this.body.translation();
     _fwd.set(0, 0, -1).applyQuaternion(this.currQuat).setY(0);
-    const yaw = _fwd.lengthSq() > 1e-4 ? Math.atan2(-_fwd.x, -_fwd.z) : 0;
+    const yaw = to ? to.yaw : _fwd.lengthSq() > 1e-4 ? Math.atan2(-_fwd.x, -_fwd.z) : 0;
     _q.setFromAxisAngle(UP, yaw);
     // Clear the highest ground under the footprint, so steep slopes don't trap the body.
     let ground = field.height(t.x, t.z);

@@ -2,10 +2,20 @@ import * as THREE from 'three';
 import { hash2 } from './noise';
 import type { TerrainField } from './terrainField';
 
-/** Grid cell size for tree candidates; at most one tree per cell. */
-export const TREE_CELL = 9;
-/** Trunk collider radius per unit of tree scale (wide enough to cover the lowest branches). */
-export const TREE_RADIUS = 0.45;
+/** Grid cell size for tree candidates; at most one tree per cell, so it sets how close a copse can pack. */
+export const TREE_CELL = 6;
+/**
+ * Tree species and their collider per unit of tree scale: radius (a spruce's covers its lowest
+ * branches; pines and broadleaf trees branch high, so only the trunk counts) and half height.
+ */
+export type Species = 'spruce' | 'pine' | 'broadleaf';
+export const SPECIES: Record<Species, { radius: number; halfHeight: number }> = {
+  spruce: { radius: 0.45, halfHeight: 2.2 },
+  pine: { radius: 0.24, halfHeight: 2.6 },
+  broadleaf: { radius: 0.28, halfHeight: 2.0 },
+};
+/** The widest collider radius per unit of scale, for search reach. */
+const MAX_RADIUS = Math.max(...Object.values(SPECIES).map((s) => s.radius));
 /** Cache cap; the cache is simply cleared when full (lookups are cheap to redo). */
 const CACHE_LIMIT = 20000;
 
@@ -15,6 +25,11 @@ export interface Tree {
   z: number;
   scale: number;
   yaw: number;
+  species: Species;
+  /** Snow on the branches: a spruce standing where the ground is snowy. */
+  snowy: boolean;
+  /** Collider radius (m). */
+  radius: number;
 }
 
 const _n = new THREE.Vector3();
@@ -44,12 +59,17 @@ export class TreeLayout {
       hash2(cellX, cellZ, seed + 13) < this.field.treeDensity(x, z) &&
       this.field.normal(x, z, _n).y >= 0.82
     ) {
+      const species = this.field.biome.treeSpecies(x, z, hash2(cellX, cellZ, seed + 16), hash2(cellX, cellZ, seed + 17));
+      const scale = (0.8 + hash2(cellX, cellZ, seed + 14) * 0.8) * this.field.treeScale(z);
       tree = {
         x,
         y: this.field.height(x, z) - 0.2,
         z,
-        scale: (0.8 + hash2(cellX, cellZ, seed + 14) * 0.8) * this.field.treeScale(z),
+        scale,
         yaw: hash2(cellX, cellZ, seed + 15) * Math.PI * 2,
+        species,
+        snowy: species === 'spruce' && this.field.biome.snowCover(x, z, _n) > 0.5,
+        radius: SPECIES[species].radius * scale,
       };
     }
     if (this.cache.size >= CACHE_LIMIT) this.cache.clear();
@@ -57,16 +77,21 @@ export class TreeLayout {
     return tree;
   }
 
+  /** Forgets every cached tree (after the biomes change, see Biome.shift). */
+  invalidate(): void {
+    this.cache.clear();
+  }
+
   /** Nearest tree whose trunk comes within `clearance` of (x, z), or null. */
   blocking(x: number, z: number, clearance: number): Tree | null {
-    const reach = clearance + TREE_RADIUS * 1.6; // 1.6 = max tree scale
+    const reach = clearance + MAX_RADIUS * 1.6; // 1.6 = max tree scale
     let best: Tree | null = null;
     let bestGap = Infinity;
     for (let cz = Math.floor((z - reach) / TREE_CELL); cz <= Math.floor((z + reach) / TREE_CELL); cz++) {
       for (let cx = Math.floor((x - reach) / TREE_CELL); cx <= Math.floor((x + reach) / TREE_CELL); cx++) {
         const t = this.inCell(cx, cz);
         if (!t) continue;
-        const gap = Math.hypot(t.x - x, t.z - z) - TREE_RADIUS * t.scale;
+        const gap = Math.hypot(t.x - x, t.z - z) - t.radius;
         if (gap < clearance && gap < bestGap) {
           best = t;
           bestGap = gap;

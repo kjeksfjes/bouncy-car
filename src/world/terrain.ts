@@ -26,6 +26,8 @@ interface Chunk {
 /** Streams terrain chunks (render mesh + trimesh collider + props) around a moving point. */
 export class Terrain {
   private readonly chunks = new Map<string, Chunk>();
+  /** Loaded chunks whose look is out of date (the biomes changed under them), rebuilt in place. */
+  private readonly stale = new Set<string>();
   private readonly material = new THREE.MeshStandardMaterial({
     vertexColors: true,
     flatShading: true,
@@ -68,6 +70,17 @@ export class Terrain {
     }
     const queue = [...missing.values()].sort((a, b) => a[2] - b[2]);
     for (const [cx, cz] of queue.slice(0, budget)) this.chunks.set(key(cx, cz), this.build(cx, cz));
+    // Stale chunks: the new one is built before the old goes, so there's never a hole in the ground.
+    let rebuilds = budget;
+    for (const k of this.stale) {
+      if (rebuilds-- <= 0) break;
+      this.stale.delete(k);
+      const old = this.chunks.get(k);
+      if (!old) continue;
+      const [cx, cz] = k.split(',').map(Number);
+      this.chunks.set(k, this.build(cx, cz));
+      this.dispose(old);
+    }
 
     for (const [k, chunk] of this.chunks) {
       const [cx, cz] = k.split(',').map(Number);
@@ -75,7 +88,16 @@ export class Terrain {
       if (!keep) {
         this.dispose(chunk);
         this.chunks.delete(k);
+        this.stale.delete(k);
       }
+    }
+  }
+
+  /** Marks every loaded chunk reaching downhill of `z` for rebuilding (its colours and trees changed). */
+  refreshBeyond(z: number): void {
+    for (const k of this.chunks.keys()) {
+      const cz = Number(k.split(',')[1]);
+      if (cz * CHUNK_SIZE < z) this.stale.add(k);
     }
   }
 

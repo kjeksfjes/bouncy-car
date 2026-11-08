@@ -11,8 +11,18 @@ export class Hud {
   private readonly autopilot = document.getElementById('autopilot')!;
   private readonly paused = document.getElementById('paused')!;
   private readonly slow = document.getElementById('slow')!;
+  private readonly toastBox = document.getElementById('toast')!;
+  private toastTimer: number | undefined;
   private seenJumps = 0;
   private airTimer = 0;
+
+  /** Shows a short message mid-screen for a couple of seconds. */
+  toast(text: string): void {
+    this.toastBox.textContent = text;
+    this.toastBox.classList.add('visible');
+    clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => this.toastBox.classList.remove('visible'), 2200);
+  }
 
   /** Shows the slow-motion speed (e.g. '¼×'), or hides the badge with null. */
   setSlowMotion(label: string | null): void {

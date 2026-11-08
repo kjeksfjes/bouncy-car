@@ -56,8 +56,11 @@ const SHAPE = {
 const TREES = {
   rampStart: 400,
   rampEnd: 2500,
-  /** Max chance a candidate cell gets a tree, in the densest forest. */
-  maxChance: 0.55,
+  /**
+   * Max chance a candidate cell gets a tree, in the densest forest: 0.55 per 9 m cell, scaled to
+   * the 6 m cells (× (6/9)², the same trees per area).
+   */
+  maxChance: 0.245,
   /** Tree size multiplier at the treeline; reaches 1 at rampEnd. */
   treelineScale: 0.4,
   /** Forest patchiness: smaller groves and gaps. */
@@ -138,12 +141,15 @@ export class TerrainField {
     return out.set(-dx, 2 * e, -dz).normalize();
   }
 
-  /** 0..TREES.maxChance: probability that a candidate cell here holds a tree. */
+  /** 0..1: probability that a candidate cell here holds a tree. */
   treeDensity(x: number, z: number): number {
     const T = TREES;
     const patches = smoothstep(-0.25, 0.45, this.forest(x / T.patchScale, z / T.patchScale));
     const open = smoothstep(T.meadowFrom, T.meadowTo, this.meadow(x / T.meadowScale, z / T.meadowScale));
-    return patches * (1 - open) * this.treeline(z) * T.maxChance;
+    const forest = patches * (1 - open) * this.treeline(z) * T.maxChance;
+    // In the grassland the trees gather into copses instead.
+    const g = this.biome.grassland(z);
+    return g > 0 ? forest + (this.biome.copseDensity(x, z) - forest) * g : forest;
   }
 
   /** Tree size multiplier: small near the treeline, full size further down. */
@@ -153,6 +159,6 @@ export class TerrainField {
 
   /** 0 above the treeline, rising to 1 at TREES.rampEnd. */
   private treeline(z: number): number {
-    return smoothstep(TREES.rampStart, TREES.rampEnd, -z);
+    return smoothstep(TREES.rampStart, TREES.rampEnd, this.biome.distance(z));
   }
 }
