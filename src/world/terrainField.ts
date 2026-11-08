@@ -137,7 +137,7 @@ export class TerrainField {
     this.rough = makeNoise(seed + 9);
     this.bigKicker = makeNoise(seed + 10);
     this.features = new DescentFeatures(seed, makeNoise(seed + 6), preset);
-    this.landforms = new Landform(seed);
+    this.landforms = new Landform(seed, (x, z) => this.baseGround(x, z));
     this.spawnHeight = this.rawHeight(0, 0);
   }
 
@@ -149,17 +149,22 @@ export class TerrainField {
   }
 
   /**
-   * The smooth lie of the land: the downhill slope, ridges and valleys, gentle hills (and the
-   * varied preset's swell), without the moguls, kicker ridges and set pieces laid over it.
+   * The smooth lie of the land: the downhill slope, ridges and valleys with gullies down their
+   * flanks, gentle hills (and the varied preset's swell), without the moguls, kicker ridges and set pieces laid over it.
    */
   landform(x: number, z: number): number {
+    return this.landforms.height(x, z);
+  }
+
+  /** The ground under the landforms: the downhill slope, gentle hills and the varied preset's swell. */
+  private baseGround(x: number, z: number): number {
     const s = SHAPE;
     const large =
       (this.large(x / s.largeScale, z / s.largeScale) +
         s.largeDetail * this.large(x / (s.largeScale * 0.42) + 31.7, z / (s.largeScale * 0.42) - 12.3)) *
       s.largeAmp;
     const swell = this.preset === 'varied' ? this.swell(x / s.swellScaleX, z / s.swellScale) * s.swellAmp : 0;
-    return z * s.slope + swell + large + this.landforms.height(x, z);
+    return z * s.slope + swell + large;
   }
 
   /** The small-scale layers laid over the landform: moguls (with the fine roughness) and kicker ridges, in m. */

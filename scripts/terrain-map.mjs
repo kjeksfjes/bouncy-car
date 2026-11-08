@@ -2,7 +2,8 @@
 // TerrainField module (no game running), so landform changes can be judged as a whole.
 //
 // Usage (with `npm run dev` running):
-//   node scripts/terrain-map.mjs [--seed 1977] [--z 0,5000] [--size 1024] [--preset classic] [--tag name]
+//   node scripts/terrain-map.mjs [--seed 1977] [--z 0,5000] [--size 1024] [--preset classic] [--tag name] [--landform]
+// --landform maps the smooth landform alone (no moguls, kicker ridges or drops), to see its shapes.
 // For each downhill distance in --z, maps a size × size m square starting there, centred on x = 0,
 // at the 2 m mesh grid. Writes test-results/terrain/<tag>-<z>.png and prints:
 //   - steep: share of ground steeper than 25/30/35° with the drops left out (the climbs a car may
@@ -22,6 +23,7 @@ const starts = String(args.z ?? '0,5000').split(',').map(Number);
 const size = Number(args.size ?? 1024);
 const preset = args.preset ?? 'classic';
 const tag = args.tag ?? 'map';
+const landformOnly = process.argv.includes('--landform');
 const outDir = 'test-results/terrain';
 mkdirSync(outDir, { recursive: true });
 
@@ -33,7 +35,7 @@ await page.goto('http://localhost:5291/package.json');
 
 for (const start of starts) {
   const result = await page.evaluate(
-    async ({ seed, start, size, preset }) => {
+    async ({ seed, start, size, preset, landformOnly }) => {
       const { TerrainField } = await import('/src/world/terrainField.ts');
       const field = new TerrainField(seed, preset);
       const step = 2;
@@ -43,10 +45,11 @@ for (const start of starts) {
       const h = new Float64Array(n * n);
       const drop = new Float64Array(n * n);
       const t0 = performance.now();
-      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) h[j * n + i] = field.height(x0 + i * step, z0 - j * step);
+      const sample = landformOnly ? (x, z) => field.landform(x, z) : (x, z) => field.height(x, z);
+      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) h[j * n + i] = sample(x0 + i * step, z0 - j * step);
       const usPerCall = ((performance.now() - t0) * 1000) / (n * n);
       // The drops (and their humps) are set pieces, not landform: left out of the steepness.
-      for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) drop[j * n + i] = field.features.height(x0 + i * step, z0 - j * step);
+      if (!landformOnly) for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) drop[j * n + i] = field.features.height(x0 + i * step, z0 - j * step);
 
       const SLOPE = 0.32;
       const detrended = (i, j) => h[j * n + i] - drop[j * n + i] - (z0 - j * step) * SLOPE;
@@ -110,7 +113,7 @@ for (const start of starts) {
         steep: { over25: share(25), over30: share(30), over35: share(35), p999: deg(grads[Math.floor(grads.length * 0.999)]), max: deg(grads[grads.length - 1]) },
       };
     },
-    { seed, start, size, preset },
+    { seed, start, size, preset, landformOnly },
   );
   const file = `${outDir}/${tag}-${start}.png`;
   writeFileSync(file, Buffer.from(result.bytes));
