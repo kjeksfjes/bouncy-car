@@ -15,9 +15,20 @@ const SHAPE = {
   largeAmp: 12,
   /** Weight of the second, smaller rolling-hill octave. */
   largeDetail: 0.3,
+  /**
+   * A broad swell along the fall line: some stretches run steeper and faster, others gentler
+   * (±swellAmp / swellScale ≈ ±0.08 on the slope, more where it turns). Stretched across the slope.
+   */
+  swellScale: 420,
+  swellScaleX: 1600,
+  swellAmp: 22,
   /** Moguls – the bumps you bounce over. */
   midScale: 38,
   midAmp: 2.0,
+  /** Bumpy and smooth stretches: the moguls swing between these multiples over `roughScale` m. */
+  roughScale: 650,
+  roughMin: 0.45,
+  roughMax: 1.5,
   /** Fine surface roughness – kept subtle so facets read smooth. */
   smallScale: 9,
   smallAmp: 0.06,
@@ -72,6 +83,8 @@ export class TerrainField {
   private readonly ridgeMask: NoiseFunction2D;
   private readonly forest: NoiseFunction2D;
   private readonly meadow: NoiseFunction2D;
+  private readonly swell: NoiseFunction2D;
+  private readonly rough: NoiseFunction2D;
   private readonly features: DescentFeatures;
   private readonly spawnHeight: number;
 
@@ -83,6 +96,8 @@ export class TerrainField {
     this.ridgeMask = makeNoise(seed + 4);
     this.forest = makeNoise(seed + 5);
     this.meadow = makeNoise(seed + 7);
+    this.swell = makeNoise(seed + 8);
+    this.rough = makeNoise(seed + 9);
     this.features = new DescentFeatures(seed, makeNoise(seed + 6));
     this.spawnHeight = this.rawHeight(0, 0);
   }
@@ -100,12 +115,14 @@ export class TerrainField {
       (this.large(x / s.largeScale, z / s.largeScale) +
         s.largeDetail * this.large(x / (s.largeScale * 0.42) + 31.7, z / (s.largeScale * 0.42) - 12.3)) *
       s.largeAmp;
-    const mid = this.mid(x / s.midScale, z / s.midScale) * s.midAmp;
+    const swell = this.swell(x / s.swellScaleX, z / s.swellScale) * s.swellAmp;
+    const roughness = s.roughMin + (s.roughMax - s.roughMin) * smoothstep(-0.4, 0.6, this.rough(x / s.roughScale, z / s.roughScale));
+    const mid = this.mid(x / s.midScale, z / s.midScale) * s.midAmp * roughness;
     const small = this.small(x / s.smallScale, z / s.smallScale) * s.smallAmp;
     const ridgeShape = 1 - Math.abs(this.ridge(x / s.ridgeScaleX, z / s.ridgeScaleZ));
     const ridgeMask = smoothstep(-0.1, 0.5, this.ridgeMask(x / s.ridgeMaskScale, z / s.ridgeMaskScale));
     const ridge = Math.pow(ridgeShape, s.ridgeSharpness) * s.ridgeAmp * ridgeMask;
-    return z * s.slope + large + mid + small + ridge + this.features.height(x, z);
+    return z * s.slope + swell + large + mid + small + ridge + this.features.height(x, z);
   }
 
   /** Surface normal via central differences. */
