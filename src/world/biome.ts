@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { NoiseFunction2D } from 'simplex-noise';
-import { makeNoise, smoothstep } from './noise';
+import type { EnvSample } from './environment';
+import { hash2, makeNoise, smoothstep } from './noise';
 import type { Species } from './trees';
 
 /**
@@ -18,9 +19,11 @@ const BIOME = {
   patchWeight: 0.7,
   /** Half width of a patch's edge in that noise: small, so each face is snow or bare. */
   patchEdge: 0.025,
-  /** Snow lingers longest on flatter ground and on faces turned away from the sun. */
+  /** Snow lingers longest on flatter ground, on faces turned away from the sun and in hollows; ridges melt first. */
   flatBonus: 0.25,
   shadeBonus: 0.3,
+  hollowBonus: 0.3,
+  ridgePenalty: 0.3,
   /**
    * Trees: spruce only in the snow; broadleaf trees join from `broadleafFrom` m and pines from
    * `pineFrom` m. In the grassland each copse is mostly one kind (kind noise at `kindScale` m,
@@ -57,12 +60,44 @@ const BIOME = {
   loneTrees: 0.006,
   /** Bare ground is dry and brown just after the snow, lush green from `greenAt` m further down. */
   greenAt: 900,
+};
+
+/**
+ * Bare ground (no snow): rock or grass, decided by the landforms, not by single faces, so cliffs
+ * read as cliffs and hills as hills. Some country is rocky: there the upper flanks and ridge tops
+ * are rock above a wobbling line, the lower flanks and floors green. Anywhere, drop walls and very
+ * steep ground are rock. Feel values.
+ */
+const COVER = {
+  /** Rocky and grassy country: noise at `geologyScale` m (stretched along the fall line), rocky past `rockyFrom` (fully by `rockyTo`). */
+  geologyScale: 600,
+  rockyFrom: 0.05,
+  rockyTo: 0.25,
   /**
-   * Stone by steepness (normal.y, cos of the slope angle): from ≈37° to full at ≈50°. Steeper than
-   * the drop walls' snow-to-ice range, since bare ground holds steeper than packed snow looks.
+   * In rocky country, rock from this elevation up (0 valley floor, 1 ridge top; open slope is
+   * 0.5), the line wobbling ±`lineWobble` (noise at `lineWobbleScale` m).
    */
-  stoneFrom: 0.8,
-  stoneTo: 0.64,
+  rockLine: 0.55,
+  lineWobble: 0.12,
+  lineWobbleScale: 90,
+  /** Steeper ground goes rocky lower down: the line drops by `steepLower` per 10° of landform slope over `steepFrom`°. */
+  steepFrom: 20,
+  steepLower: 0.1,
+  /** Rock anywhere on landform steeper than this (°). */
+  steepRock: 36,
+  /** Drop walls are rock where they fall away steeper than this (rise over run, on top of the landform). */
+  cliffFrom: 0.3,
+  /** Grass: lush where moisture passes `lushFrom` (full by `lushTo`); parched where it's under `parchedFrom` (fully by `parchedTo`) on sunny faces, at most `parchedMax`. */
+  lushFrom: 0.6,
+  lushTo: 0.9,
+  parchedFrom: 0.35,
+  parchedTo: 0.15,
+  parchedMax: 0.5,
+  /** Sunny: exposure from `sunnyFrom` to `sunnyTo` (the plain slope faces the sun at ≈0.7). */
+  sunnyFrom: 0.68,
+  sunnyTo: 0.85,
+  /** Rock faces pick one of the rock tones at random, like facets catching different light. */
+  rockToneSeed: 37,
 };
 
 /**
@@ -86,8 +121,11 @@ export const GROUND = {
   rock: new THREE.Color('#646872'),
   grass: new THREE.Color('#6b9a48'),
   grassDry: new THREE.Color('#a49a63'),
-  dirt: new THREE.Color('#7b5b3f'),
-  stone: new THREE.Color('#7f7b74'),
+  /** Grass in moist ground, and on dry, sunny ground. */
+  grassLush: new THREE.Color('#5a8e3e'),
+  grassParched: new THREE.Color('#9ea05c'),
+  /** Bare rock, in tones the faces pick from. */
+  stoneTones: [new THREE.Color('#7f7b74'), new THREE.Color('#716d67'), new THREE.Color('#8b867e'), new THREE.Color('#67635e')],
 };
 
 /**
@@ -104,6 +142,13 @@ const SNOW_SURFACE = {
   /** Rock fades in from ≈55° and is full at ≈63°, under snow and bare ground alike. */
   rockFrom: 0.57,
   rockTo: 0.45,
+  /**
+   * Wind scours convex ground: rock pokes through up to `scouredRock` (in normal.y, ≈8°) sooner,
+   * and the snow there takes up to `scouredIce` of the packed, icy tint. Hollows hold drifts: no
+   * icy tint at full concavity.
+   */
+  scouredRock: 0.12,
+  scouredIce: 0.6,
 };
 
 /** What the ground is made of at a spot: shares of snow and of bare grass, dirt and stone (summing to 1). */
@@ -128,15 +173,19 @@ export class Biome {
   private readonly patch: NoiseFunction2D;
   private readonly kind: NoiseFunction2D;
   private readonly copse: NoiseFunction2D;
+  private readonly geology: NoiseFunction2D;
+  private readonly rockLine: NoiseFunction2D;
   private readonly shifts: Shift[] = [];
 
   constructor(
-    seed: number,
+    private readonly seed: number,
     private readonly sun: THREE.Vector3,
   ) {
     this.patch = makeNoise(seed + 20);
     this.kind = makeNoise(seed + 22);
     this.copse = makeNoise(seed + 23);
+    this.geology = makeNoise(seed + 30);
+    this.rockLine = makeNoise(seed + 31);
   }
 
   /**
@@ -193,7 +242,7 @@ export class Biome {
   }
 
   /** 1 where it's all snow, 0 where the snow is gone, patchy through the thaw. */
-  snowCover(x: number, z: number, normal: THREE.Vector3): number {
+  snowCover(x: number, z: number, normal: THREE.Vector3, env: EnvSample): number {
     const B = BIOME;
     const d = this.distance(z);
     if (d <= B.thawStart) return 1;
@@ -203,46 +252,68 @@ export class Biome {
     const patch = this.patch(x / B.patchScale, z / B.patchScale) + B.patchDetail * this.patch(x / B.patchDetailScale + 40, z / B.patchDetailScale);
     const flat = smoothstep(0.9, 1, normal.y);
     const shade = smoothstep(0.3, -0.1, normal.dot(this.sun));
+    const hollow = B.hollowBonus * Math.max(0, -env.curvature) - B.ridgePenalty * Math.max(0, env.curvature);
     // A narrow edge: low-poly faces read best as snow or bare, a half-blend looks washed out.
-    return smoothstep(-B.patchEdge, B.patchEdge, thaw + B.patchWeight * patch + B.flatBonus * flat + B.shadeBonus * shade);
+    return smoothstep(-B.patchEdge, B.patchEdge, thaw + B.patchWeight * patch + B.flatBonus * flat + B.shadeBonus * shade + hollow);
   }
 
-  /** What the ground is made of here (see GroundMix). */
-  mix(x: number, z: number, normal: THREE.Vector3, out: GroundMix = { snow: 0, grass: 0, dirt: 0, stone: 0 }): GroundMix {
-    const B = BIOME;
-    const snow = this.snowCover(x, z, normal);
-    const stone = smoothstep(B.stoneFrom, B.stoneTo, normal.y);
-    // Bare ground is grass and stone only. `dirt` stays in the mix (always 0 here) so the ground
-    // effects keep handling it if dirt or mud comes back.
-    const dirt = 0;
+  /** What the ground is made of at (x, z), for a surface with this normal (see GroundMix). */
+  mix(x: number, z: number, normal: THREE.Vector3, env: EnvSample, out: GroundMix = { snow: 0, grass: 0, dirt: 0, stone: 0 }): GroundMix {
+    const snow = this.snowCover(x, z, normal, env);
     const bare = 1 - snow;
+    const rock = bare > 0 && this.isRock(x, z, env);
     out.snow = snow;
-    out.stone = bare * stone;
-    out.dirt = bare * dirt;
-    out.grass = bare * (1 - stone - dirt);
+    out.stone = rock ? bare : 0;
+    // `dirt` stays in the mix (always 0 here) so the ground effects keep handling it.
+    out.dirt = 0;
+    out.grass = rock ? 0 : bare;
     return out;
   }
 
-  /** The ground's colour for a terrain face at (x, z) with this normal. */
-  colour(x: number, z: number, normal: THREE.Vector3, out: THREE.Color): THREE.Color {
+  /** The ground's colour for a terrain face centred on (x, z) with this normal. */
+  colour(x: number, z: number, normal: THREE.Vector3, env: EnvSample, out: THREE.Color): THREE.Color {
     const B = BIOME;
     const S = SNOW_SURFACE;
-    const m = this.mix(x, z, normal, _mix);
-    if (m.snow > 0) {
+    const C = COVER;
+    const snow = this.snowCover(x, z, normal, env);
+    const convex = Math.max(0, env.curvature);
+    if (snow > 0) {
       out.copy(GROUND.snowShade).lerp(GROUND.snow, smoothstep(S.shadeFrom, S.shadeTo, normal.y));
-      out.lerp(GROUND.ice, smoothstep(S.iceFrom, S.iceTo, normal.y));
+      // Packed and icy on steep faces and wind-scoured crests; drifts in hollows stay bright.
+      const ice = Math.max(smoothstep(S.iceFrom, S.iceTo, normal.y), S.scouredIce * convex);
+      out.lerp(GROUND.ice, ice * (1 - Math.max(0, -env.curvature)));
     }
-    if (m.snow < 1) {
-      const green = smoothstep(B.thawStart, B.thawEnd + B.greenAt, this.distance(z));
-      _bare.copy(GROUND.grassDry).lerp(GROUND.grass, green).multiplyScalar(m.grass);
-      _bare.add(_c.copy(GROUND.dirt).multiplyScalar(m.dirt)).add(_c.copy(GROUND.stone).multiplyScalar(m.stone));
-      _bare.multiplyScalar(1 / (1 - m.snow));
-      if (m.snow > 0) out.lerp(_bare, 1 - m.snow);
+    if (snow < 1) {
+      if (this.isRock(x, z, env)) {
+        const tones = GROUND.stoneTones;
+        _bare.copy(tones[Math.floor(hash2(Math.round(x * 4), Math.round(z * 4), this.seed + C.rockToneSeed) * tones.length)]);
+      } else {
+        const green = smoothstep(B.thawStart, B.thawEnd + B.greenAt, this.distance(z));
+        _bare.copy(GROUND.grassDry).lerp(GROUND.grass, green);
+        // Moisture and sun only show once the grass has greened up.
+        _bare.lerp(GROUND.grassLush, green * smoothstep(C.lushFrom, C.lushTo, env.moisture));
+        const sunny = smoothstep(C.sunnyFrom, C.sunnyTo, env.exposure);
+        _bare.lerp(GROUND.grassParched, C.parchedMax * green * sunny * smoothstep(C.parchedFrom, C.parchedTo, env.moisture));
+      }
+      if (snow > 0) out.lerp(_bare, 1 - snow);
       else out.copy(_bare);
     }
-    return out.lerp(GROUND.rock, smoothstep(S.rockFrom, S.rockTo, normal.y));
+    const rockFrom = S.rockFrom + (snow > 0 ? S.scouredRock * convex : 0);
+    return out.lerp(GROUND.rock, smoothstep(rockFrom, S.rockTo, normal.y));
   }
+
+  /** Whether bare ground at (x, z) is rock (see COVER): from the landforms, so whole forms go rocky together. */
+  isRock(x: number, z: number, env: EnvSample): boolean {
+    const C = COVER;
+    if (env.cliff > C.cliffFrom) return true;
+    const land = (Math.atan(env.slope) * 180) / Math.PI;
+    if (land > C.steepRock) return true;
+    const rocky = smoothstep(C.rockyFrom, C.rockyTo, this.geology(x / C.geologyScale, z / (C.geologyScale * 1.5)));
+    if (rocky <= 0) return false;
+    const line = C.rockLine + C.lineWobble * this.rockLine(x / C.lineWobbleScale, z / C.lineWobbleScale) - (C.steepLower * Math.max(0, land - C.steepFrom)) / 10;
+    // Fading into grassy country, the line climbs out of reach rather than the rock thinning out.
+    return env.elevation > line + (1 - rocky);
+  }
+
 }
 
-const _mix: GroundMix = { snow: 0, grass: 0, dirt: 0, stone: 0 };
-const _c = new THREE.Color();

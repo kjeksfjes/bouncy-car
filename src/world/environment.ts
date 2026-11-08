@@ -18,6 +18,8 @@ export interface EnvSample {
   exposure: number;
   /** 0 on a valley floor .. 1 on the ridge tops above it; 0.5 out on open slope. */
   elevation: number;
+  /** How steeply a set piece's drop falls away here (rise over run, on top of the landform): 0 off the drop walls. */
+  cliff: number;
 }
 
 /**
@@ -68,6 +70,7 @@ export interface EnvGrid {
   moisture: Float32Array;
   exposure: Float32Array;
   elevation: Float32Array;
+  cliff: Float32Array;
 }
 
 export class Environment {
@@ -88,7 +91,9 @@ export class Environment {
     const zm = f.height(x, z - r);
     const zp = f.height(x, z + r);
     const h = f.sample(x, z, this.spot);
-    return this.combine(this.spot, h, xm, xp, zm, zp, out);
+    this.combine(this.spot, h, xm, xp, zm, zp, out);
+    out.cliff = this.cliff(x, z);
+    return out;
   }
 
   /**
@@ -126,6 +131,7 @@ export class Environment {
       moisture: new Float32Array(size),
       exposure: new Float32Array(size),
       elevation: new Float32Array(size),
+      cliff: new Float32Array(size),
     };
     const s = emptySample();
     for (let j = 0; j < n; j++) {
@@ -140,9 +146,16 @@ export class Environment {
         grid.moisture[o] = s.moisture;
         grid.exposure[o] = s.exposure;
         grid.elevation[o] = s.elevation;
+        grid.cliff[o] = this.cliff(x0 + i * step, z0 + j * step);
       }
     }
     return grid;
+  }
+
+  /** How steeply the set pieces' drops fall away at (x, z) (their lips and humps don't count). */
+  private cliff(x: number, z: number): number {
+    const features = this.field.features;
+    return Math.max(0, (features.parts(x, z + 1).drop - features.parts(x, z - 1).drop) / 2);
   }
 
   /** From the landform here (h, with its spot) and ENV.reach m to either side along x and z. */
@@ -175,5 +188,5 @@ export class Environment {
 }
 
 export function emptySample(): EnvSample {
-  return { slope: 0, curvature: 0, moisture: 0, exposure: 0, elevation: 0 };
+  return { slope: 0, curvature: 0, moisture: 0, exposure: 0, elevation: 0, cliff: 0 };
 }

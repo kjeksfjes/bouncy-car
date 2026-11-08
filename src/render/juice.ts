@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Car, CarEvents, ContactSurface } from '../vehicle/car';
 import type { GroundMix } from '../world/biome';
+import { emptySample } from '../world/environment';
 import type { TerrainField } from '../world/terrainField';
 import type { TreeLayout } from '../world/trees';
 import type { OrbitCamera } from './orbitCamera';
@@ -56,6 +57,7 @@ const _v = new THREE.Vector3();
 const _p = new THREE.Vector3();
 const _n = new THREE.Vector3();
 const _mix: GroundMix = { snow: 0, grass: 0, dirt: 0, stone: 0 };
+const _env = emptySample();
 type Ground = keyof GroundMix;
 
 /**
@@ -274,7 +276,7 @@ export class Juice implements CarEvents {
 
   /** What the ground at `at` is made of; also leaves it in the shared mix that pickGround reads. */
   private groundAt(at: THREE.Vector3): GroundMix {
-    return this.field.biome.mix(at.x, at.z, this.field.normal(at.x, at.z, _n), _mix);
+    return this.field.biome.mix(at.x, at.z, this.field.normal(at.x, at.z, _n), this.field.environment.at(at.x, at.z, _env), _mix);
   }
 
   private near(at: THREE.Vector3): boolean {

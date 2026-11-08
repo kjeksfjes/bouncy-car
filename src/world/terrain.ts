@@ -169,12 +169,12 @@ export class Terrain {
       vc.fromArray(verts, indices[f + 2] * 3);
       normal.subVectors(vb, va).cross(vc.clone().sub(va)).normalize();
 
+      faceEnvironment(env, indices[f], indices[f + 1], indices[f + 2], _env);
       if (this.inspectMode) {
-        faceEnvironment(env, indices[f], indices[f + 1], indices[f + 2], _env);
         inspectColour(this.field, this.inspectMode, va, vb, vc, normal, _env, col);
       } else {
-        // Coloured by the ground at the face's middle (snow, thaw patches, grass, dirt, stone).
-        this.field.biome.colour((va.x + vb.x + vc.x) / 3, (va.z + vb.z + vc.z) / 3, normal, col);
+        // Coloured by the ground at the face's middle (snow, thaw patches, grass, rock).
+        this.field.biome.colour((va.x + vb.x + vc.x) / 3, (va.z + vb.z + vc.z) / 3, normal, _env, col);
         const jitter = 1 + (hash2(f, cx * 7919 + cz, this.field.seed + 7) - 0.5) * 0.06;
         col.multiplyScalar(jitter);
       }
@@ -225,6 +225,7 @@ function faceEnvironment(env: EnvGrid, a: number, b: number, c: number, out: Env
   out.moisture = (env.moisture[a] + env.moisture[b] + env.moisture[c]) / 3;
   out.exposure = (env.exposure[a] + env.exposure[b] + env.exposure[c]) / 3;
   out.elevation = (env.elevation[a] + env.elevation[b] + env.elevation[c]) / 3;
+  out.cliff = (env.cliff[a] + env.cliff[b] + env.cliff[c]) / 3;
   return out;
 }
 

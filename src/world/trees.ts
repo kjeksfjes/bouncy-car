@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { emptySample } from './environment';
 import { hash2 } from './noise';
 import type { TerrainField } from './terrainField';
 
@@ -33,6 +34,7 @@ export interface Tree {
 }
 
 const _n = new THREE.Vector3();
+const _env = emptySample();
 
 /**
  * Deterministic tree placement. The single source of truth for where trees
@@ -57,7 +59,9 @@ export class TreeLayout {
     const z = (cellZ + hash2(cellX, cellZ, seed + 12)) * TREE_CELL;
     if (
       hash2(cellX, cellZ, seed + 13) < this.field.treeDensity(x, z) &&
-      this.field.normal(x, z, _n).y >= 0.82
+      this.field.normal(x, z, _n).y >= 0.82 &&
+      // No trees on bare rock (cliffs, rocky ridges).
+      !this.field.biome.isRock(x, z, this.field.environment.at(x, z, _env))
     ) {
       const species = this.field.biome.treeSpecies(x, z, hash2(cellX, cellZ, seed + 16), hash2(cellX, cellZ, seed + 17));
       const scale = (0.8 + hash2(cellX, cellZ, seed + 14) * 0.8) * this.field.treeScale(z);
@@ -68,7 +72,7 @@ export class TreeLayout {
         scale,
         yaw: hash2(cellX, cellZ, seed + 15) * Math.PI * 2,
         species,
-        snowy: species === 'spruce' && this.field.biome.snowCover(x, z, _n) > 0.5,
+        snowy: species === 'spruce' && this.field.biome.snowCover(x, z, _n, _env) > 0.5,
         radius: SPECIES[species].radius * scale,
       };
     }
