@@ -50,18 +50,19 @@ export interface CarBlueprint {
   };
   mirror: { z: number; size: readonly [number, number, number] };
   /**
-   * Openings cut into the nose and tail panels, covered by their fixture until it breaks out.
-   * Lamp and plate openings get a dark recess behind them; the grille opening looks straight
-   * into the engine bay at the radiator.
+   * Openings cut into the nose and tail panels, each with a dark recess behind it: the front
+   * surround (holding the headlights and grille), the taillights and the license plates.
    */
   openings: {
-    /** Round headlight holes: x of each per side, centre height, radius. */
+    /** Headlights inside the surround: x of each per side, centre height, lens radius. */
     head: { x: readonly number[]; h: number; radius: number };
+    /** The recessed surround across the nose, centred: height, size, corner radius. */
+    surround: { h: number; width: number; height: number; radius: number };
     /** One rounded-rectangle taillight hole per side: centre x and height, size, corner radius. */
     tail: { x: number; h: number; width: number; height: number; radius: number };
-    /** The license plate's recess in the tail panel, centred: height and size. */
-    plate: { h: number; width: number; height: number };
-    /** The grille opening, centred: height and size. */
+    /** License plate recesses below the bumpers, centred: height and size. */
+    plates: { front: { h: number; width: number; height: number }; rear: { h: number; width: number; height: number } };
+    /** The hole in the surround's back wall into the engine bay, behind the grille: height and size. */
     grille: { h: number; width: number; height: number };
     /** Depth of the recess behind each lamp opening (m). */
     depth: number;
@@ -416,8 +417,6 @@ export function bendEnds(bp: CarBlueprint, geometry: THREE.BufferGeometry): THRE
 
 type Tri = (part: string, mat: PanelMaterial, a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, ref: THREE.Vector3) => void;
 
-/** Segments of a round lamp opening; matches the fixtures' 10-sided cylinders. */
-const ROUND_SEGMENTS = 10;
 /** Recess walls sit this far (m) inside the opening, so they don't share a plane with the panel's rim. */
 const RECESS_INSET = 0.003;
 /**
@@ -432,8 +431,8 @@ const RECESS_START = 0.006;
 interface Opening {
   /** (x, y) outline in car-local coordinates. */
   outline: THREE.Vector2[];
-  /** Lamp and plate openings get a dark recess; the grille opens into the engine bay. */
-  recess: boolean;
+  /** A hole in the recess's back wall (x, y; the surround's opens into the engine bay). */
+  hole?: THREE.Vector2[];
 }
 
 const rect = (cx: number, cy: number, width: number, height: number) => [
@@ -464,34 +463,23 @@ const roundedRect = (cx: number, cy: number, width: number, height: number, radi
 /** Openings in an end panel. */
 function panelOpenings(bp: CarBlueprint, end: 'front' | 'rear'): Opening[] {
   const L = bp.openings;
-  const openings: Opening[] = [];
+  const gy = bp.groundY;
+  const plate = L.plates[end];
+  const openings: Opening[] = [{ outline: rect(0, plate.h + gy, plate.width, plate.height) }];
   if (end === 'front') {
+    const { h, width, height, radius } = L.surround;
     const g = L.grille;
-    openings.push({ outline: rect(0, g.h + bp.groundY, g.width, g.height), recess: false });
-    for (const side of [-1, 1]) {
-      for (const x of L.head.x) {
-        const cx = side * x;
-        const cy = L.head.h + bp.groundY;
-        const ring: THREE.Vector2[] = [];
-        for (let i = 0; i < ROUND_SEGMENTS; i++) {
-          const a = (i / ROUND_SEGMENTS) * Math.PI * 2;
-          ring.push(new THREE.Vector2(cx + Math.cos(a) * L.head.radius, cy + Math.sin(a) * L.head.radius));
-        }
-        openings.push({ outline: ring, recess: true });
-      }
-    }
+    openings.push({ outline: roundedRect(0, h + gy, width, height, radius), hole: rect(0, g.h + gy, g.width, g.height) });
   } else {
     const { x, h, width, height, radius } = L.tail;
-    for (const side of [-1, 1]) openings.push({ outline: roundedRect(side * x, h + bp.groundY, width, height, radius), recess: true });
-    const plate = L.plate;
-    openings.push({ outline: rect(0, plate.h + bp.groundY, plate.width, plate.height), recess: true });
+    for (const side of [-1, 1]) openings.push({ outline: roundedRect(side * x, h + gy, width, height, radius) });
   }
   return openings;
 }
 
 /**
  * An end panel (nose or tail cap) as a polygon with openings, plus a dark recess behind each
- * lamp opening: walls facing the opening's axis and a back face toward the hole.
+ * opening: walls facing the opening's axis and a back wall (with its hole, if any) facing out.
  */
 function capWithOpenings(
   ring: THREE.Vector3[],
@@ -522,8 +510,7 @@ function capWithOpenings(
     tri('shell', 'paint', points[a], points[b], points[c], ref);
   }
 
-  for (const { outline: opening, recess } of openings) {
-    if (!recess) continue;
+  for (const { outline: opening, hole } of openings) {
     const centre = opening.reduce((sum, p) => sum.add(p), new THREE.Vector2()).divideScalar(opening.length);
     // Inset toward the centre, then a front ring (at the panel) and a back ring (at depth).
     const rim = opening.map((p) => p.clone().sub(centre).setLength(p.distanceTo(centre) - RECESS_INSET).add(centre));
@@ -538,9 +525,11 @@ function capWithOpenings(
       tri('shell', 'recess', front[i], front[j], back[j], out);
       tri('shell', 'recess', front[i], back[j], back[i], out);
     }
-    const backCentre = new THREE.Vector3(centre.x, centre.y, z + inward * depth);
-    const behind = backCentre.clone().setZ(backCentre.z + inward * 0.2);
-    for (let i = 0; i < rim.length; i++) tri('shell', 'recess', backCentre, back[i], back[(i + 1) % rim.length], behind);
+    const behind = new THREE.Vector3(centre.x, centre.y, z + inward * (depth + 0.2));
+    const backPoints = [...back, ...(hole ?? []).map((p) => new THREE.Vector3(p.x, p.y, z + inward * depth))];
+    for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(rim, hole ? [hole] : [])) {
+      tri('shell', 'recess', backPoints[a], backPoints[b], backPoints[c], behind);
+    }
   }
 }
 

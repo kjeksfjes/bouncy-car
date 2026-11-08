@@ -185,8 +185,9 @@ const COUPE_BLUEPRINT: CarBlueprint = {
     [-2.46, 0.845], [-2.4, 0.875], [-2.33, 0.91], [-1.6, 0.98], [-0.77, 1.04], [0, 1.03], [0.9, 1.04],
     [1.53, 1.07], [2.0, 1.05], [2.32, 1.03], [2.44, 0.985],
   ],
-  // The tail valance comes down to 0.36 (rear view), just above the exhaust tips.
-  rocker: [[-2.46, 0.45], [-2.25, 0.37], [-2.0, 0.33], [2.0, 0.33], [2.3, 0.345], [2.44, 0.36]],
+  // The valances come down below the bumpers to carry the plates (front and rear views): to
+  // 0.31 at the nose and 0.36 at the tail, just above the exhaust tips.
+  rocker: [[-2.46, 0.31], [-2.25, 0.32], [-2.0, 0.33], [2.0, 0.33], [2.3, 0.345], [2.44, 0.36]],
   crown: 0.03,
   wellHalf: 0.62,
   arches: [
@@ -207,17 +208,19 @@ const COUPE_BLUEPRINT: CarBlueprint = {
     quarterGlass: [0.52, 0.86],
   },
   mirror: { z: -0.62, size: [0.1, 0.08, 0.16] },
-  // The outer headlights sit just inside the nose panel's rounded corner (x + radius < 0.82 there);
-  // the grille opening stays under the nose panel's top edge (≈0.78 at the tip).
+  // Front view: the quad headlights and the barred grille sit together in one recessed surround
+  // under the hood's beak; the grille's bars only span the middle, between the inner headlights.
+  // The surround's corners sit ≈2 cm inside the nose panel's outline (checked at build).
   openings: {
-    head: { x: [0.56, 0.76], h: 0.7, radius: 0.066 },
+    head: { x: [0.57, 0.765], h: 0.7, radius: 0.066 },
+    surround: { h: 0.7, width: 1.72, height: 0.2, radius: 0.05 },
     // Rear view: two separate rounded taillights in the outer thirds of the tail panel, with the
     // filler cap between them and the plate below the bumper; heights placed by their share of
     // the tail panel, since that view is drawn out of proportion vertically.
     tail: { x: 0.628, h: 0.795, width: 0.565, height: 0.13, radius: 0.035 },
-    // Wider than the drawing's plate, by choice.
-    plate: { h: 0.4375, width: 0.38, height: 0.135 },
-    grille: { h: 0.69, width: 0.82, height: 0.16 },
+    // Wider than the drawing's plates, by choice.
+    plates: { front: { h: 0.385, width: 0.38, height: 0.13 }, rear: { h: 0.4375, width: 0.38, height: 0.135 } },
+    grille: { h: 0.7, width: 0.94, height: 0.15 },
     depth: 0.06,
   },
   hoodBulge: { from: -2.1, to: -0.95, halfWidth: 0.45, height: 0.05 },
