@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import type { NoiseFunction2D } from 'simplex-noise';
+import { SUN_DIR } from '../render/stage';
+import { Biome } from './biome';
 import { DescentFeatures } from './features';
 import { makeNoise, smoothstep } from './noise';
 
@@ -87,8 +89,11 @@ export class TerrainField {
   private readonly rough: NoiseFunction2D;
   private readonly features: DescentFeatures;
   private readonly spawnHeight: number;
+  /** Ground cover (snow, thaw, grassland) along the descent. */
+  readonly biome: Biome;
 
   constructor(readonly seed: number) {
+    this.biome = new Biome(seed, SUN_DIR);
     this.large = makeNoise(seed);
     this.mid = makeNoise(seed + 1);
     this.small = makeNoise(seed + 2);

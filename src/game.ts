@@ -76,7 +76,8 @@ export class Game {
   private accumulator = 0;
   private lastTime = 0;
 
-  constructor(container: HTMLElement, seed: number) {
+  /** @param start metres downhill to spawn at (dev: to test the lower biomes) */
+  constructor(container: HTMLElement, seed: number, start = 0) {
     this.stage = new Stage(container);
     this.world = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
     this.world.timestep = PHYSICS_STEP;
@@ -99,7 +100,7 @@ export class Game {
       (seconds) => (this.hitStop = Math.max(this.hitStop, seconds)),
     );
 
-    const spawn = new THREE.Vector3(0, this.field.height(0, 0) + 1.5, 0);
+    const spawn = new THREE.Vector3(0, this.field.height(0, -start) + 1.5, -start);
     this.terrain.update([{ position: spawn, radius: LOAD_RADIUS }], INITIAL_CHUNKS);
     this.car = this.newCar(spawn, 0);
   }
