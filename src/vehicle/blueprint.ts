@@ -51,26 +51,27 @@ export interface CarBlueprint {
   mirror: { z: number; size: readonly [number, number, number] };
   /**
    * Openings cut into the nose and tail panels, covered by their fixture until it breaks out.
-   * Lamp openings (mirrored to both sides) get a dark recess behind them; the grille opening
-   * looks straight into the engine bay at the radiator.
+   * Lamp and plate openings get a dark recess behind them; the grille opening looks straight
+   * into the engine bay at the radiator.
    */
   openings: {
     /** Round headlight holes: x of each per side, centre height, radius. */
     head: { x: readonly number[]; h: number; radius: number };
-    /** One rectangular taillight hole per side: centre x and height, size. */
-    tail: { x: number; h: number; width: number; height: number };
+    /** One rounded-rectangle taillight hole per side: centre x and height, size, corner radius. */
+    tail: { x: number; h: number; width: number; height: number; radius: number };
+    /** The license plate's recess in the tail panel, centred: height and size. */
+    plate: { h: number; width: number; height: number };
     /** The grille opening, centred: height and size. */
     grille: { h: number; width: number; height: number };
     /** Depth of the recess behind each lamp opening (m). */
     depth: number;
   };
   hoodBulge: { from: number; to: number; halfWidth: number; height: number };
-  /**
-   * The nose leans forward (a shark nose) and forms a shallow V in plan: points near `front` are
-   * set back by `profile` (along the centre line, by height: [height, metres]) plus `vee` growing
-   * linearly to `cornerX` across the width, fading out over `blend` metres behind the front.
-   */
-  nose: { profile: Curve; vee: number; cornerX: number; blend: number };
+  /** Shapes of the nose (a forward-leaning shark nose, a V in plan) and the tail (see EndShape). */
+  nose: EndShape;
+  tail: EndShape;
+  /** Fuel filler cap, centred on the tail panel: height and radius. */
+  fillerCap: { h: number; radius: number };
   /** Twin exhaust under the floor, mirrored to both sides. Heights as for the body. */
   exhaust: {
     /** Pipe centre line on the right side, [x, height, z], from the manifold to the tip. */
@@ -81,6 +82,18 @@ export interface CarBlueprint {
     /** Chrome tip slid over the pipe's end: radius at the mouth, length. */
     tip: { radius: number; length: number };
   };
+}
+
+/**
+ * Points near one end of the car are moved in toward the middle by `profile` (along the centre
+ * line, by height: [height, metres]) plus `vee` growing linearly to `cornerX` across the width
+ * (a V in plan), fading out over `blend` metres from the end.
+ */
+export interface EndShape {
+  profile: Curve;
+  vee: number;
+  cornerX: number;
+  blend: number;
 }
 
 export function sample(curve: Curve, z: number): number {
@@ -121,17 +134,19 @@ export function sideSection(bp: CarBlueprint, z: number): [number, number][] {
 }
 
 /**
- * How far (m, toward +Z) the nose shape sets a rest point back. A pure function of position, so
- * everything built at the nose (panels, recesses, grille, bumper, lights) moves together.
- * Heights above the drawing's ground line.
+ * How far (m, along Z) the end shapes move a rest point: toward +Z at the nose, −Z at the tail.
+ * A pure function of position, so everything built at an end (panels, recesses, grille, bumpers,
+ * lights) moves together. Heights above the drawing's ground line.
  */
-export function noseShift(bp: CarBlueprint, x: number, h: number, z: number): number {
-  const n = bp.nose;
-  const t = Math.max(0, (z - bp.front) / n.blend);
-  if (t >= 1) return 0;
-  // (1 − t)²: steepest at the front, where its slope (2 / blend × shift) must stay well under 1
-  // or the panels fold through each other.
-  return (sample(n.profile, h) + n.vee * Math.min(1, Math.abs(x) / n.cornerX)) * (1 - t) ** 2;
+export function endShift(bp: CarBlueprint, x: number, h: number, z: number): number {
+  const at = (shape: EndShape, fromEnd: number) => {
+    const t = Math.max(0, fromEnd / shape.blend);
+    if (t >= 1) return 0;
+    // (1 − t)²: steepest at the end, where its slope (2 / blend × shift) must stay well under 1
+    // or the panels fold through each other.
+    return (sample(shape.profile, h) + shape.vee * Math.min(1, Math.abs(x) / shape.cornerX)) * (1 - t) ** 2;
+  };
+  return at(bp.nose, z - bp.front) - at(bp.tail, bp.rear - z);
 }
 
 /** Half width of the body's side at `z` and height `h` (above the drawing's ground line). */
@@ -184,7 +199,7 @@ export function buildPanels(bp: CarBlueprint): Panels {
     _c.copy(a).add(b).add(c).divideScalar(3).sub(ref);
     const [p, q] = _n.dot(_c) >= 0 ? [b, c] : [c, b];
     const out = target(loft, part, mat);
-    for (const v of [a, p, q]) out.push(v.x, v.y, v.z + noseShift(bp, v.x, v.y - gy, v.z));
+    for (const v of [a, p, q]) out.push(v.x, v.y, v.z + endShift(bp, v.x, v.y - gy, v.z));
   };
   const quad = (part: string, mat: PanelMaterial, a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, ref: THREE.Vector3) => {
     tri(part, mat, a, b, c, ref);
@@ -194,7 +209,7 @@ export function buildPanels(bp: CarBlueprint): Panels {
   const addBox = (part: string, mat: PanelMaterial, geo: THREE.BufferGeometry, center: THREE.Vector3) => {
     const flat = geo.toNonIndexed();
     flat.translate(center.x, center.y, center.z);
-    bendNose(bp, flat);
+    bendEnds(bp, flat);
     target(panels, part, mat).push(...flat.getAttribute('position').array);
     flat.dispose();
     geo.dispose();
@@ -389,11 +404,11 @@ export function buildPanels(bp: CarBlueprint): Panels {
   return panels;
 }
 
-/** Applies the nose shape (see noseShift) to a car-local geometry, in place. */
-export function bendNose(bp: CarBlueprint, geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+/** Applies the end shapes (see endShift) to a car-local geometry, in place. */
+export function bendEnds(bp: CarBlueprint, geometry: THREE.BufferGeometry): THREE.BufferGeometry {
   const pos = geometry.getAttribute('position');
   for (let i = 0; i < pos.count; i++) {
-    pos.setZ(i, pos.getZ(i) + noseShift(bp, pos.getX(i), pos.getY(i) - bp.groundY, pos.getZ(i)));
+    pos.setZ(i, pos.getZ(i) + endShift(bp, pos.getX(i), pos.getY(i) - bp.groundY, pos.getZ(i)));
   }
   pos.needsUpdate = true;
   return geometry;
@@ -417,7 +432,7 @@ const RECESS_START = 0.006;
 interface Opening {
   /** (x, y) outline in car-local coordinates. */
   outline: THREE.Vector2[];
-  /** Lamp openings get a dark recess; the grille opens into the engine bay. */
+  /** Lamp and plate openings get a dark recess; the grille opens into the engine bay. */
   recess: boolean;
 }
 
@@ -427,6 +442,24 @@ const rect = (cx: number, cy: number, width: number, height: number) => [
   new THREE.Vector2(cx + width / 2, cy + height / 2),
   new THREE.Vector2(cx - width / 2, cy + height / 2),
 ];
+
+/** A rounded rectangle, counter-clockwise, with `segments` edges per corner. */
+const roundedRect = (cx: number, cy: number, width: number, height: number, radius: number, segments = 3) => {
+  const points: THREE.Vector2[] = [];
+  const corners = [
+    [width / 2 - radius, -height / 2 + radius, -Math.PI / 2],
+    [width / 2 - radius, height / 2 - radius, 0],
+    [-width / 2 + radius, height / 2 - radius, Math.PI / 2],
+    [-width / 2 + radius, -height / 2 + radius, Math.PI],
+  ];
+  for (const [x, y, from] of corners) {
+    for (let i = 0; i <= segments; i++) {
+      const a = from + (i / segments) * (Math.PI / 2);
+      points.push(new THREE.Vector2(cx + x + Math.cos(a) * radius, cy + y + Math.sin(a) * radius));
+    }
+  }
+  return points;
+};
 
 /** Openings in an end panel. */
 function panelOpenings(bp: CarBlueprint, end: 'front' | 'rear'): Opening[] {
@@ -448,8 +481,10 @@ function panelOpenings(bp: CarBlueprint, end: 'front' | 'rear'): Opening[] {
       }
     }
   } else {
-    const { x, h, width, height } = L.tail;
-    for (const side of [-1, 1]) openings.push({ outline: rect(side * x, h + bp.groundY, width, height), recess: true });
+    const { x, h, width, height, radius } = L.tail;
+    for (const side of [-1, 1]) openings.push({ outline: roundedRect(side * x, h + bp.groundY, width, height, radius), recess: true });
+    const plate = L.plate;
+    openings.push({ outline: rect(0, plate.h + bp.groundY, plate.width, plate.height), recess: true });
   }
   return openings;
 }

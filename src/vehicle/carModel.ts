@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { bendNose, buildPanels, noseShift, sample, sideHalfWidth, type CarBlueprint, type PanelMaterial, type Panels } from './blueprint';
+import { bendEnds, buildPanels, endShift, sample, sideHalfWidth, type CarBlueprint, type PanelMaterial, type Panels } from './blueprint';
 import type { CarConfig } from './carConfig';
 import type { LightFixtureDef, LightKind } from './lights';
 
@@ -93,6 +93,7 @@ interface CarMaterials {
   brokenMarker: THREE.Material;
   engine: THREE.Material;
   upholstery: THREE.Material;
+  plate: THREE.Material;
 }
 
 /** Glass panes (from the blueprint's part names). */
@@ -141,7 +142,9 @@ function planarProjection(geometry: THREE.BufferGeometry): GlassPane {
 
 /** Body parts that can be knocked off. Everything else stays on and only dents. */
 /** Small trim that gets knocked clean off: fewer hit points, light debris. */
-const TRIM = new Set(['grille', 'grille-frame', 'mirror-left', 'mirror-right', 'exhaust-tip-left', 'exhaust-tip-right']);
+const TRIM = new Set([
+  'grille', 'grille-frame', 'mirror-left', 'mirror-right', 'exhaust-tip-left', 'exhaust-tip-right', 'plate-rear', 'filler-cap',
+]);
 const DETACHABLE = new Set(['hood', 'trunk', 'door-left', 'door-right', 'bumper-front', 'bumper-rear', ...TRIM]);
 const PANEL_MASS = 20;
 const TRIM_MASS = 3;
@@ -182,6 +185,7 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
       brokenMarker: std('#7a4a14', { roughness: 0.6 }),
       engine: std('#c0502d', { roughness: 0.5, metalness: 0.3 }),
       upholstery: std('#5a2e24', { roughness: 0.75 }),
+      plate: std('#e6e1cc', { roughness: 0.6 }),
     };
     byPaint.set(paint, m);
   }
@@ -215,8 +219,8 @@ function hingesFor(cfg: CarConfig): Record<string, HingeSpec> {
     'door-left': { ...door, anchor: v(-doorX, doorH, doorZ), min: -1.2, max: -ajar },
     hood: { ...lid, anchor: v(0, sample(bp.deck, bp.hood[1]), bp.hood[1]), min: ajar, max: 1.25, mass: 25 },
     trunk: { ...lid, anchor: v(0, sample(bp.deck, bp.trunk[0]), bp.trunk[0]), min: -1.25, max: -ajar, mass: 20 },
-    'bumper-front': { ...bumper, anchor: v(0.95, 0.5, bp.front - 0.06 + noseShift(bp, 0.95, 0.5, bp.front - 0.06)) },
-    'bumper-rear': { ...bumper, anchor: v(0.95, 0.56, bp.rear + 0.06) },
+    'bumper-front': { ...bumper, anchor: v(0.95, 0.5, bp.front - 0.06 + endShift(bp, 0.95, 0.5, bp.front - 0.06)) },
+    'bumper-rear': { ...bumper, anchor: v(0.95, 0.56, bp.rear + 0.06 + endShift(bp, 0.95, 0.56, bp.rear + 0.06)) },
   };
 }
 
@@ -333,23 +337,23 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
 
   const box = (w: number, h: number, d: number, segX = 1) => new THREE.BoxGeometry(w, h, d, segX, 1, 1);
   const at = (x: number, h: number, z: number) => new THREE.Vector3(x, h + gy, z);
-  /** A point on the nose: `at`, set back by the nose shape like the panels around it. */
-  const onNose = (x: number, h: number, z: number) => at(x, h, z + noseShift(bp, x, h, z));
-  /** A part centred at `centre`, bent to the nose shape (subdivide it across the width). */
-  const noseAdd = (name: string, geometry: THREE.BufferGeometry, material: THREE.Material, centre: THREE.Vector3) => {
-    bendNose(bp, geometry.translate(centre.x, centre.y, centre.z));
+  /** A point at an end of the car: `at`, moved by the end shapes like the panels around it. */
+  const onEnd = (x: number, h: number, z: number) => at(x, h, z + endShift(bp, x, h, z));
+  /** A part centred at `centre`, bent to the end shapes (subdivide it across the width). */
+  const endAdd = (name: string, geometry: THREE.BufferGeometry, material: THREE.Material, centre: THREE.Vector3) => {
+    bendEnds(bp, geometry.translate(centre.x, centre.y, centre.z));
     add(name, geometry.translate(-centre.x, -centre.y, -centre.z), material, centre);
   };
 
   // Chrome bumpers, subdivided along their length so they can bend.
-  noseAdd('bumper-front', box(2.0, 0.12, 0.13, 10), mat.chrome, at(0, 0.5, bp.front - 0.06));
-  add('bumper-rear', box(1.98, 0.12, 0.13, 10), mat.chrome, at(0, 0.56, bp.rear + 0.06));
+  endAdd('bumper-front', box(2.0, 0.12, 0.13, 10), mat.chrome, at(0, 0.5, bp.front - 0.06));
+  endAdd('bumper-rear', box(1.98, 0.12, 0.13, 10), mat.chrome, at(0, 0.56, bp.rear + 0.06));
 
   // Grille with a chrome surround, covering the grille opening (its frame overlaps the edge).
   // Subdivided across so a crumpled nose bends it along with it.
   const grille = bp.openings.grille;
-  noseAdd('grille-frame', box(grille.width + 0.1, grille.height + 0.1, 0.03, 8), mat.chrome, at(0, grille.h, bp.front - 0.005));
-  noseAdd('grille', box(grille.width + 0.04, grille.height + 0.04, 0.03, 8), mat.dark, at(0, grille.h, bp.front - 0.02));
+  endAdd('grille-frame', box(grille.width + 0.1, grille.height + 0.1, 0.03, 8), mat.chrome, at(0, grille.h, bp.front - 0.005));
+  endAdd('grille', box(grille.width + 0.04, grille.height + 0.04, 0.03, 8), mat.dark, at(0, grille.h, bp.front - 0.02));
 
   // Lights are rigid fixtures (see CarLights), posed relative to their mount point. Head- and
   // taillights cover real openings in the end panels (see the blueprint's openings); side markers
@@ -382,35 +386,68 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     // The lens is the last part (the ring, if any, comes first).
     lights.push({ name, kind, group, lens: meshes[meshes.length - 1], socket, normal });
   };
+  /** Tilt (about X) of the tail panel at (x, h): its slope as it leans in toward the top. */
+  const tailTilt = (x: number, h: number) =>
+    Math.atan((endShift(bp, x, h + 0.01, bp.rear) - endShift(bp, x, h - 0.01, bp.rear)) / 0.02);
+  /** The rear-facing direction tilted by `tilt` about X (what +Z becomes under rotateX(tilt)). */
+  const facingAt = (tilt: number) => new THREE.Vector3(0, -Math.sin(tilt), Math.cos(tilt));
+  /** One half (`up` = 1 upper, −1 lower) of a w × h rounded rectangle, cut across its middle with a `seam` gap. */
+  const lensHalf = (w: number, h: number, r: number, seam: number, up: number) => {
+    const shape = new THREE.Shape();
+    const y = (v: number) => up * v;
+    shape.moveTo(-w / 2, y(seam / 2));
+    shape.lineTo(w / 2, y(seam / 2));
+    shape.lineTo(w / 2, y(h / 2 - r));
+    shape.absarc(w / 2 - r, y(h / 2 - r), r, 0, up * Math.PI / 2, up < 0);
+    shape.lineTo(-w / 2 + r, y(h / 2));
+    shape.absarc(-w / 2 + r, y(h / 2 - r), r, up * Math.PI / 2, up * Math.PI, up < 0);
+    shape.lineTo(-w / 2, y(seam / 2));
+    return shape;
+  };
+  const extrude = (shape: THREE.Shape, depth: number) =>
+    new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments: 3 });
   const disc = (r: number, depth: number) => new THREE.CylinderGeometry(r, r, depth, 10).rotateX(Math.PI / 2);
-  const back = new THREE.Vector3(0, 0, 1);
   const forward = new THREE.Vector3(0, 0, -1);
   // Chrome ring wider than the opening so it covers the rim; lens just inside the opening.
   const head = bp.openings.head;
   for (const side of [-1, 1]) {
     for (const hx of head.x) {
       const x = side * hx;
-      fixture(`headlight-${x}`, 'head', onNose(x, head.h, bp.front), forward, [
+      fixture(`headlight-${x}`, 'head', onEnd(x, head.h, bp.front), forward, [
         [disc(head.radius * 1.3, 0.04), mat.chrome, new THREE.Vector3(0, 0, -0.01)],
         [disc(head.radius * 0.98, 0.05), mat.headlight, new THREE.Vector3(0, 0, -0.02)],
       ]);
     }
   }
-  // The 70s full-width taillight strip, in two halves so each side can go on its own.
+  // Taillights: a red lens in two sections (upper and lower, with a seam where the dark recess
+  // shows through), one per side in its own rounded opening. The lens is a little smaller than
+  // the opening, so the recess also shows as a thin outline around it. Tilted back with the
+  // leaning tail panel (built facing +Z, then tilted).
   const tail = bp.openings.tail;
+  const origin = new THREE.Vector3();
+  const SEAM = 0.006;
   for (const side of [-1, 1]) {
-    fixture(`taillight-${side}`, 'tail', at(side * tail.x, tail.h, bp.rear), back, [
-      [box(tail.width + 0.02, tail.height + 0.01, 0.03, 3), mat.taillight, new THREE.Vector3(0, 0, 0.01)],
+    const tilt = tailTilt(side * tail.x, tail.h);
+    const w = tail.width - 0.008;
+    const h = tail.height - 0.008;
+    const r = tail.radius - 0.004;
+    // Nearly flush: 8 mm proud of the panel, the rest down in the recess.
+    const halves = [1, -1].map((up) => extrude(lensHalf(w, h, r, SEAM, up), 0.03).translate(0, 0, -0.022));
+    const lens = mergeGeometries(halves);
+    halves.forEach((g) => g.dispose());
+    if (!lens) throw new Error('Taillight lens failed to merge');
+    fixture(`taillight-${side}`, 'tail', onEnd(side * tail.x, tail.h, bp.rear), facingAt(tilt), [
+      [lens.rotateX(tilt), mat.taillight, origin],
     ]);
   }
   for (const side of [-1, 1]) {
     const out = new THREE.Vector3(side, 0, 0);
     const zf = bp.front + 0.25;
     const zr = bp.rear - 0.25;
-    fixture(`marker-front-${side}`, 'marker', onNose(side * sideHalfWidth(bp, zf, 0.72), 0.72, zf), out, [
+    fixture(`marker-front-${side}`, 'marker', onEnd(side * sideHalfWidth(bp, zf, 0.72), 0.72, zf), out, [
       [box(0.02, 0.05, 0.14), mat.marker, new THREE.Vector3(side * 0.01, 0, 0)],
     ], box(0.01, 0.045, 0.13));
-    fixture(`marker-rear-${side}`, 'tail', at(side * sideHalfWidth(bp, zr, 0.74), 0.74, zr), out, [
+    fixture(`marker-rear-${side}`, 'tail', onEnd(side * sideHalfWidth(bp, zr, 0.74), 0.74, zr), out, [
       [box(0.02, 0.05, 0.14), mat.taillight, new THREE.Vector3(side * 0.01, 0, 0)],
     ], box(0.01, 0.045, 0.13));
   }
@@ -422,6 +459,28 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     parts.forEach(([g]) => g.dispose());
     add(name, merged, parts.map(([, m]) => m));
   };
+  // License plate in its recess below the bumper, and the fuel filler cap between the
+  // taillights; both small trim that can be knocked off.
+  const plate = bp.openings.plate;
+  const plateTilt = tailTilt(0, plate.h);
+  const plateAt = onEnd(0, plate.h, bp.rear).addScaledVector(facingAt(plateTilt), -0.02);
+  // The plate face fills its recess, leaving a 2.5 cm margin around it; a dark frame behind it.
+  const [faceW, faceH] = [plate.width - 0.05, plate.height - 0.025];
+  assemble('plate-rear', [
+    [new THREE.BoxGeometry(faceW + 0.02, faceH + 0.015, 0.006).rotateX(plateTilt).translate(plateAt.x, plateAt.y, plateAt.z), mat.dark],
+    [new THREE.BoxGeometry(faceW, faceH, 0.008).rotateX(plateTilt).translate(plateAt.x, plateAt.y, plateAt.z), mat.plate],
+  ]);
+  // Half sunk into the panel: between the openings the tail panel is a few large flat
+  // triangles, which can sit a centimetre off the end shape's curve.
+  const cap = bp.fillerCap;
+  const capTilt = tailTilt(0, cap.h);
+  const capAt = onEnd(0, cap.h, bp.rear);
+  const capTop = capAt.clone().addScaledVector(facingAt(capTilt), 0.012);
+  assemble('filler-cap', [
+    [new THREE.CylinderGeometry(cap.radius, cap.radius, 0.02, 10).rotateX(Math.PI / 2 + capTilt).translate(capAt.x, capAt.y, capAt.z), mat.chrome],
+    [new THREE.CylinderGeometry(cap.radius * 0.6, cap.radius * 0.6, 0.01, 10).rotateX(Math.PI / 2 + capTilt).translate(capTop.x, capTop.y, capTop.z), mat.chrome],
+  ]);
+
   /** Primitive placed at (x, height above ground, z), optionally tilted about X then Z. */
   const put = (geo: THREE.BufferGeometry, x: number, h: number, z: number, tiltX = 0, tiltZ = 0) =>
     geo.rotateX(tiltX).rotateZ(tiltZ).translate(x, h + gy, z);

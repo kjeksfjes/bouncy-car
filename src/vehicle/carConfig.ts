@@ -183,9 +183,10 @@ const COUPE_BLUEPRINT: CarBlueprint = {
   side: [[0, 0.91], [0.15, 0.94], [0.35, 0.98], [0.62, 1], [0.78, 0.99], [0.89, 0.97], [0.97, 0.955], [1, 0.92]],
   deck: [
     [-2.46, 0.845], [-2.4, 0.875], [-2.33, 0.91], [-1.6, 0.98], [-0.77, 1.04], [0, 1.03], [0.9, 1.04],
-    [1.53, 1.07], [2.0, 1.05], [2.32, 1.03], [2.4, 0.98], [2.44, 0.78],
+    [1.53, 1.07], [2.0, 1.05], [2.32, 1.03], [2.44, 0.985],
   ],
-  rocker: [[-2.46, 0.45], [-2.25, 0.37], [-2.0, 0.33], [2.0, 0.33], [2.3, 0.38], [2.44, 0.44]],
+  // The tail valance comes down to 0.36 (rear view), just above the exhaust tips.
+  rocker: [[-2.46, 0.45], [-2.25, 0.37], [-2.0, 0.33], [2.0, 0.33], [2.3, 0.345], [2.44, 0.36]],
   crown: 0.03,
   wellHalf: 0.62,
   arches: [
@@ -210,7 +211,12 @@ const COUPE_BLUEPRINT: CarBlueprint = {
   // the grille opening stays under the nose panel's top edge (≈0.78 at the tip).
   openings: {
     head: { x: [0.56, 0.76], h: 0.7, radius: 0.066 },
-    tail: { x: 0.39, h: 0.7, width: 0.74, height: 0.09 },
+    // Rear view: two separate rounded taillights in the outer thirds of the tail panel, with the
+    // filler cap between them and the plate below the bumper; heights placed by their share of
+    // the tail panel, since that view is drawn out of proportion vertically.
+    tail: { x: 0.628, h: 0.795, width: 0.565, height: 0.13, radius: 0.035 },
+    // Wider than the drawing's plate, by choice.
+    plate: { h: 0.4375, width: 0.38, height: 0.135 },
     grille: { h: 0.69, width: 0.82, height: 0.16 },
     depth: 0.06,
   },
@@ -225,6 +231,16 @@ const COUPE_BLUEPRINT: CarBlueprint = {
     cornerX: 0.8,
     blend: 0.6,
   },
+  // Side view: the tail panel leans in at the top (its top corner ≈9.5 cm ahead of the tail at
+  // the bumper) and the valance under the bumper recedes a little. Straight across in plan.
+  // Steepest fade ≈2 / 0.5 × 0.095 ≈ 0.38.
+  tail: {
+    profile: [[0.36, 0.08], [0.45, 0.04], [0.55, 0.01], [0.62, 0], [0.7, 0.015], [0.77, 0.036], [0.9, 0.07], [0.985, 0.095]],
+    vee: 0,
+    cornerX: 1,
+    blend: 0.5,
+  },
+  fillerCap: { h: 0.78, radius: 0.03 },
   // Traced from the underside and rear views (ref/1970s-muscle-car/back-underside.png, ≈234 px/m measured
   // between the axles). The underside drawing's rear overhang is shorter than the side view's,
   // so the run past the rear axle is stretched to reach the tail. Out of the manifold, down
