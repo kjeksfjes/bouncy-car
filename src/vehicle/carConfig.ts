@@ -264,12 +264,12 @@ const COUPE_BLUEPRINT: CarBlueprint = {
   // between the axles). The underside drawing's rear overhang is shorter than the side view's,
   // so the run past the rear axle is stretched to reach the tail. Out of the manifold, down
   // through the floor beside the gearbox, in toward the driveshaft to a muffler ahead of the rear
-  // axle, then out again past the fuel tank. The rear view puts the tips at ±0.42 m, about 0.25 m
-  // below the bumper's centre.
+  // axle, then out again past the fuel tank, kicking up over the axle tube (≈0.29 at rest). The
+  // rear view puts the tips at ±0.42 m, about 0.25 m below the bumper's centre.
   exhaust: {
     route: [
       [0.33, 0.54, -1.3], [0.37, 0.42, -1.16], [0.38, 0.27, -1.0], [0.38, 0.265, -0.8], [0.22, 0.265, -0.52],
-      [0.22, 0.265, 0.95], [0.27, 0.265, 1.05], [0.42, 0.27, 1.2], [0.42, 0.29, 2.38],
+      [0.22, 0.265, 0.95], [0.27, 0.265, 1.05], [0.42, 0.27, 1.2], [0.42, 0.31, 1.335], [0.42, 0.29, 1.55], [0.42, 0.29, 2.38],
     ],
     pipeRadius: 0.028,
     // The muffler's top sits just under the floor (rocker 0.33).

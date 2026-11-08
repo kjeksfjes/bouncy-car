@@ -835,6 +835,8 @@ export class Car {
       w.visual.pivot.rotation.y = w.front ? this.steer : 0;
       w.visual.spin.rotation.x -= w.spinSpeed * frameDt;
     }
+    // A lost wheel's last spring length stands in for its hub, so the axle and arms stay put.
+    this.model.linkage.update(this.wheels.map((w) => w.anchor.y - w.suspLen));
     this.panels.sync(alpha);
     this.leak(frameDt);
     this.lights.update(frameDt);

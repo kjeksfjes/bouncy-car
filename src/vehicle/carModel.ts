@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { bendEnds, buildPanels, endShift, sample, sideHalfWidth, type Bumper, type CarBlueprint, type PanelMaterial, type Panels } from './blueprint';
 import type { CarConfig } from './carConfig';
 import type { LightFixtureDef, LightKind } from './lights';
+import { Linkage, underbodyParts } from './underbody';
 
 /** A dentable mesh on the car. Detachable pieces can be knocked off. */
 export interface CarPiece {
@@ -75,6 +76,8 @@ export interface CarModel {
   lights: LightFixtureDef[];
   /** Lens material once a light is smashed, per kind. */
   smashedLens: Record<LightKind, THREE.Material>;
+  /** Axle, driveshaft and A-arms that follow the wheels (see Linkage). */
+  linkage: Linkage;
 }
 
 interface CarMaterials {
@@ -94,6 +97,8 @@ interface CarMaterials {
   engine: THREE.Material;
   upholstery: THREE.Material;
   plate: THREE.Material;
+  /** Unpainted cast and galvanised metal: gearbox, differential, fuel tank. */
+  alloy: THREE.Material;
 }
 
 /** Glass panes (from the blueprint's part names). */
@@ -186,6 +191,7 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
       engine: std('#c0502d', { roughness: 0.5, metalness: 0.3 }),
       upholstery: std('#5a2e24', { roughness: 0.75 }),
       plate: std('#e6e1cc', { roughness: 0.6 }),
+      alloy: std('#8b8e91', { roughness: 0.45, metalness: 0.5 }),
     };
     byPaint.set(paint, m);
   }
@@ -630,6 +636,11 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     [put(new THREE.BoxGeometry(0.04, 0.03, 0.04), 0.6, 0.735, -2.04), mat.taillight],
   ]);
 
+  // Underbody (frame, floor ribs, drivetrain, fuel tank) and the suspension parts that follow
+  // the wheels, from the underside drawing.
+  assemble('underbody', underbodyParts(cfg, mat));
+  const linkage = new Linkage(cfg, mat, root);
+
   // Spare wheel lying in the trunk.
   assemble('spare', [
     [put(new THREE.CylinderGeometry(0.32, 0.32, 0.2, 14), 0.35, 0.5, 2.0), mat.tire],
@@ -702,5 +713,6 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     wheels,
     lights,
     smashedLens: { head: mat.brokenHead, tail: mat.brokenTail, marker: mat.brokenMarker },
+    linkage,
   };
 }
