@@ -1,6 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { hash2, smoothstep } from './noise';
+import { hash2 } from './noise';
 import { PropScatter, type ChunkProps } from './props';
 import type { TerrainField } from './terrainField';
 import type { TreeLayout } from './trees';
@@ -9,29 +9,6 @@ export const CHUNK_SIZE = 64;
 const CHUNK_RES = 32; // cells per side → 2 m grid
 /** Chunks loaded in each direction around the car. Keep fog far below LOAD_RADIUS * CHUNK_SIZE. */
 export const LOAD_RADIUS = 4;
-
-const SNOW = new THREE.Color('#eef3f9');
-const SNOW_SHADE = new THREE.Color('#dde6f0');
-/** Wind-packed snow on steep faces (drop walls): a cooler blue hint, still light. */
-const ICE = new THREE.Color('#c4d7ea');
-const ROCK = new THREE.Color('#646872');
-
-/**
- * Surface colour by face steepness, as normal.y (cos of the slope angle). Drop walls
- * peak around 47° (base slope 0.32 + max drop gradient 0.75), so they stay snow with
- * an icy tint; rock only shows on near-vertical faces.
- */
-const SURFACE = {
-  /** SNOW_SHADE → SNOW from ≈32° to ≈14°. */
-  shadeFrom: 0.85,
-  shadeTo: 0.97,
-  /** Icy tint fades in from ≈30° and is full at ≈50°. */
-  iceFrom: 0.86,
-  iceTo: 0.64,
-  /** Rock fades in from ≈55° and is full at ≈63°. */
-  rockFrom: 0.57,
-  rockTo: 0.45,
-};
 
 /** A point the terrain must exist around, e.g. the player (full view) or an AI car (physics only). */
 export interface StreamCenter {
@@ -49,6 +26,8 @@ interface Chunk {
 /** Streams terrain chunks (render mesh + trimesh collider + props) around a moving point. */
 export class Terrain {
   private readonly chunks = new Map<string, Chunk>();
+  /** Loaded chunks whose look is out of date (the biomes changed under them), rebuilt in place. */
+  private readonly stale = new Set<string>();
   private readonly material = new THREE.MeshStandardMaterial({
     vertexColors: true,
     flatShading: true,
@@ -91,6 +70,17 @@ export class Terrain {
     }
     const queue = [...missing.values()].sort((a, b) => a[2] - b[2]);
     for (const [cx, cz] of queue.slice(0, budget)) this.chunks.set(key(cx, cz), this.build(cx, cz));
+    // Stale chunks: the new one is built before the old goes, so there's never a hole in the ground.
+    let rebuilds = budget;
+    for (const k of this.stale) {
+      if (rebuilds-- <= 0) break;
+      this.stale.delete(k);
+      const old = this.chunks.get(k);
+      if (!old) continue;
+      const [cx, cz] = k.split(',').map(Number);
+      this.chunks.set(k, this.build(cx, cz));
+      this.dispose(old);
+    }
 
     for (const [k, chunk] of this.chunks) {
       const [cx, cz] = k.split(',').map(Number);
@@ -98,7 +88,16 @@ export class Terrain {
       if (!keep) {
         this.dispose(chunk);
         this.chunks.delete(k);
+        this.stale.delete(k);
       }
+    }
+  }
+
+  /** Marks every loaded chunk reaching downhill of `z` for rebuilding (its colours and trees changed). */
+  refreshBeyond(z: number): void {
+    for (const k of this.chunks.keys()) {
+      const cz = Number(k.split(',')[1]);
+      if (cz * CHUNK_SIZE < z) this.stale.add(k);
     }
   }
 
@@ -158,10 +157,8 @@ export class Terrain {
       vc.fromArray(verts, indices[f + 2] * 3);
       normal.subVectors(vb, va).cross(vc.clone().sub(va)).normalize();
 
-      const S = SURFACE;
-      col.copy(SNOW_SHADE).lerp(SNOW, smoothstep(S.shadeFrom, S.shadeTo, normal.y));
-      col.lerp(ICE, smoothstep(S.iceFrom, S.iceTo, normal.y));
-      col.lerp(ROCK, smoothstep(S.rockFrom, S.rockTo, normal.y));
+      // Coloured by the ground at the face's middle (snow, thaw patches, grass, dirt, stone).
+      this.field.biome.colour((va.x + vb.x + vc.x) / 3, (va.z + vb.z + vc.z) / 3, normal, col);
       const jitter = 1 + (hash2(f, cx * 7919 + cz, this.field.seed + 7) - 0.5) * 0.06;
       col.multiplyScalar(jitter);
 

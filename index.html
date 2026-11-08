@@ -52,6 +52,12 @@
         background: #6b3fd6; color: #fff; font-weight: 800; letter-spacing: 0.08em; display: none;
       }
       #slow.visible { display: block; }
+      #toast {
+        position: absolute; top: 30%; left: 50%; transform: translateX(-50%); padding: 10px 20px; border-radius: 10px;
+        background: rgba(20, 24, 30, 0.72); color: #fff; font-size: 22px; font-weight: 800; letter-spacing: 0.06em;
+        opacity: 0; transition: opacity 0.3s;
+      }
+      #toast.visible { opacity: 1; }
       #paused {
         position: absolute; top: 72px; left: 50%; transform: translateX(-50%); padding: 10px 18px; border-radius: 10px;
         background: rgba(20, 24, 30, 0.72); color: #fff; text-align: center; display: none;
@@ -72,11 +78,12 @@
     <div id="hud">
       <div class="hint">
         <kbd>W</kbd>/<kbd>S</kbd> drive · <kbd>A</kbd>/<kbd>D</kbd> steer · <kbd>Space</kbd> handbrake ·
-        <kbd>R</kbd> reset · <kbd>N</kbd> new car · <kbd>C</kbd> camera · drag to orbit, scroll to zoom · <kbd>P</kbd> autopilot (<kbd>Shift</kbd>+<kbd>P</kbd> with heading) · <kbd>T</kbd> slow motion (<kbd>'</kbd> speed) · <kbd>M</kbd> mute · <kbd>Esc</kbd> pause
+        <kbd>R</kbd> reset · <kbd>N</kbd> new car · <kbd>B</kbd> next biome ahead (<kbd>Shift</kbd>+<kbd>B</kbd> go there) · <kbd>C</kbd> camera · drag to orbit, scroll to zoom · <kbd>P</kbd> autopilot (<kbd>Shift</kbd>+<kbd>P</kbd> with heading) · <kbd>T</kbd> slow motion (<kbd>'</kbd> speed) · <kbd>M</kbd> mute · <kbd>Esc</kbd> pause
       </div>
       <div id="air"></div>
       <div id="autopilot">AUTOPILOT</div>
       <div id="slow"></div>
+      <div id="toast"></div>
       <div id="paused"><strong>PAUSED</strong><small>Esc to resume · drag to orbit, scroll to zoom · C camera</small></div>
       <div id="error" hidden></div>
       <div class="panel">

@@ -15,6 +15,8 @@ import { AiDriver } from './vehicle/aiDriver';
 import { Car, type CarEvents, type CarInput } from './vehicle/car';
 import { COUPE_70S } from './vehicle/carConfig';
 import { Debris } from './world/debris';
+import { BIOMES } from './world/biome';
+import type { TerrainPreset } from './world/features';
 import { LOAD_RADIUS, Terrain, type StreamCenter } from './world/terrain';
 import { TerrainField } from './world/terrainField';
 import { TreeLayout } from './world/trees';
@@ -25,6 +27,14 @@ const SLOW_SPEEDS = [1 / 2, 1 / 4, 1 / 8, 1 / 16];
 const SLOW_LABELS = ['½×', '¼×', '⅛×', '1/16×'];
 /** How quickly slow motion eases in and out (1/s): about 0.3 s. */
 const SLOW_RAMP = 10;
+/**
+ * B starts the next biome this far ahead (m): just past the fog's end (250 m from the camera),
+ * so the change can't be seen happening; and ramps it in over `ramp` m. Shift+B looks up to
+ * `searchRange` m downhill for where the next biome starts.
+ */
+/** How quickly the sky and fog follow the biome's warmth (1/s): a few seconds. */
+const WARMTH_EASE = 0.8;
+const BIOME_JUMP = { ahead: 260, ramp: 400, searchRange: 20_000 };
 type CameraMode = (typeof CAMERA_MODES)[number];
 
 /** No car legitimately goes this fast (m/s); beyond it the physics has blown up. */
@@ -57,6 +67,8 @@ export class Game {
   private slowMotion = false;
   private slowLevel = 1;
   private timeScale = 1;
+  /** The atmosphere's warmth (see Stage.setWarmth), eased toward the biome's. */
+  private warmth = 0;
   private readonly input = new Input();
   private readonly hud = new Hud();
   private readonly audio = new GameAudio();
@@ -76,11 +88,15 @@ export class Game {
   private accumulator = 0;
   private lastTime = 0;
 
-  constructor(container: HTMLElement, seed: number) {
+  /**
+   * @param start metres downhill to spawn at (dev: to test the lower biomes)
+   * @param terrain which terrain generator to use
+   */
+  constructor(container: HTMLElement, seed: number, start = 0, terrain: TerrainPreset = 'classic') {
     this.stage = new Stage(container);
     this.world = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
     this.world.timestep = PHYSICS_STEP;
-    this.field = new TerrainField(seed);
+    this.field = new TerrainField(seed, terrain);
     this.trees = new TreeLayout(this.field);
     this.terrain = new Terrain(this.field, this.stage.scene, this.world, this.trees);
     this.ai = new AiDriver(this.trees);
@@ -94,12 +110,12 @@ export class Game {
     this.orbit = new OrbitCamera(this.stage.camera, this.field, pointer);
     this.heli = new HeliCamera(this.stage.camera, this.field, pointer);
     this.juice = new Juice(
-      this.stage.scene, this.field, this.orbit, this.stage.camera,
+      this.stage.scene, this.field, this.trees, this.orbit, this.stage.camera,
       (car) => car === this.car,
       (seconds) => (this.hitStop = Math.max(this.hitStop, seconds)),
     );
 
-    const spawn = new THREE.Vector3(0, this.field.height(0, 0) + 1.5, 0);
+    const spawn = new THREE.Vector3(0, this.field.height(0, -start) + 1.5, -start);
     this.terrain.update([{ position: spawn, radius: LOAD_RADIUS }], INITIAL_CHUNKS);
     this.car = this.newCar(spawn, 0);
   }
@@ -156,10 +172,14 @@ export class Game {
     // While paused, only the camera and mute keys act; the rest are dropped, not queued.
     const reset = this.input.consume('KeyR');
     const replace = this.input.consume('KeyN');
+    const nextBiome = this.input.consume('KeyB');
+    const jumpBiome = this.input.consume('shift:KeyB');
     const autopilot = this.input.consume('KeyP');
     if (!this.paused) {
       if (reset) this.car.resetUpright(this.field);
       if (replace) this.replaceCar();
+      if (jumpBiome) this.jumpToNextBiome();
+      else if (nextBiome) this.startNextBiome();
       if (autopilot) this.toggleAutopilot(this.input.shift);
     }
     if (this.input.consume('KeyM')) this.audio.toggleMute();
@@ -229,6 +249,7 @@ export class Game {
     this.debris.update(gt, pos, this.view, alpha);
     this.traffic.update(gt, pos, this.view);
     this.stage.follow(pos);
+    this.updateWarmth(dt);
     this.aiArrow.visible = this.autopilot && this.showAiHeading;
     if (this.aiArrow.visible) {
       this.aiArrow.position.copy(pos).setY(pos.y + 1.6);
@@ -240,6 +261,14 @@ export class Game {
     this.audio.update(gt, this.stage.camera, live);
     this.hud.update(gt, this.car, this.autopilot);
     this.stage.render();
+  }
+
+  /** Eases the sky and fog toward the warmth of the biome the car is in (so Shift+B doesn't jump it). */
+  private updateWarmth(dt: number): void {
+    const target = this.field.biome.warmth(this.car.position.z);
+    this.warmth += (target - this.warmth) * (1 - Math.exp(-WARMTH_EASE * dt));
+    if (Math.abs(target - this.warmth) < 0.002) this.warmth = target;
+    this.stage.setWarmth(this.warmth);
   }
 
   private togglePause(): void {
@@ -289,6 +318,53 @@ export class Game {
     const decision = driver.update(dt, car, others);
     if (decision.reset) car.resetUpright(this.field);
     return decision.input;
+  }
+
+  /**
+   * B: the next biome starts. From just beyond the fog ahead, the biome progression jumps to where
+   * the next biome begins (from the last, back to the top), ramped in so it unfolds as you drive
+   * into it. The ground's shape doesn't change; chunks already built out there get rebuilt.
+   */
+  private startNextBiome(): void {
+    const biome = this.field.biome;
+    const here = -this.car.body.translation().z;
+    const from = here + BIOME_JUMP.ahead;
+    // Where the progression ends up past the ramp (earlier jumps included), and what comes next.
+    const reached = biome.distance(-(from + BIOME_JUMP.ramp));
+    const next = BIOMES.find((b) => b.from > reached + 50) ?? BIOMES[0];
+    biome.shift(from, next.from - reached, BIOME_JUMP.ramp);
+    this.trees.invalidate();
+    this.terrain.refreshBeyond(-from);
+    this.hud.toast(`${next.name} ahead`);
+  }
+
+  /**
+   * Shift+B: puts the car at the start of the next biome (from the last, back to the top), facing
+   * downhill and keeping its damage, with the terrain there built first. The start is the first
+   * spot downhill whose biome distance has reached it, so jumps made with B count.
+   */
+  private jumpToNextBiome(): void {
+    const biome = this.field.biome;
+    const t = this.car.body.translation();
+    const here = -t.z;
+    const next = BIOMES.find((b) => b.from > biome.distance(t.z) + 50) ?? BIOMES[0];
+    let target = 0;
+    if (next.from > 0) {
+      target = here + (next.from - biome.distance(t.z));
+      for (let d = here; d < here + BIOME_JUMP.searchRange; d += 10) {
+        if (biome.distance(-d) >= next.from) {
+          target = d;
+          break;
+        }
+      }
+    }
+    const to = new THREE.Vector3(t.x, this.field.height(t.x, -target), -target);
+    this.terrain.update([{ position: to, radius: LOAD_RADIUS }], INITIAL_CHUNKS);
+    this.car.resetUpright(this.field, { x: to.x, z: to.z, yaw: 0 });
+    this.lastSafe.copy(to);
+    (this.cameraMode === 'orbit' ? this.orbit : this.heli).reset();
+    this.hud.reset();
+    this.hud.toast(next.name);
   }
 
   private replaceCar(): void {

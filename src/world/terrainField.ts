@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import type { NoiseFunction2D } from 'simplex-noise';
-import { DescentFeatures } from './features';
+import { SUN_DIR } from '../render/stage';
+import { Biome } from './biome';
+import { DescentFeatures, type TerrainPreset } from './features';
 import { makeNoise, smoothstep } from './noise';
 
 /**
@@ -16,8 +18,9 @@ const SHAPE = {
   /** Weight of the second, smaller rolling-hill octave. */
   largeDetail: 0.3,
   /**
-   * A broad swell along the fall line: some stretches run steeper and faster, others gentler
-   * (±swellAmp / swellScale ≈ ±0.08 on the slope, more where it turns). Stretched across the slope.
+   * Varied preset only: a broad swell along the fall line, so some stretches run steeper and
+   * faster, others gentler (±swellAmp / swellScale ≈ ±0.08 on the slope, more where it turns).
+   * Stretched across the slope.
    */
   swellScale: 420,
   swellScaleX: 1600,
@@ -25,7 +28,7 @@ const SHAPE = {
   /** Moguls – the bumps you bounce over. */
   midScale: 38,
   midAmp: 2.0,
-  /** Bumpy and smooth stretches: the moguls swing between these multiples over `roughScale` m. */
+  /** Varied preset only: bumpy and smooth stretches, the moguls swinging between these multiples over `roughScale` m. */
   roughScale: 650,
   roughMin: 0.45,
   roughMax: 1.5,
@@ -54,8 +57,11 @@ const SHAPE = {
 const TREES = {
   rampStart: 400,
   rampEnd: 2500,
-  /** Max chance a candidate cell gets a tree, in the densest forest. */
-  maxChance: 0.55,
+  /**
+   * Max chance a candidate cell gets a tree, in the densest forest: 0.55 per 9 m cell, scaled to
+   * the 6 m cells (× (6/9)², the same trees per area).
+   */
+  maxChance: 0.245,
   /** Tree size multiplier at the treeline; reaches 1 at rampEnd. */
   treelineScale: 0.4,
   /** Forest patchiness: smaller groves and gaps. */
@@ -87,8 +93,15 @@ export class TerrainField {
   private readonly rough: NoiseFunction2D;
   private readonly features: DescentFeatures;
   private readonly spawnHeight: number;
+  /** Ground cover (snow, thaw, grassland) along the descent. */
+  readonly biome: Biome;
 
-  constructor(readonly seed: number) {
+  /** @param preset which terrain generator to use (see TerrainPreset) */
+  constructor(
+    readonly seed: number,
+    private readonly preset: TerrainPreset = 'classic',
+  ) {
+    this.biome = new Biome(seed, SUN_DIR);
     this.large = makeNoise(seed);
     this.mid = makeNoise(seed + 1);
     this.small = makeNoise(seed + 2);
@@ -98,7 +111,7 @@ export class TerrainField {
     this.meadow = makeNoise(seed + 7);
     this.swell = makeNoise(seed + 8);
     this.rough = makeNoise(seed + 9);
-    this.features = new DescentFeatures(seed, makeNoise(seed + 6));
+    this.features = new DescentFeatures(seed, makeNoise(seed + 6), preset);
     this.spawnHeight = this.rawHeight(0, 0);
   }
 
@@ -115,8 +128,11 @@ export class TerrainField {
       (this.large(x / s.largeScale, z / s.largeScale) +
         s.largeDetail * this.large(x / (s.largeScale * 0.42) + 31.7, z / (s.largeScale * 0.42) - 12.3)) *
       s.largeAmp;
-    const swell = this.swell(x / s.swellScaleX, z / s.swellScale) * s.swellAmp;
-    const roughness = s.roughMin + (s.roughMax - s.roughMin) * smoothstep(-0.4, 0.6, this.rough(x / s.roughScale, z / s.roughScale));
+    const varied = this.preset === 'varied';
+    const swell = varied ? this.swell(x / s.swellScaleX, z / s.swellScale) * s.swellAmp : 0;
+    const roughness = varied
+      ? s.roughMin + (s.roughMax - s.roughMin) * smoothstep(-0.4, 0.6, this.rough(x / s.roughScale, z / s.roughScale))
+      : 1;
     const mid = this.mid(x / s.midScale, z / s.midScale) * s.midAmp * roughness;
     const small = this.small(x / s.smallScale, z / s.smallScale) * s.smallAmp;
     const ridgeShape = 1 - Math.abs(this.ridge(x / s.ridgeScaleX, z / s.ridgeScaleZ));
@@ -133,12 +149,15 @@ export class TerrainField {
     return out.set(-dx, 2 * e, -dz).normalize();
   }
 
-  /** 0..TREES.maxChance: probability that a candidate cell here holds a tree. */
+  /** 0..1: probability that a candidate cell here holds a tree. */
   treeDensity(x: number, z: number): number {
     const T = TREES;
     const patches = smoothstep(-0.25, 0.45, this.forest(x / T.patchScale, z / T.patchScale));
     const open = smoothstep(T.meadowFrom, T.meadowTo, this.meadow(x / T.meadowScale, z / T.meadowScale));
-    return patches * (1 - open) * this.treeline(z) * T.maxChance;
+    const forest = patches * (1 - open) * this.treeline(z) * T.maxChance;
+    // In the grassland the trees gather into copses instead.
+    const g = this.biome.grassland(z);
+    return g > 0 ? forest + (this.biome.copseDensity(x, z) - forest) * g : forest;
   }
 
   /** Tree size multiplier: small near the treeline, full size further down. */
@@ -148,6 +167,6 @@ export class TerrainField {
 
   /** 0 above the treeline, rising to 1 at TREES.rampEnd. */
   private treeline(z: number): number {
-    return smoothstep(TREES.rampStart, TREES.rampEnd, -z);
+    return smoothstep(TREES.rampStart, TREES.rampEnd, this.biome.distance(z));
   }
 }

@@ -15,6 +15,9 @@ export class Input {
         // Also by the character typed, for keys that sit in different places on different
         // layouts (the apostrophe isn't on the same physical key on US and Norwegian keyboards).
         this.pressed.add(`char:${e.key}`);
+        // With Shift held at the press itself, so a quick Shift+key isn't lost if Shift is let go
+        // before the frame reads it.
+        if (e.shiftKey) this.pressed.add(`shift:${e.code}`);
       }
       this.held.add(e.code);
     });
@@ -39,7 +42,7 @@ export class Input {
     return this.any('ShiftLeft', 'ShiftRight');
   }
 
-  /** True once per key press: a key code (`KeyT`), or a typed character as `char:'`. */
+  /** True once per key press: a key code (`KeyT`), a typed character as `char:'`, or `shift:KeyB` for Shift+B. */
   consume(code: string): boolean {
     return this.pressed.delete(code);
   }
