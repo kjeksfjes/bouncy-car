@@ -1,0 +1,17 @@
+{
+  "$comment": [
+    "Calibration of each view in the reference drawings, for scripts/overlay.mjs.",
+    "rect: [x, y, w, h] px of the view in its image. right/up: car-local axes pointing right/up on the page.",
+    "u / v: piecewise-linear maps from page px (x for u, y for v) to metres along right / up, in blueprint terms (heights above the drawing's ground line). Two points make a uniform scale; more stretch parts of a view that is drawn out of proportion.",
+    "side: axle centres (355, 387) and (1158, 387) over the 2.84 m wheelbase (282.7 px/m), ground line y=485.",
+    "top: length from the side view (4.935 m bumper to bumper, 178.3 px/m). front/rear: roof height from the side view (1.45 m; 233 and 217 px/m).",
+    "underside: drawn out of proportion (both overhangs ~25 % short, ~10 % narrow), so it's stretched: axles pinned, overhangs stretched to the bumpers, width to the body's ±1.02 m."
+  ],
+  "views": [
+    { "name": "side", "image": "side-top-front.png", "rect": [30, 40, 1480, 480], "right": [0, 0, 1], "up": [0, 1, 0], "u": [[355, -1.505], [1158, 1.335]], "v": [[485, 0], [202.3, 1]] },
+    { "name": "top", "image": "side-top-front.png", "rect": [20, 530, 940, 430], "right": [0, 0, 1], "up": [1, 0, 0], "u": [[42, -2.478], [922, 2.457]], "v": [[748, 0], [569.7, 1]] },
+    { "name": "front", "image": "side-top-front.png", "rect": [970, 560, 540, 380], "right": [-1, 0, 0], "up": [0, 1, 0], "u": [[1241, 0], [1474, 1]], "v": [[920, 0], [687, 1]] },
+    { "name": "rear", "image": "back-underside.png", "rect": [500, 40, 540, 370], "right": [1, 0, 0], "up": [0, 1, 0], "u": [[765, 0], [982, 1]], "v": [[383, 0], [166, 1]] },
+    { "name": "underside", "image": "back-underside.png", "rect": [230, 460, 1080, 450], "right": [0, 0, 1], "up": [-1, 0, 0], "u": [[255, -2.5], [420, -1.505], [1085, 1.335], [1280, 2.5]], "v": [[490, 1.02], [890, -1.02]] }
+  ]
+}
