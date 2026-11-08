@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { bendEnds, buildPanels, endShift, sample, sideHalfWidth, type CarBlueprint, type PanelMaterial, type Panels } from './blueprint';
+import { bendEnds, buildPanels, endShift, sample, sideHalfWidth, type Bumper, type CarBlueprint, type PanelMaterial, type Panels } from './blueprint';
 import type { CarConfig } from './carConfig';
 import type { LightFixtureDef, LightKind } from './lights';
 
@@ -214,14 +214,105 @@ function hingesFor(cfg: CarConfig): Record<string, HingeSpec> {
   const door = { axis: Y, mass: 35, damping: 4 };
   const lid = { axis: X, damping: 3 };
   const bumper = { axis: Z, min: ajar, max: 1.4, mass: 15, damping: 1, mirrorable: true };
+  // A bumper hangs from its corner, near where the straight part turns into the wrap.
+  const bumperAnchor = (spec: Bumper, z: number) => v(0.95, spec.h, z + endShift(bp, 0.95, spec.h, z));
   return {
     'door-right': { ...door, anchor: v(doorX, doorH, doorZ), min: ajar, max: 1.2 },
     'door-left': { ...door, anchor: v(-doorX, doorH, doorZ), min: -1.2, max: -ajar },
     hood: { ...lid, anchor: v(0, sample(bp.deck, bp.hood[1]), bp.hood[1]), min: ajar, max: 1.25, mass: 25 },
     trunk: { ...lid, anchor: v(0, sample(bp.deck, bp.trunk[0]), bp.trunk[0]), min: -1.25, max: -ajar, mass: 20 },
-    'bumper-front': { ...bumper, anchor: v(0.95, 0.5, bp.front - 0.06 + endShift(bp, 0.95, 0.5, bp.front - 0.06)) },
-    'bumper-rear': { ...bumper, anchor: v(0.95, 0.56, bp.rear + 0.06 + endShift(bp, 0.95, 0.56, bp.rear + 0.06)) },
+    'bumper-front': { ...bumper, anchor: bumperAnchor(bp.bumpers.front, bp.front - bp.bumpers.front.gap) },
+    'bumper-rear': { ...bumper, anchor: bumperAnchor(bp.bumpers.rear, bp.rear + bp.bumpers.rear.gap) },
   };
+}
+
+/**
+ * The bumper's section as (out, up) pairs, as fractions of its depth and height: a flat top and
+ * bottom, a vertical face, and chamfers between them. A flat chrome face just mirrors one patch
+ * of sky and reads as pale plastic; the chamfers catch light and shadow.
+ */
+const BUMPER_SECTION: readonly (readonly [number, number])[] = [
+  [-0.5, 0.5], [0.2, 0.5], [0.5, 0.25], [0.5, -0.25], [0.2, -0.5], [-0.5, -0.5],
+];
+
+/**
+ * A bumper (see Bumper) in car-local space, before the end shapes: its section swept along the
+ * path in plan, subdivided so it bends with dents and crush, with the guards merged in.
+ */
+function bumperGeometry(bp: CarBlueprint, end: 'front' | 'rear'): THREE.BufferGeometry {
+  const spec = bp.bumpers[end];
+  const { halfStraight: S, wrapRadius: R, wrapReturn: B } = spec;
+  // Path points in plan as (x, d, normal x, normal d): d runs back toward the car, the normal
+  // points away from it. Right half: straight, corner arc, return; mirrored for the left.
+  const half: [number, number, number, number][] = [];
+  for (let i = 0; i <= 8; i++) half.push([(S * i) / 8, 0, 0, -1]);
+  for (let i = 1; i <= 4; i++) {
+    const a = (i / 4) * (Math.PI / 2);
+    half.push([S + R * Math.sin(a), R - R * Math.cos(a), Math.sin(a), -Math.cos(a)]);
+  }
+  for (let i = 1; i <= 2; i++) half.push([S + R, R + (B * i) / 2, 1, 0]);
+  const path = [...half.slice(1).reverse().map(([x, d, nx, nd]) => [-x, d, -nx, nd]), ...half];
+
+  const zc = end === 'front' ? bp.front - spec.gap : bp.rear + spec.gap;
+  const back = end === 'front' ? 1 : -1;
+  const y0 = spec.h + bp.groundY;
+  /** Rises the lower half of the section over the plate (none at the top edge). */
+  const lift = (x: number, up: number) => {
+    const n = spec.notch;
+    if (!n) return 0;
+    const k = 1 - THREE.MathUtils.smoothstep(Math.abs(x), n.halfWidth, n.halfWidth + 0.04);
+    return n.rise * k * (0.5 - up);
+  };
+  const rings = path.map(([x, d, nx, nd]) =>
+    BUMPER_SECTION.map(([out, up]) => {
+      const u = out * spec.depth;
+      const px = x + nx * u;
+      return new THREE.Vector3(px, y0 + up * spec.height + lift(px, up), zc + back * (d + nd * u));
+    }),
+  );
+  const centres = rings.map((ring) => ring.reduce((c, p) => c.add(p), new THREE.Vector3()).divideScalar(ring.length));
+
+  const positions: number[] = [];
+  const ab = new THREE.Vector3();
+  const ac = new THREE.Vector3();
+  // Winds each triangle so it faces away from `ref` (a point inside the bumper).
+  const tri = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, ref: THREE.Vector3) => {
+    const n = ab.subVectors(b, a).cross(ac.subVectors(c, a));
+    const flip = n.dot(ac.copy(a).add(b).add(c).divideScalar(3).sub(ref)) < 0;
+    for (const p of flip ? [a, c, b] : [a, b, c]) positions.push(p.x, p.y, p.z);
+  };
+  const m = BUMPER_SECTION.length;
+  for (let i = 0; i < rings.length - 1; i++) {
+    const ref = centres[i].clone().add(centres[i + 1]).multiplyScalar(0.5);
+    for (let j = 0; j < m; j++) {
+      const k = (j + 1) % m;
+      tri(rings[i][j], rings[i + 1][j], rings[i + 1][k], ref);
+      tri(rings[i][j], rings[i + 1][k], rings[i][k], ref);
+    }
+  }
+  // End caps (the section is convex, so a fan), facing away from the neighbouring ring.
+  for (const [i, next] of [[0, 1], [rings.length - 1, rings.length - 2]]) {
+    for (let j = 1; j < m - 1; j++) tri(rings[i][0], rings[i][j], rings[i][j + 1], centres[next]);
+  }
+  const sweep = new THREE.BufferGeometry();
+  sweep.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+
+  // Guards: 6-sided (faceted) posts standing proud of the face.
+  const g = spec.guards;
+  const parts = [sweep];
+  for (const side of [-1, 1]) {
+    const post = new THREE.CylinderGeometry(0.025, 0.025, g.top - g.bottom, 6, 3)
+      .scale(1, 1, 1.2)
+      .translate(side * g.x, (g.top + g.bottom) / 2 + bp.groundY, zc - back * (spec.depth / 2 + 0.01))
+      .toNonIndexed();
+    post.deleteAttribute('normal');
+    post.deleteAttribute('uv');
+    parts.push(post);
+  }
+  const merged = mergeGeometries(parts);
+  parts.forEach((p) => p.dispose());
+  if (!merged) throw new Error(`Bumper "${end}" failed to merge`);
+  return merged;
 }
 
 /**
@@ -339,15 +430,17 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   const at = (x: number, h: number, z: number) => new THREE.Vector3(x, h + gy, z);
   /** A point at an end of the car: `at`, moved by the end shapes like the panels around it. */
   const onEnd = (x: number, h: number, z: number) => at(x, h, z + endShift(bp, x, h, z));
-  /** A part centred at `centre`, bent to the end shapes (subdivide it across the width). */
-  const endAdd = (name: string, geometry: THREE.BufferGeometry, material: THREE.Material, centre: THREE.Vector3) => {
-    bendEnds(bp, geometry.translate(centre.x, centre.y, centre.z));
-    add(name, geometry.translate(-centre.x, -centre.y, -centre.z), material, centre);
-  };
 
-  // Chrome bumpers, subdivided along their length so they can bend.
-  endAdd('bumper-front', box(2.0, 0.12, 0.13, 10), mat.chrome, at(0, 0.5, bp.front - 0.06));
-  endAdd('bumper-rear', box(1.98, 0.12, 0.13, 10), mat.chrome, at(0, 0.56, bp.rear + 0.06));
+  // Chrome bumpers, wrapping round the corners. A bumper is rigid: it follows the end shape at
+  // its own centre height (the V in plan), not the lean of the panel behind it, or its face and
+  // guards would kink back with the receding valance.
+  for (const end of ['front', 'rear'] as const) {
+    const geometry = bumperGeometry(bp, end);
+    const pos = geometry.getAttribute('position');
+    const h = bp.bumpers[end].h;
+    for (let i = 0; i < pos.count; i++) pos.setZ(i, pos.getZ(i) + endShift(bp, pos.getX(i), h, pos.getZ(i)));
+    add(`bumper-${end}`, geometry, mat.chrome);
+  }
 
   // Lights are rigid fixtures (see CarLights), posed relative to their mount point. Headlights sit
   // in the nose's recessed surround and taillights in their own openings (see the blueprint's

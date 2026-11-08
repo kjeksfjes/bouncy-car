@@ -71,6 +71,8 @@ export interface CarBlueprint {
   /** Shapes of the nose (a forward-leaning shark nose, a V in plan) and the tail (see EndShape). */
   nose: EndShape;
   tail: EndShape;
+  /** Chrome bumpers at each end (see Bumper). */
+  bumpers: { front: Bumper; rear: Bumper };
   /** Fuel filler cap, centred on the tail panel: height and radius. */
   fillerCap: { h: number; radius: number };
   /** Twin exhaust under the floor, mirrored to both sides. Heights as for the body. */
@@ -95,6 +97,27 @@ export interface EndShape {
   vee: number;
   cornerX: number;
   blend: number;
+}
+
+/**
+ * A bumper: a chrome section swept along a path in plan, straight across the end of the car,
+ * round a 90° arc at each corner and back along the sides (before the end shapes bend it).
+ */
+export interface Bumper {
+  /** Centre height, and how far beyond the end of the body its centre line sits. */
+  h: number;
+  gap: number;
+  /** Section size: height, and depth (front to back). */
+  height: number;
+  depth: number;
+  /** Half length of the straight part, radius of the corner arcs, length of the returns along the sides. */
+  halfStraight: number;
+  wrapRadius: number;
+  wrapReturn: number;
+  /** Vertical guards on the face, mirrored to both sides: x, bottom and top heights. */
+  guards: { x: number; bottom: number; top: number };
+  /** Where the lower edge rises over the license plate: half width and rise. */
+  notch?: { halfWidth: number; rise: number };
 }
 
 export function sample(curve: Curve, z: number): number {

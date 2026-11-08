@@ -244,6 +244,22 @@ const COUPE_BLUEPRINT: CarBlueprint = {
     blend: 0.5,
   },
   fillerCap: { h: 0.78, radius: 0.03 },
+  // Front and rear views: bumpers wrap round the corners and back along the sides, each with two
+  // vertical guards reaching ≈10 cm below it; the rear one rises over the plate. Heights from
+  // those views (the side view draws both ≈10 cm higher). The returns end just outside the sides.
+  // A bumper follows the end shape only at its centre height, so its gap clears the panel at its
+  // top edge (the nose panel leans ≈2 cm further out there).
+  bumpers: {
+    front: {
+      h: 0.5, gap: 0.075, height: 0.12, depth: 0.1, halfStraight: 0.9, wrapRadius: 0.12, wrapReturn: 0.12,
+      guards: { x: 0.445, bottom: 0.36, top: 0.58 },
+    },
+    rear: {
+      h: 0.56, gap: 0.065, height: 0.12, depth: 0.1, halfStraight: 0.9, wrapRadius: 0.12, wrapReturn: 0.12,
+      guards: { x: 0.59, bottom: 0.42, top: 0.64 },
+      notch: { halfWidth: 0.22, rise: 0.035 },
+    },
+  },
   // Traced from the underside and rear views (ref/1970s-muscle-car/back-underside.png, ≈234 px/m measured
   // between the axles). The underside drawing's rear overhang is shorter than the side view's,
   // so the run past the rear axle is stretched to reach the tail. Out of the manifold, down
