@@ -4,9 +4,40 @@ import { hash2, smoothstep } from './noise';
 type Kind = 'drop' | 'kicker' | 'valley' | 'hill';
 
 /**
- * Set pieces along the descent, at most one per slot, each spanning the whole slope (its line
- * wiggles across it): drops (some huge, some with a ski-jump lip), kickers (a ramp and a landing
- * slope), valleys to dive into and climb out of, and hills to crest. Feel values, tune freely.
+ * Terrain presets (see TerrainField): 'classic' has only steep drops, half with a smooth launch
+ * hump; 'varied' adds big drops, kickers, valleys and hills, closer together, plus a swell along
+ * the fall line and bumpy/smooth stretches. Classic is the default; varied is kept to bring back,
+ * perhaps much more rarely.
+ */
+export type TerrainPreset = 'classic' | 'varied';
+
+/**
+ * Classic set pieces: a steep drop in about two of three slots, half of them with a launch hump
+ * at the top (ski-jump style, so the long flight lands on a slope instead of flat ground).
+ */
+const CLASSIC = {
+  /** Metres of descent (−Z) per feature slot; at most one feature per slot. */
+  slot: 450,
+  /** Distance kept from slot edges; must cover the hump, the wave and the drop length. */
+  margin: 120,
+  chance: 0.65,
+  dropMin: 12,
+  dropMax: 40,
+  lengthMin: 45,
+  lengthMax: 90,
+  /** Cap on the drop's extra gradient (peak of a smoothstep is 1.5 × drop / length). */
+  maxExtraSlope: 0.75,
+  jumpChance: 0.5,
+  lipMin: 1.6,
+  lipMax: 2.8,
+  /** The hump's width (m); it peaks a little downhill of the drop's top. */
+  lipWidth: 16,
+};
+
+/**
+ * Varied set pieces, at most one per slot, each spanning the whole slope (its line wiggles across
+ * it): drops (some huge, some with a ski-jump lip), kickers (a ramp and a landing slope), valleys
+ * to dive into and climb out of, and hills to crest. Feel values, tune freely.
  */
 const FEATURES = {
   /** Metres of descent (−Z) per feature slot; at most one feature per slot. */
@@ -62,7 +93,7 @@ const FEATURES = {
   waveScale: 220,
 };
 
-/** Slots beyond this (≈ 3800 km downhill) are treated as a bug, not terrain. */
+/** Slots beyond this (≈ 3800–4500 km downhill) are treated as a bug, not terrain. */
 const MAX_SLOT = 10_000;
 
 interface Feature {
@@ -72,8 +103,12 @@ interface Feature {
   /** Drops and kickers: the height lost (it carries on into every later slot) and over what length. */
   drop: number;
   length: number;
-  /** Lip or kicker ramp: height, run-up and back lengths, and ramp shape (0 height = none). */
+  /**
+   * Lip or kicker ramp: height, run-up and back lengths, and ramp shape (0 height = none). A
+   * classic lip is a smooth hump instead (`hump`), `lipUp` wide.
+   */
   lip: number;
+  hump: boolean;
   lipUp: number;
   lipDown: number;
   lipPower: number;
@@ -88,15 +123,20 @@ export class DescentFeatures {
   /** cumulative[k] = total drop of all slots before slot k. */
   private readonly cumulative: number[] = [0];
 
+  private readonly slot: number;
+
   constructor(
     private readonly seed: number,
     private readonly wave: NoiseFunction2D,
-  ) {}
+    private readonly preset: TerrainPreset,
+  ) {
+    this.slot = preset === 'classic' ? CLASSIC.slot : FEATURES.slot;
+  }
 
   height(x: number, z: number): number {
     if (z >= 0) return 0;
     const F = FEATURES;
-    const k = Math.floor(-z / F.slot);
+    const k = Math.floor(-z / this.slot);
     // The drop sum walks every slot up to k: refuse absurd positions (a body that blew
     // up) loudly instead of looping for ever.
     if (!(k <= MAX_SLOT)) throw new Error(`Terrain height requested at z=${z}, outside the playable range`);
@@ -106,7 +146,11 @@ export class DescentFeatures {
 
     const zs = f.z + F.waveAmp * this.wave(x / F.waveScale, k * 7.31);
     if (f.drop > 0) h -= f.drop * smoothstep(0, 1, (zs - z) / f.length);
-    if (f.lip > 0) {
+    if (f.lip > 0 && f.hump) {
+      // Smooth hump around the drop's top; its back side runs into the drop.
+      const u = (z - (zs + f.lipUp * 0.35)) / (f.lipUp / 2);
+      if (Math.abs(u) < 1) h += f.lip * (1 - u * u) ** 2;
+    } else if (f.lip > 0) {
       // Peak just uphill of the drop's top: a run-up rising as t^power, then a short steep back.
       const peak = zs + f.lipDown;
       if (z >= peak && z < peak + f.lipUp) h += f.lip * ((peak + f.lipUp - z) / f.lipUp) ** f.lipPower;
@@ -126,9 +170,11 @@ export class DescentFeatures {
     const r = (i: number) => hash2(k, i, this.seed + 101);
     const range = ([a, b]: readonly number[], i: number) => a + r(i) * (b - a);
     f = null;
-    if (k >= F.firstSlot && r(0) < F.chance) {
+    if (this.preset === 'classic') {
+      f = this.classicFeature(k, r);
+    } else if (k >= F.firstSlot && r(0) < F.chance) {
       const kind = pick(F.weights, r(1));
-      const base: Feature = { kind, z: 0, drop: 0, length: 1, lip: 0, lipUp: 1, lipDown: 1, lipPower: 1, bell: 0, halfWidth: 1 };
+      const base: Feature = { kind, z: 0, drop: 0, length: 1, lip: 0, hump: false, lipUp: 1, lipDown: 1, lipPower: 1, bell: 0, halfWidth: 1 };
       // How far the feature reaches uphill and downhill of its anchor.
       let up = 0;
       let down = 0;
@@ -160,6 +206,28 @@ export class DescentFeatures {
     }
     this.features.set(k, f);
     return f;
+  }
+
+  /** A classic slot: a drop in about two of three, half with a launch hump. Draws as it always has, so seeds keep their terrain. */
+  private classicFeature(k: number, r: (i: number) => number): Feature | null {
+    const C = CLASSIC;
+    if (k < FEATURES.firstSlot || r(0) >= C.chance) return null;
+    const drop = C.dropMin + r(1) * (C.dropMax - C.dropMin);
+    const length = Math.max(C.lengthMin + r(2) * (C.lengthMax - C.lengthMin), (1.5 * drop) / C.maxExtraSlope);
+    const room = C.slot - 2 * C.margin - length;
+    return {
+      kind: 'drop',
+      z: -k * C.slot - C.margin - r(3) * Math.max(0, room),
+      drop,
+      length,
+      lip: r(4) < C.jumpChance ? C.lipMin + r(5) * (C.lipMax - C.lipMin) : 0,
+      hump: true,
+      lipUp: C.lipWidth,
+      lipDown: 0,
+      lipPower: 1,
+      bell: 0,
+      halfWidth: 1,
+    };
   }
 
   private cumulativeDrop(k: number): number {

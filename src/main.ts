@@ -17,7 +17,9 @@ async function main(): Promise<void> {
   const seed = seedParam === null ? DEFAULT_SEED : Number(seedParam);
   // Dev only: ?start=4000 spawns 4 km downhill, to get to the lower biomes quickly.
   const start = import.meta.env.DEV ? Number(params.get('start') ?? 0) : 0;
-  const game = new Game(document.getElementById('app')!, seed, start);
+  // Dev only: ?terrain=varied switches to the varied set pieces (hills, valleys, kickers).
+  const terrain = import.meta.env.DEV && params.get('terrain') === 'varied' ? 'varied' : 'classic';
+  const game = new Game(document.getElementById('app')!, seed, start, terrain);
   if (import.meta.env.DEV) window.__bouncy = game;
   document.getElementById('loading')!.remove();
   game.start();

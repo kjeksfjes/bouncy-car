@@ -16,6 +16,7 @@ import { Car, type CarEvents, type CarInput } from './vehicle/car';
 import { COUPE_70S } from './vehicle/carConfig';
 import { Debris } from './world/debris';
 import { BIOMES } from './world/biome';
+import type { TerrainPreset } from './world/features';
 import { LOAD_RADIUS, Terrain, type StreamCenter } from './world/terrain';
 import { TerrainField } from './world/terrainField';
 import { TreeLayout } from './world/trees';
@@ -87,12 +88,15 @@ export class Game {
   private accumulator = 0;
   private lastTime = 0;
 
-  /** @param start metres downhill to spawn at (dev: to test the lower biomes) */
-  constructor(container: HTMLElement, seed: number, start = 0) {
+  /**
+   * @param start metres downhill to spawn at (dev: to test the lower biomes)
+   * @param terrain which terrain generator to use
+   */
+  constructor(container: HTMLElement, seed: number, start = 0, terrain: TerrainPreset = 'classic') {
     this.stage = new Stage(container);
     this.world = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
     this.world.timestep = PHYSICS_STEP;
-    this.field = new TerrainField(seed);
+    this.field = new TerrainField(seed, terrain);
     this.trees = new TreeLayout(this.field);
     this.terrain = new Terrain(this.field, this.stage.scene, this.world, this.trees);
     this.ai = new AiDriver(this.trees);
