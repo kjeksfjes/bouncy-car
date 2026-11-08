@@ -12,6 +12,7 @@ export class Hud {
   private readonly paused = document.getElementById('paused')!;
   private readonly slow = document.getElementById('slow')!;
   private readonly toastBox = document.getElementById('toast')!;
+  private readonly inspect = document.getElementById('inspect')!;
   private toastTimer: number | undefined;
   private seenJumps = 0;
   private airTimer = 0;
@@ -28,6 +29,25 @@ export class Hud {
   setSlowMotion(label: string | null): void {
     this.slow.classList.toggle('visible', label !== null);
     if (label !== null && this.slow.textContent !== `SLOW ${label}`) this.slow.textContent = `SLOW ${label}`;
+  }
+
+  /** Shows the inspection view's legend, or hides it with null. */
+  setInspect(legend: { title: string; entries: { colour: string; label: string }[] } | null): void {
+    this.inspect.classList.toggle('visible', legend !== null);
+    if (!legend) return;
+    this.inspect.replaceChildren();
+    const title = document.createElement('strong');
+    title.textContent = `Inspect: ${legend.title} (I for next)`;
+    this.inspect.append(title);
+    for (const { colour, label } of legend.entries) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const swatch = document.createElement('span');
+      swatch.className = 'swatch';
+      swatch.style.background = colour;
+      row.append(swatch, label);
+      this.inspect.append(row);
+    }
   }
 
   setPaused(paused: boolean): void {

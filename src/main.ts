@@ -20,7 +20,10 @@ async function main(): Promise<void> {
   // Dev only: ?terrain=varied switches to the varied set pieces (hills, valleys, kickers).
   const terrain = import.meta.env.DEV && params.get('terrain') === 'varied' ? 'varied' : 'classic';
   const game = new Game(document.getElementById('app')!, seed, start, terrain);
-  if (import.meta.env.DEV) window.__bouncy = game;
+  if (import.meta.env.DEV) {
+    window.__bouncy = game;
+    document.querySelector('.hint')!.insertAdjacentHTML('beforeend', ' · <kbd>I</kbd> inspect terrain (dev)');
+  }
   document.getElementById('loading')!.remove();
   game.start();
 }

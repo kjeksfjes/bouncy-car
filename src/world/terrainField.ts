@@ -3,6 +3,7 @@ import type { NoiseFunction2D } from 'simplex-noise';
 import { SUN_DIR } from '../render/stage';
 import { Biome } from './biome';
 import { DescentFeatures, type TerrainPreset } from './features';
+import { Landform } from './landform';
 import { makeNoise, smoothstep } from './noise';
 
 /**
@@ -12,9 +13,9 @@ import { makeNoise, smoothstep } from './noise';
 const SHAPE = {
   /** Downhill gradient along −Z (rise over run). 0.32 ≈ 18°. */
   slope: 0.32,
-  /** Big rolling hills that bend the fall line. */
+  /** Gentle rolling hills under the ridges and valleys (see Landform), so not every rise runs with the fall line. */
   largeScale: 260,
-  largeAmp: 12,
+  largeAmp: 5,
   /** Weight of the second, smaller rolling-hill octave. */
   largeDetail: 0.3,
   /**
@@ -44,6 +45,16 @@ const SHAPE = {
   ridgeAmp: 2.6,
   ridgeSharpness: 3,
   ridgeMaskScale: 180,
+  /**
+   * Some kicker ridges come up bigger, for an extra launch: up to `bigKickerMax` × as tall where
+   * noise at the ridges' own scale passes `bigKickerFrom` (full by `bigKickerTo`), about one in
+   * five ridges. Broader too (their shape's sharpness divided by 1 + `bigKickerWiden` × the extra
+   * height), so they stay ramps, not spikes.
+   */
+  bigKickerFrom: 0.2,
+  bigKickerTo: 0.55,
+  bigKickerMax: 1.7,
+  bigKickerWiden: 0.5,
   /** Around the origin the ground blends into a plain downhill start pad. */
   spawnPadInner: 15,
   spawnPadOuter: 45,
@@ -76,6 +87,17 @@ const TREES = {
   meadowTo: 0.3,
 };
 
+/** See TerrainField.surface. */
+export interface SurfaceLayers {
+  moguls: number;
+  kickers: number;
+}
+
+const _surface: SurfaceLayers = { moguls: 0, kickers: 0 };
+
+/** Kicker ridges at full height (m), for scaling them in the dev inspection view. */
+export const KICKER_HEIGHT = SHAPE.ridgeAmp;
+
 /**
  * Analytic terrain height h(x, z). Everything (meshes, colliders, props,
  * camera clamping, spawning) reads from this one function, so it stays the
@@ -91,7 +113,9 @@ export class TerrainField {
   private readonly meadow: NoiseFunction2D;
   private readonly swell: NoiseFunction2D;
   private readonly rough: NoiseFunction2D;
-  private readonly features: DescentFeatures;
+  private readonly bigKicker: NoiseFunction2D;
+  readonly features: DescentFeatures;
+  readonly landforms: Landform;
   private readonly spawnHeight: number;
   /** Ground cover (snow, thaw, grassland) along the descent. */
   readonly biome: Biome;
@@ -111,7 +135,9 @@ export class TerrainField {
     this.meadow = makeNoise(seed + 7);
     this.swell = makeNoise(seed + 8);
     this.rough = makeNoise(seed + 9);
+    this.bigKicker = makeNoise(seed + 10);
     this.features = new DescentFeatures(seed, makeNoise(seed + 6), preset);
+    this.landforms = new Landform(seed);
     this.spawnHeight = this.rawHeight(0, 0);
   }
 
@@ -122,23 +148,41 @@ export class TerrainField {
     return raw + (this.spawnHeight + z * SHAPE.slope - raw) * pad;
   }
 
-  private rawHeight(x: number, z: number): number {
+  /**
+   * The smooth lie of the land: the downhill slope, ridges and valleys, gentle hills (and the
+   * varied preset's swell), without the moguls, kicker ridges and set pieces laid over it.
+   */
+  landform(x: number, z: number): number {
     const s = SHAPE;
     const large =
       (this.large(x / s.largeScale, z / s.largeScale) +
         s.largeDetail * this.large(x / (s.largeScale * 0.42) + 31.7, z / (s.largeScale * 0.42) - 12.3)) *
       s.largeAmp;
-    const varied = this.preset === 'varied';
-    const swell = varied ? this.swell(x / s.swellScaleX, z / s.swellScale) * s.swellAmp : 0;
-    const roughness = varied
-      ? s.roughMin + (s.roughMax - s.roughMin) * smoothstep(-0.4, 0.6, this.rough(x / s.roughScale, z / s.roughScale))
-      : 1;
+    const swell = this.preset === 'varied' ? this.swell(x / s.swellScaleX, z / s.swellScale) * s.swellAmp : 0;
+    return z * s.slope + swell + large + this.landforms.height(x, z);
+  }
+
+  /** The small-scale layers laid over the landform: moguls (with the fine roughness) and kicker ridges, in m. */
+  surface(x: number, z: number, out: SurfaceLayers = { moguls: 0, kickers: 0 }): SurfaceLayers {
+    const s = SHAPE;
+    const roughness =
+      this.preset === 'varied'
+        ? s.roughMin + (s.roughMax - s.roughMin) * smoothstep(-0.4, 0.6, this.rough(x / s.roughScale, z / s.roughScale))
+        : 1;
     const mid = this.mid(x / s.midScale, z / s.midScale) * s.midAmp * roughness;
     const small = this.small(x / s.smallScale, z / s.smallScale) * s.smallAmp;
+    const big = smoothstep(s.bigKickerFrom, s.bigKickerTo, this.bigKicker(x / s.ridgeScaleX, z / s.ridgeScaleZ));
+    const size = 1 + (s.bigKickerMax - 1) * big;
     const ridgeShape = 1 - Math.abs(this.ridge(x / s.ridgeScaleX, z / s.ridgeScaleZ));
     const ridgeMask = smoothstep(-0.1, 0.5, this.ridgeMask(x / s.ridgeMaskScale, z / s.ridgeMaskScale));
-    const ridge = Math.pow(ridgeShape, s.ridgeSharpness) * s.ridgeAmp * ridgeMask;
-    return z * s.slope + swell + large + mid + small + ridge + this.features.height(x, z);
+    out.moguls = mid + small;
+    out.kickers = Math.pow(ridgeShape, s.ridgeSharpness / (1 + (size - 1) * s.bigKickerWiden)) * s.ridgeAmp * size * ridgeMask;
+    return out;
+  }
+
+  private rawHeight(x: number, z: number): number {
+    const layers = this.surface(x, z, _surface);
+    return this.landform(x, z) + layers.moguls + layers.kickers + this.features.height(x, z);
   }
 
   /** Surface normal via central differences. */

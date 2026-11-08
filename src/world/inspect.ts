@@ -1,0 +1,128 @@
+import * as THREE from 'three';
+import { KICKER_HEIGHT, type TerrainField } from './terrainField';
+
+/**
+ * Dev inspection view: the terrain coloured by what shapes it instead of by its ground cover.
+ * - landforms: valley lines, floors, flanks and ridge tops, with 5 m contour lines;
+ * - layers: what is laid over the landform (moguls, kicker ridges, drops, launch humps);
+ * - steepness: the slope of each face, in bands.
+ */
+export type InspectMode = 'landforms' | 'layers' | 'steepness';
+
+export const INSPECT_MODES: readonly InspectMode[] = ['landforms', 'layers', 'steepness'];
+
+interface LegendEntry {
+  colour: string;
+  label: string;
+}
+
+const C = {
+  valleyLine: '#1f4fa8',
+  valleyFloor: '#6c9be0',
+  lowerFlank: '#6fc1b0',
+  upperFlank: '#d2d36c',
+  ridgeTop: '#e0893a',
+  openSlope: '#d6d0bf',
+  base: '#cfcfc8',
+  moguls: '#8f8f88',
+  kicker: '#e8c547',
+  dropFace: '#8a4fd0',
+  hump: '#d8443a',
+  setValley: '#3fb6c9',
+  setHill: '#a8743f',
+  steep0: '#9fd4a0',
+  steep15: '#d9e27a',
+  steep25: '#f0c04a',
+  steep30: '#ec8a3a',
+  steep35: '#d8443a',
+};
+
+/** Legends for the HUD, per mode. */
+export const INSPECT_LEGENDS: Record<InspectMode, { title: string; entries: LegendEntry[] }> = {
+  landforms: {
+    title: 'Landforms',
+    entries: [
+      { colour: C.valleyLine, label: 'valley line' },
+      { colour: C.valleyFloor, label: 'valley floor' },
+      { colour: C.lowerFlank, label: 'flank, low' },
+      { colour: C.upperFlank, label: 'flank, high' },
+      { colour: C.ridgeTop, label: 'ridge top' },
+      { colour: C.openSlope, label: 'open slope (no valley)' },
+      { colour: '#555', label: 'contour every 5 m' },
+    ],
+  },
+  layers: {
+    title: 'Layers',
+    entries: [
+      { colour: C.base, label: 'mogul top' },
+      { colour: C.moguls, label: 'mogul hollow' },
+      { colour: C.kicker, label: 'kicker ridge' },
+      { colour: C.dropFace, label: 'drop' },
+      { colour: C.hump, label: 'launch hump / ramp' },
+      { colour: C.setValley, label: 'set-piece valley (varied)' },
+      { colour: C.setHill, label: 'set-piece hill (varied)' },
+    ],
+  },
+  steepness: {
+    title: 'Steepness',
+    entries: [
+      { colour: C.steep0, label: 'under 15°' },
+      { colour: C.steep15, label: '15–25°' },
+      { colour: C.steep25, label: '25–30°' },
+      { colour: C.steep30, label: '30–35°' },
+      { colour: C.steep35, label: 'over 35°' },
+    ],
+  },
+};
+
+const col = Object.fromEntries(Object.entries(C).map(([k, v]) => [k, new THREE.Color(v)])) as Record<keyof typeof C, THREE.Color>;
+/** Contour interval (m) in the landforms view. */
+const CONTOUR = 5;
+/** A valley shallower than this (m) is too faint to count: the ground counts as open slope. */
+const FAINT_VALLEY = 8;
+/** Ground within this height (m) of the ridge tops counts as ridge top. */
+const RIDGE_TOP = 1.5;
+
+/** Colours a terrain face (corners a, b, c, with this normal) for the inspection view. */
+export function inspectColour(
+  field: TerrainField,
+  mode: InspectMode,
+  a: THREE.Vector3,
+  b: THREE.Vector3,
+  c: THREE.Vector3,
+  normal: THREE.Vector3,
+  out: THREE.Color,
+): THREE.Color {
+  const x = (a.x + b.x + c.x) / 3;
+  const z = (a.z + b.z + c.z) / 3;
+  if (mode === 'steepness') {
+    const deg = (Math.acos(Math.min(1, normal.y)) * 180) / Math.PI;
+    return out.copy(deg < 15 ? col.steep0 : deg < 25 ? col.steep15 : deg < 30 ? col.steep25 : deg < 35 ? col.steep30 : col.steep35);
+  }
+
+  if (mode === 'layers') {
+    const s = field.surface(x, z);
+    out.copy(col.moguls).lerp(col.base, THREE.MathUtils.clamp(0.5 + s.moguls / 3, 0, 1));
+    if (s.kickers > 0.3) out.lerp(col.kicker, Math.min(1, 0.35 + s.kickers / KICKER_HEIGHT));
+    const p = field.features.parts(x, z);
+    const dropSlope = (field.features.parts(x, z + 1).drop - field.features.parts(x, z - 1).drop) / 2;
+    if (p.bell < -0.5) out.copy(col.setValley);
+    if (p.bell > 0.5) out.copy(col.setHill);
+    if (dropSlope > 0.03) out.copy(col.dropFace);
+    if (p.lip > 0.15) out.copy(col.hump);
+    return out;
+  }
+
+  const spot = field.landforms.inspect(x, z);
+  if (spot.depth < FAINT_VALLEY) out.copy(col.openSlope);
+  else if (spot.below < RIDGE_TOP) out.copy(col.ridgeTop);
+  else if (spot.fromLine < 2.5) out.copy(col.valleyLine);
+  else if (spot.flank < 0) out.copy(col.valleyFloor);
+  else out.copy(col.lowerFlank).lerp(col.upperFlank, Math.min(1, spot.flank));
+  // Contours of the smooth landform (moguls left out), so the lines run clean.
+  const ha = field.landform(a.x, a.z);
+  const hb = field.landform(b.x, b.z);
+  const hc = field.landform(c.x, c.z);
+  if (Math.floor(Math.min(ha, hb, hc) / CONTOUR) !== Math.floor(Math.max(ha, hb, hc) / CONTOUR)) out.multiplyScalar(0.55);
+  return out;
+}

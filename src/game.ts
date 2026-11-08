@@ -17,6 +17,7 @@ import { COUPE_70S } from './vehicle/carConfig';
 import { Debris } from './world/debris';
 import { BIOMES } from './world/biome';
 import type { TerrainPreset } from './world/features';
+import { INSPECT_LEGENDS, INSPECT_MODES, type InspectMode } from './world/inspect';
 import { LOAD_RADIUS, Terrain, type StreamCenter } from './world/terrain';
 import { TerrainField } from './world/terrainField';
 import { TreeLayout } from './world/trees';
@@ -66,6 +67,8 @@ export class Game {
   /** T toggles slow motion; ' picks its speed from SLOW_SPEEDS. timeScale eases toward it. */
   private slowMotion = false;
   private slowLevel = 1;
+  /** Dev: the terrain inspection view shown (I cycles), or null for the normal ground. */
+  private inspectMode: InspectMode | null = null;
   private timeScale = 1;
   /** The atmosphere's warmth (see Stage.setWarmth), eased toward the biome's. */
   private warmth = 0;
@@ -185,6 +188,7 @@ export class Game {
     if (this.input.consume('KeyM')) this.audio.toggleMute();
     if (this.input.consume('KeyC')) this.cycleCamera();
     if (this.input.consume('KeyT')) this.slowMotion = !this.slowMotion;
+    if (import.meta.env.DEV && this.input.consume('KeyI')) this.cycleInspect();
     if (this.input.consume("char:'")) {
       // Cycles the slow-motion speed; from normal speed it first switches to the current one.
       if (this.slowMotion) this.slowLevel = (this.slowLevel + 1) % SLOW_SPEEDS.length;
@@ -275,6 +279,14 @@ export class Game {
     this.paused = !this.paused;
     this.hud.setPaused(this.paused);
     this.audio.setPaused(this.paused);
+  }
+
+  /** Dev: off → each inspection view in turn → off. */
+  private cycleInspect(): void {
+    const i = this.inspectMode === null ? 0 : INSPECT_MODES.indexOf(this.inspectMode) + 1;
+    this.inspectMode = INSPECT_MODES[i] ?? null;
+    this.terrain.inspect = this.inspectMode;
+    this.hud.setInspect(this.inspectMode && INSPECT_LEGENDS[this.inspectMode]);
   }
 
   private cycleCamera(): void {

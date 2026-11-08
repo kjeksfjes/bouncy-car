@@ -1,5 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
+import { inspectColour, type InspectMode } from './inspect';
 import { hash2 } from './noise';
 import { PropScatter, type ChunkProps } from './props';
 import type { TerrainField } from './terrainField';
@@ -34,6 +35,7 @@ export class Terrain {
     roughness: 0.95,
   });
   private readonly props: PropScatter;
+  private inspectMode: InspectMode | null = null;
 
   constructor(
     private readonly field: TerrainField,
@@ -70,9 +72,12 @@ export class Terrain {
     }
     const queue = [...missing.values()].sort((a, b) => a[2] - b[2]);
     for (const [cx, cz] of queue.slice(0, budget)) this.chunks.set(key(cx, cz), this.build(cx, cz));
-    // Stale chunks: the new one is built before the old goes, so there's never a hole in the ground.
+    // Stale chunks, nearest the first center first: the new one is built before the old goes, so
+    // there's never a hole in the ground.
+    const near = cells[0];
+    const order = [...this.stale].sort((a, b) => chunkDistance(a, near) - chunkDistance(b, near));
     let rebuilds = budget;
-    for (const k of this.stale) {
+    for (const k of order) {
       if (rebuilds-- <= 0) break;
       this.stale.delete(k);
       const old = this.chunks.get(k);
@@ -99,6 +104,12 @@ export class Terrain {
       const cz = Number(k.split(',')[1]);
       if (cz * CHUNK_SIZE < z) this.stale.add(k);
     }
+  }
+
+  /** Dev: colours the ground by what shapes it (see InspectMode), or by its cover again with null. */
+  set inspect(mode: InspectMode | null) {
+    this.inspectMode = mode;
+    for (const k of this.chunks.keys()) this.stale.add(k);
   }
 
   /** Whether ground (with colliders) currently exists at (x, z). */
@@ -157,10 +168,14 @@ export class Terrain {
       vc.fromArray(verts, indices[f + 2] * 3);
       normal.subVectors(vb, va).cross(vc.clone().sub(va)).normalize();
 
-      // Coloured by the ground at the face's middle (snow, thaw patches, grass, dirt, stone).
-      this.field.biome.colour((va.x + vb.x + vc.x) / 3, (va.z + vb.z + vc.z) / 3, normal, col);
-      const jitter = 1 + (hash2(f, cx * 7919 + cz, this.field.seed + 7) - 0.5) * 0.06;
-      col.multiplyScalar(jitter);
+      if (this.inspectMode) {
+        inspectColour(this.field, this.inspectMode, va, vb, vc, normal, col);
+      } else {
+        // Coloured by the ground at the face's middle (snow, thaw patches, grass, dirt, stone).
+        this.field.biome.colour((va.x + vb.x + vc.x) / 3, (va.z + vb.z + vc.z) / 3, normal, col);
+        const jitter = 1 + (hash2(f, cx * 7919 + cz, this.field.seed + 7) - 0.5) * 0.06;
+        col.multiplyScalar(jitter);
+      }
 
       va.toArray(positions, f * 3);
       vb.toArray(positions, f * 3 + 3);
@@ -197,6 +212,13 @@ export class Terrain {
     chunk.props.dispose();
     this.world.removeRigidBody(chunk.body);
   }
+}
+
+/** Chessboard distance (in chunks) from a chunk key to a cell, or 0 without one. */
+function chunkDistance(k: string, cell: { cx: number; cz: number } | undefined): number {
+  if (!cell) return 0;
+  const [cx, cz] = k.split(',').map(Number);
+  return Math.max(Math.abs(cx - cell.cx), Math.abs(cz - cell.cz));
 }
 
 function key(cx: number, cz: number): string {
