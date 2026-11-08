@@ -54,7 +54,7 @@ const BIOME = {
   /**
    * Grassland woods: noise at `copseScale` m; trees fill cells where it passes `copseFrom` (fully
    * by `copseTo`, at `copseDensity`). Out in the open, small groups of a few trees (finer noise
-   * at `groupScale` m past `groupFrom`, at `groupDensity`) and the odd lone tree. The edges are
+   * at `groupScale` m past `groupFrom`, at `groupDensity`, see `groupMaskScale`) and the rare lone tree. The edges are
    * narrow on purpose: a wide fade rings every wood with scattered single trees.
    */
   /** Where (m into the thaw) the trees switch from the snow forest's layout to woods and groups. */
@@ -64,11 +64,18 @@ const BIOME = {
   copseFrom: 0.45,
   copseTo: 0.48,
   copseDensity: 0.7,
-  groupScale: 30,
-  groupFrom: 0.8,
-  groupTo: 0.83,
-  groupDensity: 0.8,
-  loneTrees: 0.0015,
+  groupScale: 60,
+  groupFrom: 0.68,
+  groupTo: 0.7,
+  groupDensity: 0.9,
+  /**
+   * Groups only come up where a sparse mask allows (noise at `groupMaskScale` m past
+   * `groupMaskFrom`): so there are few of them, each big enough to be a group. A high threshold on
+   * the group noise alone gives few groups too, but mostly as single trees (the noise's tips).
+   */
+  groupMaskScale: 300,
+  groupMaskFrom: 0.25,
+  loneTrees: 0.0006,
   /**
    * Woods at their edge: a narrow fringe (this much copse noise below `copseFrom`) of sparser,
    * young trees, so a wood thins out instead of stopping dead. Kept narrow: a wide one rings every
@@ -208,15 +215,30 @@ interface Shift {
 }
 
 /**
- * How well trees take to the ground (see treeSuitability). Moist ground suits them; dry convex
- * crests and windy ridge tops don't. Feel values.
+ * What each kind of tree wants from the ground (see treeSuitability), and how densely it stands.
+ * Feel values, after how these trees grow: spruce needs moist ground and stands dense and dark;
+ * pine copes with dry, poor, exposed ground (ridges, sunny upper slopes) and grows in open stands;
+ * broadleaf likes low, sheltered, moderately moist ground.
  */
+const PREFERS: Record<Species, {
+  /** Weight of moisture away from `moistureMid` (the moisture it's neutral at). */
+  moisture: number;
+  moistureMid: number;
+  /** Penalty on convex crests and edges, and on ridge tops (negative: drawn to them). */
+  convex: number;
+  ridge: number;
+  /** Weight of low ground (elevation under 0.5) and of sunny faces (exposure over the plain slope's). */
+  low: number;
+  sun: number;
+  /** Tree density in its woods and their fringes, × the BIOME densities. */
+  density: number;
+}> = {
+  spruce: { moisture: 1.2, moistureMid: 0.45, convex: 0.6, ridge: 0.7, low: 0, sun: -1, density: 1.2 },
+  pine: { moisture: 0.2, moistureMid: 0.3, convex: 0, ridge: -0.2, low: 0, sun: 1, density: 0.65 },
+  broadleaf: { moisture: 0.6, moistureMid: 0.5, convex: 0.4, ridge: 0.6, low: 0.5, sun: 0, density: 0.95 },
+};
+
 const SUITABILITY = {
-  moisture: 1,
-  /** Moisture that counts as neutral. */
-  moistureMid: 0.45,
-  convex: 0.5,
-  ridge: 0.5,
   /** Elevation (0 valley floor, 1 ridge top) from which ridge tops start to count. */
   ridgeFrom: 0.75,
   /** How far the woods' noise thresholds move per unit of suitability: more woods where it suits them. */
@@ -224,12 +246,18 @@ const SUITABILITY = {
 };
 
 /**
- * How well trees take to the ground here: about −1 (dry, exposed crests) .. 0.5 (moist hollows,
- * valley floors). Woods and forest patches spread or shrink by it.
+ * How well a kind of tree takes to the ground here (see PREFERS): roughly −1 (ground it shuns) ..
+ * 0.5 (ground it likes). Its woods and forest patches spread or shrink by it.
  */
-export function treeSuitability(env: EnvSample): number {
-  const S = SUITABILITY;
-  return S.moisture * (env.moisture - S.moistureMid) - S.convex * Math.max(0, env.curvature) - S.ridge * smoothstep(S.ridgeFrom, 1, env.elevation);
+export function treeSuitability(env: EnvSample, kind: Species): number {
+  const P = PREFERS[kind];
+  return (
+    P.moisture * (env.moisture - P.moistureMid) -
+    P.convex * Math.max(0, env.curvature) -
+    P.ridge * smoothstep(SUITABILITY.ridgeFrom, 1, env.elevation) +
+    P.low * Math.max(0, 0.5 - env.elevation) +
+    P.sun * (env.exposure - PLAIN_EXPOSURE)
+  );
 }
 
 /** A tree stand at a spot: the chance a candidate cell holds a tree, and how mature the trees are (0 young .. 1 old). */
@@ -296,17 +324,22 @@ export class Biome {
 
   /**
    * The grassland's tree stand: woods (old in the core, young at a sparser fringe), small groups out
-   * in the open and the odd lone tree, all spreading where the ground suits trees.
+   * in the open and the odd lone tree, spreading where the ground suits the area's kind of tree and
+   * as dense as that kind grows.
    */
   copseStand(x: number, z: number, env: EnvSample, out: Stand = { chance: 0, maturity: 0 }): Stand {
     const B = BIOME;
-    const shift = SUITABILITY.shift * treeSuitability(env);
+    const kind = this.areaKind(x, z, env);
+    const shift = SUITABILITY.shift * treeSuitability(env, kind);
+    const density = PREFERS[kind].density;
     const from = B.copseFrom - shift;
     const to = B.copseTo - shift;
     const n = this.copse(x / B.copseScale, z / B.copseScale);
-    const wood = B.copseDensity * smoothstep(from, to, n);
-    const fringe = n > from - B.fringe && n <= from ? B.fringeDensity : 0;
-    const group = B.groupDensity * smoothstep(B.groupFrom - shift, B.groupTo - shift, this.copse(x / B.groupScale + 71.3, z / B.groupScale - 19.7));
+    const wood = density * B.copseDensity * smoothstep(from, to, n);
+    const fringe = n > from - B.fringe && n <= from ? density * B.fringeDensity : 0;
+    // Groups at full density whatever the kind: thinned out, they'd mostly come out as single trees.
+    const groupMask = smoothstep(B.groupMaskFrom, B.groupMaskFrom + 0.05, this.copse(x / B.groupMaskScale - 41.9, z / B.groupMaskScale + 88.1));
+    const group = B.groupDensity * groupMask * smoothstep(B.groupFrom - shift, B.groupTo - shift, this.copse(x / B.groupScale + 71.3, z / B.groupScale - 19.7));
     // The strongest of wood, fringe, group and lone tree decides, with its maturity.
     out.chance = B.loneTrees;
     out.maturity = 1;
@@ -316,15 +349,21 @@ export class Biome {
     return out;
   }
 
+  /** The kind of tree an area at (x, z) grows on this ground: the regional kind, sorted by the ground. */
+  areaKind(x: number, z: number, env: EnvSample): Species {
+    const B = BIOME;
+    const n = this.kind(x / B.kindScale, z / B.kindScale);
+    const pineBelow = B.pineBelow + B.pineDry * (0.5 - env.moisture) + B.pineHigh * (env.elevation - 0.5) + B.pineSun * (env.exposure - PLAIN_EXPOSURE);
+    const broadleafAbove = B.broadleafAbove - B.broadleafLow * (0.5 - env.elevation) - B.broadleafSheltered * Math.max(0, -env.curvature);
+    return n < pineBelow ? 'pine' : n > broadleafAbove ? 'broadleaf' : 'spruce';
+  }
+
   /** Which kind of tree grows at (x, z) on this ground, from two per-tree randoms in 0..1. */
   treeSpecies(x: number, z: number, env: EnvSample, r: number, r2: number): Species {
     const B = BIOME;
     const d = this.distance(z);
-    // The area's kind, sorted by the ground, or now and then a random one.
-    const n = this.kind(x / B.kindScale, z / B.kindScale);
-    const pineBelow = B.pineBelow + B.pineDry * (0.5 - env.moisture) + B.pineHigh * (env.elevation - 0.5) + B.pineSun * (env.exposure - PLAIN_EXPOSURE);
-    const broadleafAbove = B.broadleafAbove - B.broadleafLow * (0.5 - env.elevation) - B.broadleafSheltered * Math.max(0, -env.curvature);
-    let kind: Species = n < pineBelow ? 'pine' : n > broadleafAbove ? 'broadleaf' : 'spruce';
+    // The area's kind, or now and then a random one.
+    let kind = this.areaKind(x, z, env);
     if (r2 < B.mixing) kind = (['spruce', 'pine', 'broadleaf'] as const)[Math.floor((r2 / B.mixing) * 3)];
     // Through the thaw the new kinds take over gradually; until then it stays spruce.
     const arrived = kind === 'broadleaf' ? smoothstep(B.broadleafFrom, B.thawEnd + 300, d) : kind === 'pine' ? smoothstep(B.pineFrom, B.thawEnd + 600, d) : 1;
