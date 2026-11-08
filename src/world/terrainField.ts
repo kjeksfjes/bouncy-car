@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { NoiseFunction2D } from 'simplex-noise';
 import { SUN_DIR } from '../render/stage';
 import { Biome } from './biome';
+import { Environment } from './environment';
 import { DescentFeatures, type TerrainPreset } from './features';
 import { Landform } from './landform';
 import { makeNoise, smoothstep } from './noise';
@@ -116,6 +117,8 @@ export class TerrainField {
   private readonly bigKicker: NoiseFunction2D;
   readonly features: DescentFeatures;
   readonly landforms: Landform;
+  /** What the ground is like (slope, curvature, moisture, sun exposure, elevation), for whatever grows on it. */
+  readonly environment: Environment;
   private readonly spawnHeight: number;
   /** Ground cover (snow, thaw, grassland) along the descent. */
   readonly biome: Biome;
@@ -138,11 +141,20 @@ export class TerrainField {
     this.bigKicker = makeNoise(seed + 10);
     this.features = new DescentFeatures(seed, makeNoise(seed + 6), preset);
     this.landforms = new Landform(seed, (x, z) => this.baseGround(x, z));
+    this.environment = new Environment(this, SUN_DIR);
     this.spawnHeight = this.rawHeight(0, 0);
   }
 
   height(x: number, z: number): number {
-    const raw = this.rawHeight(x, z);
+    return this.heightOver(x, z, this.landform(x, z));
+  }
+
+  /**
+   * The ground's height at (x, z) given the landform there (see landform): adds the moguls, kicker
+   * ridges and set pieces, and the spawn pad. For callers that already have the landform.
+   */
+  heightOver(x: number, z: number, landform: number): number {
+    const raw = this.rawHeight(x, z, landform);
     const pad = smoothstep(SHAPE.spawnPadOuter, SHAPE.spawnPadInner, Math.hypot(x, z));
     if (pad <= 0) return raw;
     return raw + (this.spawnHeight + z * SHAPE.slope - raw) * pad;
@@ -185,9 +197,9 @@ export class TerrainField {
     return out;
   }
 
-  private rawHeight(x: number, z: number): number {
+  private rawHeight(x: number, z: number, landform = this.landform(x, z)): number {
     const layers = this.surface(x, z, _surface);
-    return this.landform(x, z) + layers.moguls + layers.kickers + this.features.height(x, z);
+    return landform + layers.moguls + layers.kickers + this.features.height(x, z);
   }
 
   /** Surface normal via central differences. */

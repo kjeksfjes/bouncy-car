@@ -1,5 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
+import { emptySample, type EnvGrid, type EnvSample } from './environment';
 import { inspectColour, type InspectMode } from './inspect';
 import { hash2 } from './noise';
 import { PropScatter, type ChunkProps } from './props';
@@ -123,15 +124,15 @@ export class Terrain {
     const x0 = cx * CHUNK_SIZE;
     const z0 = cz * CHUNK_SIZE;
 
+    // Heights and the ground's environment in one pass (see Environment.grid).
+    const env = this.field.environment.grid(x0, z0, n, step);
     const verts = new Float32Array(n * n * 3);
     for (let j = 0; j < n; j++) {
       for (let i = 0; i < n; i++) {
-        const x = x0 + i * step;
-        const z = z0 + j * step;
         const o = (j * n + i) * 3;
-        verts[o] = x;
-        verts[o + 1] = this.field.height(x, z);
-        verts[o + 2] = z;
+        verts[o] = x0 + i * step;
+        verts[o + 1] = env.heights[j * n + i];
+        verts[o + 2] = z0 + j * step;
       }
     }
 
@@ -169,7 +170,8 @@ export class Terrain {
       normal.subVectors(vb, va).cross(vc.clone().sub(va)).normalize();
 
       if (this.inspectMode) {
-        inspectColour(this.field, this.inspectMode, va, vb, vc, normal, col);
+        faceEnvironment(env, indices[f], indices[f + 1], indices[f + 2], _env);
+        inspectColour(this.field, this.inspectMode, va, vb, vc, normal, _env, col);
       } else {
         // Coloured by the ground at the face's middle (snow, thaw patches, grass, dirt, stone).
         this.field.biome.colour((va.x + vb.x + vc.x) / 3, (va.z + vb.z + vc.z) / 3, normal, col);
@@ -212,6 +214,18 @@ export class Terrain {
     chunk.props.dispose();
     this.world.removeRigidBody(chunk.body);
   }
+}
+
+const _env = emptySample();
+
+/** A face's environment: the average of its three corners'. */
+function faceEnvironment(env: EnvGrid, a: number, b: number, c: number, out: EnvSample): EnvSample {
+  out.slope = (env.slope[a] + env.slope[b] + env.slope[c]) / 3;
+  out.curvature = (env.curvature[a] + env.curvature[b] + env.curvature[c]) / 3;
+  out.moisture = (env.moisture[a] + env.moisture[b] + env.moisture[c]) / 3;
+  out.exposure = (env.exposure[a] + env.exposure[b] + env.exposure[c]) / 3;
+  out.elevation = (env.elevation[a] + env.elevation[b] + env.elevation[c]) / 3;
+  return out;
 }
 
 /** Chessboard distance (in chunks) from a chunk key to a cell, or 0 without one. */

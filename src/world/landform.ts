@@ -111,7 +111,7 @@ const GULLIES = {
   patchMin: 0.4,
 };
 
-/** Where a spot sits among the valleys (see Landform.inspect), for the dev inspection view. */
+/** Where a spot sits among the valleys and what shapes it (see Landform.sample). */
 export interface LandformSpot {
   /** How far (m) the ground lies below the ridge tops. */
   below: number;
@@ -164,6 +164,11 @@ export class Landform {
   /** The smooth lie of the land at (x, z): the base with valleys and gullies cut into it. */
   height(x: number, z: number): number {
     return this.evaluate(x, z, this.scratch);
+  }
+
+  /** The landform's height at (x, z), filling `spot` with what shapes it there. */
+  sample(x: number, z: number, spot: LandformSpot): number {
+    return this.evaluate(x, z, spot);
   }
 
   /** What shapes the ground at (x, z): for the dev inspection view. */
@@ -301,6 +306,9 @@ export class Landform {
     let h = V.depth;
     let lowest = V.depth;
     let second = V.depth;
+    // Start from a clean slate: on a crest no valley lies below, and stale values from the last
+    // spot would leak in (the gullies read them).
+    if (spot) Object.assign(spot, emptySpot());
     for (let k = k0 - 2; k <= k0 + 2; k++) {
       const line = (k + 0.5 + V.jitter * this.meander(k * 13.7, z / V.meanderScale)) * V.spacing;
       const floor = V.floor + hash2(k, 0, this.seed + 211) * V.floorExtra;
@@ -324,7 +332,7 @@ export class Landform {
   }
 }
 
-function emptySpot(): LandformSpot {
+export function emptySpot(): LandformSpot {
   return { below: 0, flank: Infinity, fromLine: Infinity, depth: 0, ledge: 0, ridgeGap: Infinity, gully: 0 };
 }
 

@@ -1,15 +1,17 @@
 import * as THREE from 'three';
+import type { EnvSample } from './environment';
 import { KICKER_HEIGHT, type TerrainField } from './terrainField';
 
 /**
  * Dev inspection view: the terrain coloured by what shapes it instead of by its ground cover.
  * - landforms: valley lines, floors, flanks and ridge tops, with 5 m contour lines;
  * - layers: what is laid over the landform (moguls, kicker ridges, drops, launch humps);
- * - steepness: the slope of each face, in bands.
+ * - steepness: the slope of each face, in bands;
+ * - moisture, curvature, exposure: the ground's environment (see Environment), as colour scales.
  */
-export type InspectMode = 'landforms' | 'layers' | 'steepness';
+export type InspectMode = 'landforms' | 'layers' | 'steepness' | 'moisture' | 'curvature' | 'exposure';
 
-export const INSPECT_MODES: readonly InspectMode[] = ['landforms', 'layers', 'steepness'];
+export const INSPECT_MODES: readonly InspectMode[] = ['landforms', 'layers', 'steepness', 'moisture', 'curvature', 'exposure'];
 
 interface LegendEntry {
   colour: string;
@@ -37,6 +39,14 @@ const C = {
   steep25: '#f0c04a',
   steep30: '#ec8a3a',
   steep35: '#d8443a',
+  dry: '#c9a66b',
+  middling: '#d8d8cc',
+  wet: '#2f6fb3',
+  convex: '#d8643a',
+  flat: '#d8d8cc',
+  concave: '#3a74c9',
+  sunny: '#f0b43c',
+  shaded: '#4a5a9a',
 };
 
 /** Legends for the HUD, per mode. */
@@ -77,9 +87,39 @@ export const INSPECT_LEGENDS: Record<InspectMode, { title: string; entries: Lege
       { colour: C.steep35, label: 'over 35°' },
     ],
   },
+  moisture: {
+    title: 'Moisture',
+    entries: [
+      { colour: C.dry, label: 'dry (ridges, convex edges)' },
+      { colour: C.middling, label: 'middling' },
+      { colour: C.wet, label: 'wet (floors, gullies, hollows)' },
+    ],
+  },
+  curvature: {
+    title: 'Curvature',
+    entries: [
+      { colour: C.convex, label: 'convex (crests, edges, ribs)' },
+      { colour: C.flat, label: 'even' },
+      { colour: C.concave, label: 'concave (hollows, grooves)' },
+    ],
+  },
+  exposure: {
+    title: 'Sun exposure',
+    entries: [
+      { colour: C.sunny, label: 'turned toward the sun' },
+      { colour: C.middling, label: 'like the plain slope' },
+      { colour: C.shaded, label: 'turned away' },
+    ],
+  },
 };
 
 const col = Object.fromEntries(Object.entries(C).map(([k, v]) => [k, new THREE.Color(v)])) as Record<keyof typeof C, THREE.Color>;
+/**
+ * The plain mountain slope already faces the sun (exposure ≈0.7, measured median), so the exposure
+ * view centres on that and shows faces turned toward or away from the sun relative to it.
+ */
+const PLAIN_EXPOSURE = 0.7;
+const EXPOSURE_RANGE = 0.35;
 /** Contour interval (m) in the landforms view. */
 const CONTOUR = 5;
 /** A valley shallower than this (m) is too faint to count: the ground counts as open slope. */
@@ -99,6 +139,7 @@ export function inspectColour(
   b: THREE.Vector3,
   c: THREE.Vector3,
   normal: THREE.Vector3,
+  env: EnvSample,
   out: THREE.Color,
 ): THREE.Color {
   const x = (a.x + b.x + c.x) / 3;
@@ -107,6 +148,10 @@ export function inspectColour(
     const deg = (Math.acos(Math.min(1, normal.y)) * 180) / Math.PI;
     return out.copy(deg < 15 ? col.steep0 : deg < 25 ? col.steep15 : deg < 30 ? col.steep25 : deg < 35 ? col.steep30 : col.steep35);
   }
+
+  if (mode === 'moisture') return scale(col.dry, col.middling, col.wet, env.moisture * 2 - 1, out);
+  if (mode === 'curvature') return scale(col.concave, col.flat, col.convex, env.curvature, out);
+  if (mode === 'exposure') return scale(col.shaded, col.middling, col.sunny, (env.exposure - PLAIN_EXPOSURE) / EXPOSURE_RANGE, out);
 
   if (mode === 'layers') {
     const s = field.surface(x, z);
@@ -136,4 +181,9 @@ export function inspectColour(
   const hc = field.landform(c.x, c.z);
   if (Math.floor(Math.min(ha, hb, hc) / CONTOUR) !== Math.floor(Math.max(ha, hb, hc) / CONTOUR)) out.multiplyScalar(0.55);
   return out;
+}
+
+/** A three-colour scale: low at −1, mid at 0, high at 1. */
+function scale(low: THREE.Color, mid: THREE.Color, high: THREE.Color, t: number, out: THREE.Color): THREE.Color {
+  return t < 0 ? out.copy(mid).lerp(low, Math.min(1, -t)) : out.copy(mid).lerp(high, Math.min(1, t));
 }
