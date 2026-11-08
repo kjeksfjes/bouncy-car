@@ -10,8 +10,15 @@ export class Hud {
   private readonly air = document.getElementById('air')!;
   private readonly autopilot = document.getElementById('autopilot')!;
   private readonly paused = document.getElementById('paused')!;
+  private readonly slow = document.getElementById('slow')!;
   private seenJumps = 0;
   private airTimer = 0;
+
+  /** Shows the slow-motion speed (e.g. '¼×'), or hides the badge with null. */
+  setSlowMotion(label: string | null): void {
+    this.slow.classList.toggle('visible', label !== null);
+    if (label !== null && this.slow.textContent !== `SLOW ${label}`) this.slow.textContent = `SLOW ${label}`;
+  }
 
   setPaused(paused: boolean): void {
     this.paused.classList.toggle('visible', paused);

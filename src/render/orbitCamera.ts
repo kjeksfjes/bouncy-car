@@ -140,12 +140,17 @@ export class OrbitCamera {
   }
 
   /**
+   * @param dt real time (s)
    * @param frozen the game is paused: the car stands still (its velocity is stale), so the
    *   framing holds and the view never recentres, but the mouse still orbits and zooms.
+   * @param timeScale slow motion: following the car, shake and the landing dip run on game
+   *   time (so they slow down with it); the mouse and the recentring stay on real time.
    */
-  update(dt: number, target: THREE.Object3D, velocity: THREE.Vector3, frozen = false): void {
+  update(dt: number, target: THREE.Object3D, velocity: THREE.Vector3, frozen = false, timeScale = 1): void {
     const O = ORBIT;
-    this.time += dt;
+    /** Game time this frame. */
+    const gt = dt * timeScale;
+    this.time += gt;
     _fwd.set(0, 0, -1).applyQuaternion(target.quaternion).setY(0);
     _velDir.copy(velocity).setY(0);
     if (!frozen) this.speed = _velDir.length();
@@ -159,7 +164,7 @@ export class OrbitCamera {
       _desired.copy(_fwd);
       if (speed > 4 && _velDir.dot(_fwd) > 0) _desired.lerp(_velDir.normalize(), 0.6).normalize();
       if (!this.initialized) this.dir.copy(_desired);
-      this.dir.lerp(_desired, 1 - Math.exp(-3 * dt)).normalize();
+      this.dir.lerp(_desired, 1 - Math.exp(-3 * gt)).normalize();
     }
 
     // The resting framing, as a distance and elevation around the pivot.
@@ -199,8 +204,8 @@ export class OrbitCamera {
       this.chasePos.copy(_desired);
       this.chaseLook.copy(_look);
     }
-    this.chasePos.lerp(_desired, 1 - Math.exp(-CHASE.follow * dt));
-    this.chaseLook.lerp(_look, 1 - Math.exp(-CHASE.aim * dt));
+    this.chasePos.lerp(_desired, 1 - Math.exp(-CHASE.follow * gt));
+    this.chaseLook.lerp(_look, 1 - Math.exp(-CHASE.aim * gt));
     const chaseGround = this.field.height(this.chasePos.x, this.chasePos.z) + CHASE.clearance;
     if (this.chasePos.y < chaseGround) this.chasePos.y = chaseGround;
 
@@ -210,8 +215,8 @@ export class OrbitCamera {
     _aim.copy(target.position);
     _aim.y += FRAME.pivotHeight;
     if (!this.initialized) this.pivot.copy(_aim);
-    if (!frozen) this.pivot.y += velocity.y * dt;
-    this.pivot.y += (_aim.y - this.pivot.y) * (1 - Math.exp(-O.follow * dt));
+    if (!frozen) this.pivot.y += velocity.y * gt;
+    this.pivot.y += (_aim.y - this.pivot.y) * (1 - Math.exp(-O.follow * gt));
     this.pivot.x = _aim.x;
     this.pivot.z = _aim.z;
     const elevation = restPitch + this.pitch;
@@ -248,13 +253,13 @@ export class OrbitCamera {
 
     _aim.copy(target.position);
     _aim.y += SIGHT.aimHeight;
-    const lift = this.lift.update(sightLift(this.field, _desired, _aim, SIGHT), dt);
+    const lift = this.lift.update(sightLift(this.field, _desired, _aim, SIGHT), gt);
 
-    this.kickVel += (-this.kickY * KICK.stiffness - this.kickVel * KICK.damping) * dt;
-    this.kickY += this.kickVel * dt;
+    this.kickVel += (-this.kickY * KICK.stiffness - this.kickVel * KICK.damping) * gt;
+    this.kickY += this.kickVel * gt;
 
     const shake = this.trauma * this.trauma;
-    this.trauma = Math.max(0, this.trauma - SHAKE.decay * dt);
+    this.trauma = Math.max(0, this.trauma - SHAKE.decay * gt);
     const n = (seed: number) => this.noise(this.time * SHAKE.frequency, seed);
     this.camera.position.copy(_desired);
     this.camera.position.y += this.kickY + lift;
@@ -265,7 +270,7 @@ export class OrbitCamera {
     this.camera.rotateZ(n(4) * shake * SHAKE.roll);
     // Wider view at speed sells the velocity.
     const fov = 60 + Math.min(speed, 55) * 0.32;
-    this.camera.fov += (fov - this.camera.fov) * (1 - Math.exp(-2 * dt));
+    this.camera.fov += (fov - this.camera.fov) * (1 - Math.exp(-2 * gt));
     this.camera.updateProjectionMatrix();
   }
 }

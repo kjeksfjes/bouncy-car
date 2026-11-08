@@ -139,10 +139,15 @@ export class HeliCamera {
   }
 
   /**
+   * @param dt real time (s)
    * @param frozen the game is paused: the automatic drift stops and doesn't come back (the shot
    *   holds where the user leaves it), but the mouse still swings, tilts and zooms.
+   * @param timeScale slow motion: catching up with the car and re-aiming run on game time;
+   *   the framing, the mouse and the hover wobble stay on real time.
    */
-  update(dt: number, target: THREE.Object3D, velocity: THREE.Vector3, frozen = false): void {
+  update(dt: number, target: THREE.Object3D, velocity: THREE.Vector3, frozen = false, timeScale = 1): void {
+    /** Game time this frame. */
+    const gt = dt * timeScale;
     const H = HELI;
     const M = MANUAL;
     // The hover wobble's clock; it holds still while paused too.
@@ -190,8 +195,9 @@ export class HeliCamera {
       this.look.copy(target.position);
       this.initialized = true;
     }
-    const follow = 1 - Math.exp(-THREE.MathUtils.lerp(M.follow, H.follow, auto) * dt);
-    this.anchor.lerp(_lead, follow);
+    const rate = THREE.MathUtils.lerp(M.follow, H.follow, auto);
+    const follow = 1 - Math.exp(-rate * dt);
+    this.anchor.lerp(_lead, 1 - Math.exp(-rate * gt));
     this.angle += (this.angleTarget - this.angle) * follow;
     this.distance += (distance - this.distance) * follow;
     this.elevation += (elevation - this.elevation) * follow;
@@ -208,8 +214,8 @@ export class HeliCamera {
     }
     _aim.copy(target.position);
     _aim.y += SIGHT.aimHeight;
-    const lift = this.lift.update(sightLift(this.field, pos, _aim, SIGHT), dt);
-    this.look.lerp(target.position, 1 - Math.exp(-H.aim * dt));
+    const lift = this.lift.update(sightLift(this.field, pos, _aim, SIGHT), gt);
+    this.look.lerp(target.position, 1 - Math.exp(-H.aim * gt));
 
     const n = (seed: number) => this.noise(this.time * H.wobbleSpeed, seed) * H.wobble;
     this.camera.position.set(pos.x + n(1), pos.y + lift + n(2), pos.z + n(3));

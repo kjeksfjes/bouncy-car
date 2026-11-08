@@ -20,6 +20,11 @@ import { TerrainField } from './world/terrainField';
 import { TreeLayout } from './world/trees';
 
 const CAMERA_MODES = ['orbit', 'heli'] as const;
+/** Slow-motion speeds (game time per real time) and their HUD labels; it starts at ¼. */
+const SLOW_SPEEDS = [1 / 2, 1 / 4, 1 / 8, 1 / 16];
+const SLOW_LABELS = ['½×', '¼×', '⅛×', '1/16×'];
+/** How quickly slow motion eases in and out (1/s): about 0.3 s. */
+const SLOW_RAMP = 10;
 type CameraMode = (typeof CAMERA_MODES)[number];
 
 /** No car legitimately goes this fast (m/s); beyond it the physics has blown up. */
@@ -48,6 +53,10 @@ export class Game {
   private cameraMode: CameraMode = 'orbit';
   /** Esc pauses: the simulation stops, the camera keeps running. */
   private paused = false;
+  /** T toggles slow motion; ' picks its speed from SLOW_SPEEDS. timeScale eases toward it. */
+  private slowMotion = false;
+  private slowLevel = 1;
+  private timeScale = 1;
   private readonly input = new Input();
   private readonly hud = new Hud();
   private readonly audio = new GameAudio();
@@ -155,7 +164,20 @@ export class Game {
     }
     if (this.input.consume('KeyM')) this.audio.toggleMute();
     if (this.input.consume('KeyC')) this.cycleCamera();
+    if (this.input.consume('KeyT')) this.slowMotion = !this.slowMotion;
+    if (this.input.consume("char:'")) {
+      // Cycles the slow-motion speed; from normal speed it first switches to the current one.
+      if (this.slowMotion) this.slowLevel = (this.slowLevel + 1) % SLOW_SPEEDS.length;
+      this.slowMotion = true;
+    }
     this.input.endFrame();
+    const slowTarget = this.slowMotion ? SLOW_SPEEDS[this.slowLevel] : 1;
+    this.timeScale += (slowTarget - this.timeScale) * (1 - Math.exp(-SLOW_RAMP * dt));
+    if (Math.abs(slowTarget - this.timeScale) < 0.002) this.timeScale = slowTarget;
+    this.hud.setSlowMotion(this.slowMotion ? SLOW_LABELS[this.slowLevel] : null);
+    this.audio.setTimeScale(this.timeScale);
+    /** Game time this frame: slowed down in slow motion. */
+    const gt = dt * this.timeScale;
 
     if (this.paused) {
       // Everything stands still except the camera, which runs on real time so the frozen
@@ -167,12 +189,14 @@ export class Game {
     }
 
     const controls = new Map<Car, CarInput>();
-    controls.set(this.car, this.autopilot ? this.drive(this.ai, this.car, dt) : this.input.car());
-    for (const a of this.traffic.cars) controls.set(a.car, this.drive(a.driver, a.car, dt));
+    controls.set(this.car, this.autopilot ? this.drive(this.ai, this.car, gt) : this.input.car());
+    for (const a of this.traffic.cars) controls.set(a.car, this.drive(a.driver, a.car, gt));
 
     const cars = this.allCars;
-    // Hit-stop freezes the simulation; the camera (and its shake) keeps running.
-    const simDt = this.hitStop > 0 ? 0 : dt;
+    // Hit-stop freezes the simulation; the camera (and its shake) keeps running. Slow motion
+    // feeds physics less time: it still steps at PHYSICS_STEP (damage and the rest are tuned
+    // per step), just less often, and everything is drawn interpolated between steps.
+    const simDt = this.hitStop > 0 ? 0 : gt;
     this.hitStop = Math.max(0, this.hitStop - dt);
     this.accumulator = Math.min(this.accumulator + simDt, PHYSICS_STEP * MAX_STEPS_PER_FRAME);
     while (this.accumulator >= PHYSICS_STEP) {
@@ -182,6 +206,7 @@ export class Game {
         for (const car of cars) car.handleContactForce(e.collider1(), e.collider2(), e.totalForceMagnitude());
       });
       for (const car of cars) car.afterStep();
+      this.debris.afterStep();
       this.accumulator -= PHYSICS_STEP;
     }
 
@@ -190,7 +215,7 @@ export class Game {
     const alpha = this.accumulator / PHYSICS_STEP;
     // The sanity check can remove cars, so take a fresh list: touching a removed car's
     // physics body is a fatal Rapier panic.
-    for (const car of this.allCars) car.syncVisual(alpha, dt);
+    for (const car of this.allCars) car.syncVisual(alpha, gt);
     const pos = this.car.position;
     const centers: StreamCenter[] = [
       { position: pos, radius: LOAD_RADIUS },
@@ -198,10 +223,10 @@ export class Game {
     ];
     this.terrain.update(centers, STREAM_BUDGET);
     const camera = this.cameraMode === 'orbit' ? this.orbit : this.heli;
-    camera.update(dt, this.car.model.root, this.car.velocity);
+    camera.update(dt, this.car.model.root, this.car.velocity, false, this.timeScale);
     this.view.update(this.stage.camera, this.stage.viewDistance);
-    this.debris.update(dt, pos, this.view);
-    this.traffic.update(dt, pos, this.view);
+    this.debris.update(gt, pos, this.view, alpha);
+    this.traffic.update(gt, pos, this.view);
     this.stage.follow(pos);
     this.aiArrow.visible = this.autopilot && this.showAiHeading;
     if (this.aiArrow.visible) {
@@ -210,9 +235,9 @@ export class Game {
     }
     // Traffic may have despawned cars just now; again use a fresh list.
     const live = this.allCars;
-    this.juice.update(dt, live, this.stage.renderer.getDrawingBufferSize(this.bufferSize).y / 2);
-    this.audio.update(dt, this.stage.camera, live);
-    this.hud.update(dt, this.car, this.autopilot);
+    this.juice.update(gt, live, this.stage.renderer.getDrawingBufferSize(this.bufferSize).y / 2);
+    this.audio.update(gt, this.stage.camera, live);
+    this.hud.update(gt, this.car, this.autopilot);
     this.stage.render();
   }
 

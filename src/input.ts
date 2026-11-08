@@ -10,7 +10,12 @@ export class Input {
   constructor() {
     window.addEventListener('keydown', (e) => {
       if (BLOCKED.has(e.code)) e.preventDefault();
-      if (!e.repeat) this.pressed.add(e.code);
+      if (!e.repeat) {
+        this.pressed.add(e.code);
+        // Also by the character typed, for keys that sit in different places on different
+        // layouts (the apostrophe isn't on the same physical key on US and Norwegian keyboards).
+        this.pressed.add(`char:${e.key}`);
+      }
       this.held.add(e.code);
     });
     window.addEventListener('keyup', (e) => this.held.delete(e.code));
@@ -34,7 +39,7 @@ export class Input {
     return this.any('ShiftLeft', 'ShiftRight');
   }
 
-  /** True once per key press. */
+  /** True once per key press: a key code (`KeyT`), or a typed character as `char:'`. */
   consume(code: string): boolean {
     return this.pressed.delete(code);
   }

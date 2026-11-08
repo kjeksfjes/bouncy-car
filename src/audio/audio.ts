@@ -3,6 +3,10 @@ import type { Car, CarEvents, ContactSurface } from '../vehicle/car';
 import { ENGINE_PROCESSOR, loadEngineWorklet } from './engineWorklet';
 
 /** Mix levels. Everything is synthesised; these are by-ear starting points. */
+/** The slow-motion low-pass: wide open at normal speed, and the lowest it closes down to (Hz). */
+const SLOW_OPEN = 20000;
+const SLOW_FLOOR = 300;
+
 const MIX = {
   master: 0.7,
   engine: 0.2,
@@ -89,7 +93,8 @@ class CarVoice {
     this.sources.push(src);
   }
 
-  update(dt: number, car: Car): void {
+  /** @param pitch slow motion lowers the engine (see AudioEngine.setTimeScale) */
+  update(dt: number, car: Car, pitch: number): void {
     const now = this.ctx.currentTime;
     const p = car.position;
     this.panner.positionX.setTargetAtTime(p.x, now, 0.02);
@@ -105,11 +110,11 @@ class CarVoice {
     const alive = car.engineAlive ? 1 : 0;
     const load = throttle * alive;
     const revs = this.rpm / SHIFT_RPM;
-    this.engine.parameters.get('rpm')!.setTargetAtTime(this.rpm, now, 0.03);
+    this.engine.parameters.get('rpm')!.setTargetAtTime(this.rpm * pitch, now, 0.03);
     this.engine.parameters.get('load')!.setTargetAtTime(load, now, 0.05);
     // Open throttle brings out the rasp; revs and throttle open the muffler up.
     this.rasp.gain.setTargetAtTime(-4 + load * 10, now, 0.06);
-    this.muffler.frequency.setTargetAtTime(350 + revs * 1800 + load * 1400, now, 0.05);
+    this.muffler.frequency.setTargetAtTime((350 + revs * 1800 + load * 1400) * pitch, now, 0.05);
     this.engineGain.gain.setTargetAtTime(MIX.engine * this.level * alive * (0.7 + 0.3 * load), now, 0.08);
 
     const grounded = car.groundedWheels / 4;
@@ -156,6 +161,11 @@ export class GameAudio implements CarEvents {
     this.engine?.setMuted(this.muted || this.paused);
   }
 
+  /** Slow motion (game time per real time, 1 = normal): sounds drop in pitch and stretch out. */
+  setTimeScale(scale: number): void {
+    this.engine?.setTimeScale(scale);
+  }
+
   /** Silences everything while the game is paused (the mute setting is kept apart). */
   setPaused(paused: boolean): void {
     this.paused = paused;
@@ -196,6 +206,13 @@ class AudioEngine {
   private player: Car | null = null;
   /** Car voices need the engine worklet, which loads asynchronously. */
   private engineReady = false;
+  /**
+   * Slow motion's pitch factor: √(time scale), so ¼ speed sounds an octave down and 1/16 two,
+   * rather than dropping to an inaudible rumble. One-shots stretch by its inverse.
+   */
+  private pitch = 1;
+  /** Closes down in slow motion for a muffled, underwater feel. */
+  private readonly slowFilter: BiquadFilterNode;
 
   constructor() {
     loadEngineWorklet(this.ctx).then(
@@ -205,7 +222,8 @@ class AudioEngine {
     // Safety limiter only: set high so it catches peaks without flattening every hit.
     const limiter = new DynamicsCompressorNode(this.ctx, { threshold: -4, knee: 4, ratio: 8, attack: 0.002, release: 0.15 });
     this.master = new GainNode(this.ctx, { gain: MIX.master });
-    this.master.connect(limiter).connect(this.ctx.destination);
+    this.slowFilter = new BiquadFilterNode(this.ctx, { type: 'lowpass', frequency: SLOW_OPEN, Q: 0.7 });
+    this.master.connect(this.slowFilter).connect(limiter).connect(this.ctx.destination);
     this.loops = new GainNode(this.ctx, { gain: 1 });
     this.loops.connect(this.master);
     this.noise = whiteNoise(this.ctx, 2);
@@ -219,6 +237,13 @@ class AudioEngine {
 
   setMuted(muted: boolean): void {
     this.master.gain.setTargetAtTime(muted ? 0 : MIX.master, this.ctx.currentTime, 0.05);
+  }
+
+  setTimeScale(scale: number): void {
+    this.pitch = Math.sqrt(THREE.MathUtils.clamp(scale, 0.01, 1));
+    // Fully open at normal speed, ≈2.5 kHz at ¼, closing to SLOW_FLOOR further down.
+    const cutoff = Math.max(SLOW_FLOOR, SLOW_OPEN * this.pitch ** 3);
+    this.slowFilter.frequency.setTargetAtTime(cutoff, this.ctx.currentTime, 0.05);
   }
 
   /** Call once per frame with every car that should be heard; the first is the player's. */
@@ -235,7 +260,7 @@ class AudioEngine {
     cars.forEach((car, i) => {
       let voice = this.voices.get(car);
       if (!voice) this.voices.set(car, (voice = new CarVoice(this.ctx, this.loops, this.noise, i === 0 ? 1 : MIX.aiEngine)));
-      voice.update(dt, car);
+      voice.update(dt, car, this.pitch);
     });
 
     const player = cars[0];
@@ -243,7 +268,7 @@ class AudioEngine {
     const speed = player.velocity.length();
     const now = this.ctx.currentTime;
     this.windGain.gain.setTargetAtTime(MIX.wind * Math.min(1, (speed / 45) ** 2), now, 0.1);
-    this.windFilter.frequency.setTargetAtTime(350 + speed * 25, now, 0.1);
+    this.windFilter.frequency.setTargetAtTime((350 + speed * 25) * this.pitch, now, 0.1);
   }
 
   // --- Positional one-shots for car events.
@@ -376,19 +401,27 @@ class AudioEngine {
     if (saturate) gain.connect(new WaveShaperNode(this.ctx, { curve: softClip(), oversample: '2x' })).connect(panner);
     else gain.connect(panner);
     panner.connect(this.master);
-    setTimeout(() => panner.disconnect(), 2000);
+    // Slow motion stretches the one-shots, so they need longer before the panner goes.
+    setTimeout(() => panner.disconnect(), 2000 / this.pitch);
     return gain;
   }
 
   private noiseBurst(out: AudioNode, type: BiquadFilterType, freq: number, q: number, peak: number, decay: number, delay = 0): void {
+    // Slow motion: lower and longer.
+    freq *= this.pitch;
+    decay /= this.pitch;
+    delay /= this.pitch;
     const t = this.ctx.currentTime + delay;
-    const src = new AudioBufferSourceNode(this.ctx, { buffer: this.noise });
+    const src = new AudioBufferSourceNode(this.ctx, { buffer: this.noise, playbackRate: this.pitch });
     const env = envelope(this.ctx, t, peak, decay);
     src.connect(new BiquadFilterNode(this.ctx, { type, frequency: freq, Q: q })).connect(env).connect(out);
     src.start(t, Math.random() * (this.noise.duration - decay - 0.1), decay + 0.05);
   }
 
   private tone(out: AudioNode, type: OscillatorType, freq: number, peak: number, decay: number, delay = 0): void {
+    freq *= this.pitch;
+    decay /= this.pitch;
+    delay /= this.pitch;
     const t = this.ctx.currentTime + delay;
     const osc = new OscillatorNode(this.ctx, { type, frequency: freq });
     osc.connect(envelope(this.ctx, t, peak, decay)).connect(out);
@@ -397,6 +430,9 @@ class AudioEngine {
   }
 
   private sweep(out: AudioNode, type: OscillatorType, from: number, to: number, peak: number, decay: number): void {
+    from *= this.pitch;
+    to *= this.pitch;
+    decay /= this.pitch;
     const t = this.ctx.currentTime;
     const osc = new OscillatorNode(this.ctx, { type, frequency: from });
     osc.frequency.exponentialRampToValueAtTime(to, t + decay);

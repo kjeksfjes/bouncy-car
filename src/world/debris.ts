@@ -32,6 +32,15 @@ const CLEANUP = {
 interface DebrisItem {
   body: RAPIER.RigidBody | null;
   object: THREE.Object3D;
+  /**
+   * The body's pose at the last two physics steps; the object is drawn between them. Copying
+   * the body's pose straight onto it would step visibly whenever physics runs slower than the
+   * frame rate (slow motion).
+   */
+  prevPos: THREE.Vector3;
+  prevQuat: THREE.Quaternion;
+  currPos: THREE.Vector3;
+  currQuat: THREE.Quaternion;
   restTime: number;
   /** Seconds into the sink animation; null while still a physics body. */
   sinking: number | null;
@@ -72,14 +81,34 @@ export class Debris {
         .setCcdEnabled(true),
     );
     for (const desc of colliders) this.world.createCollider(desc, body);
-    this.items.push({ body, object, restTime: 0, sinking: null });
-    this.enforceCap();
+    this.track(object, body);
   }
 
   /** Takes over an existing body (e.g. a panel torn off its hinge); `object` must be in world space. */
   adopt(object: THREE.Object3D, body: RAPIER.RigidBody): void {
-    this.items.push({ body, object, restTime: 0, sinking: null });
+    this.track(object, body);
+  }
+
+  private track(object: THREE.Object3D, body: RAPIER.RigidBody): void {
+    const t = body.translation();
+    const r = body.rotation();
+    const pos = new THREE.Vector3(t.x, t.y, t.z);
+    const quat = new THREE.Quaternion(r.x, r.y, r.z, r.w);
+    this.items.push({ body, object, restTime: 0, sinking: null, prevPos: pos.clone(), prevQuat: quat.clone(), currPos: pos, currQuat: quat });
     this.enforceCap();
+  }
+
+  /** Records every body's pose after a physics step (see DebrisItem). */
+  afterStep(): void {
+    for (const item of this.items) {
+      if (!item.body) continue;
+      const t = item.body.translation();
+      const r = item.body.rotation();
+      item.prevPos.copy(item.currPos);
+      item.prevQuat.copy(item.currQuat);
+      item.currPos.set(t.x, t.y, t.z);
+      item.currQuat.set(r.x, r.y, r.z, r.w);
+    }
   }
 
   private enforceCap(): void {
@@ -87,8 +116,11 @@ export class Debris {
     if (live.length > CLEANUP.maxPieces) this.startSinking(live[0]);
   }
 
-  /** @param player cleanup distances are measured from here */
-  update(dt: number, player: THREE.Vector3, view: Visibility): void {
+  /**
+   * @param player cleanup distances are measured from here
+   * @param alpha how far the frame is between the last two physics steps (0..1)
+   */
+  update(dt: number, player: THREE.Vector3, view: Visibility, alpha: number): void {
     this.shards.update(dt, view.eye);
     this.fluids.update(dt);
     const C = CLEANUP;
@@ -104,9 +136,8 @@ export class Debris {
 
       const body = item.body!;
       const t = body.translation();
-      const r = body.rotation();
-      item.object.position.set(t.x, t.y, t.z);
-      item.object.quaternion.set(r.x, r.y, r.z, r.w);
+      item.object.position.lerpVectors(item.prevPos, item.currPos, alpha);
+      item.object.quaternion.slerpQuaternions(item.prevQuat, item.currQuat, alpha);
 
       const v = body.linvel();
       const w = body.angvel();
