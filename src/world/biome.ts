@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { NoiseFunction2D } from 'simplex-noise';
 import type { EnvSample } from './environment';
-import { hash2, makeNoise, smoothstep } from './noise';
+import { makeNoise, smoothstep } from './noise';
 import type { Species } from './trees';
 
 /**
@@ -107,8 +107,18 @@ const COVER = {
   steepLower: 0.1,
   /** Rock anywhere on landform steeper than this (°). */
   steepRock: 36,
-  /** Drop walls are rock where they fall away steeper than this (rise over run, on top of the landform). */
+  /**
+   * Drop walls (falling away steeper than `cliffFrom`, rise over run on top of the landform): rock
+   * in rocky country (past `cliffRocky`). Elsewhere they're grassy banks, with rock outcrops only on
+   * their steepest part (past `outcropFrom`) in patches: noise at `outcropScale` m past
+   * `outcropAbove`, about a third of the wall's length. A wall of rock straight across the slope
+   * looks laid on, not grown.
+   */
   cliffFrom: 0.3,
+  cliffRocky: 0.5,
+  outcropFrom: 0.5,
+  outcropScale: 40,
+  outcropAbove: 0.25,
   /** Grass: lush where moisture passes `lushFrom` (full by `lushTo`); parched where it's under `parchedFrom` (fully by `parchedTo`) on sunny faces, at most `parchedMax`. */
   lushFrom: 0.6,
   lushTo: 0.9,
@@ -118,8 +128,11 @@ const COVER = {
   /** Sunny: exposure from `sunnyFrom` to `sunnyTo` (the plain slope faces the sun at ≈0.7). */
   sunnyFrom: 0.68,
   sunnyTo: 0.85,
-  /** Rock faces pick one of the rock tones at random, like facets catching different light. */
-  rockToneSeed: 37,
+  /**
+   * Rock shifts slowly between two greys (noise at `toneScale` m): per-face tones on the 2 m mesh
+   * read as a noisy checkerboard.
+   */
+  toneScale: 30,
 };
 
 /**
@@ -150,7 +163,8 @@ export const GROUND = {
   grassLush: new THREE.Color('#5a8e3e'),
   grassParched: new THREE.Color('#9ea05c'),
   /** Bare rock, in tones the faces pick from. */
-  stoneTones: [new THREE.Color('#7f7b74'), new THREE.Color('#716d67'), new THREE.Color('#8b867e'), new THREE.Color('#67635e')],
+  stone: new THREE.Color('#827d75'),
+  stoneDark: new THREE.Color('#6c6862'),
 };
 
 /**
@@ -231,10 +245,12 @@ export class Biome {
   private readonly copse: NoiseFunction2D;
   private readonly geology: NoiseFunction2D;
   private readonly rockLine: NoiseFunction2D;
+  private readonly outcrop: NoiseFunction2D;
+  private readonly rockTone: NoiseFunction2D;
   private readonly shifts: Shift[] = [];
 
   constructor(
-    private readonly seed: number,
+    seed: number,
     private readonly sun: THREE.Vector3,
   ) {
     this.patch = makeNoise(seed + 20);
@@ -242,6 +258,8 @@ export class Biome {
     this.copse = makeNoise(seed + 23);
     this.geology = makeNoise(seed + 30);
     this.rockLine = makeNoise(seed + 31);
+    this.outcrop = makeNoise(seed + 32);
+    this.rockTone = makeNoise(seed + 33);
   }
 
   /**
@@ -357,8 +375,7 @@ export class Biome {
     }
     if (snow < 1) {
       if (this.isRock(x, z, env)) {
-        const tones = GROUND.stoneTones;
-        _bare.copy(tones[Math.floor(hash2(Math.round(x * 4), Math.round(z * 4), this.seed + C.rockToneSeed) * tones.length)]);
+        _bare.copy(GROUND.stone).lerp(GROUND.stoneDark, 0.5 + 0.5 * this.rockTone(x / C.toneScale, z / C.toneScale));
       } else {
         const green = smoothstep(B.thawStart, B.thawEnd + B.greenAt, this.distance(z));
         _bare.copy(GROUND.grassDry).lerp(GROUND.grass, green);
@@ -377,10 +394,13 @@ export class Biome {
   /** Whether bare ground at (x, z) is rock (see COVER): from the landforms, so whole forms go rocky together. */
   isRock(x: number, z: number, env: EnvSample): boolean {
     const C = COVER;
-    if (env.cliff > C.cliffFrom) return true;
+    const rocky = smoothstep(C.rockyFrom, C.rockyTo, this.geology(x / C.geologyScale, z / (C.geologyScale * 1.5)));
+    if (env.cliff > C.cliffFrom) {
+      if (rocky > C.cliffRocky) return true;
+      if (env.cliff > C.outcropFrom && this.outcrop(x / C.outcropScale, z / C.outcropScale) > C.outcropAbove) return true;
+    }
     const land = (Math.atan(env.slope) * 180) / Math.PI;
     if (land > C.steepRock) return true;
-    const rocky = smoothstep(C.rockyFrom, C.rockyTo, this.geology(x / C.geologyScale, z / (C.geologyScale * 1.5)));
     if (rocky <= 0) return false;
     const line = C.rockLine + C.lineWobble * this.rockLine(x / C.lineWobbleScale, z / C.lineWobbleScale) - (C.steepLower * Math.max(0, land - C.steepFrom)) / 10;
     // Fading into grassy country, the line climbs out of reach rather than the rock thinning out.
