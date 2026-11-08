@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { buildPanels, sample, sideHalfWidth, type CarBlueprint, type PanelMaterial, type Panels } from './blueprint';
+import { bendNose, buildPanels, noseShift, sample, sideHalfWidth, type CarBlueprint, type PanelMaterial, type Panels } from './blueprint';
 import type { CarConfig } from './carConfig';
 import type { LightFixtureDef, LightKind } from './lights';
 
@@ -215,7 +215,7 @@ function hingesFor(cfg: CarConfig): Record<string, HingeSpec> {
     'door-left': { ...door, anchor: v(-doorX, doorH, doorZ), min: -1.2, max: -ajar },
     hood: { ...lid, anchor: v(0, sample(bp.deck, bp.hood[1]), bp.hood[1]), min: ajar, max: 1.25, mass: 25 },
     trunk: { ...lid, anchor: v(0, sample(bp.deck, bp.trunk[0]), bp.trunk[0]), min: -1.25, max: -ajar, mass: 20 },
-    'bumper-front': { ...bumper, anchor: v(0.95, 0.5, bp.front - 0.06) },
+    'bumper-front': { ...bumper, anchor: v(0.95, 0.5, bp.front - 0.06 + noseShift(bp, 0.95, 0.5, bp.front - 0.06)) },
     'bumper-rear': { ...bumper, anchor: v(0.95, 0.56, bp.rear + 0.06) },
   };
 }
@@ -333,16 +333,23 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
 
   const box = (w: number, h: number, d: number, segX = 1) => new THREE.BoxGeometry(w, h, d, segX, 1, 1);
   const at = (x: number, h: number, z: number) => new THREE.Vector3(x, h + gy, z);
+  /** A point on the nose: `at`, set back by the nose shape like the panels around it. */
+  const onNose = (x: number, h: number, z: number) => at(x, h, z + noseShift(bp, x, h, z));
+  /** A part centred at `centre`, bent to the nose shape (subdivide it across the width). */
+  const noseAdd = (name: string, geometry: THREE.BufferGeometry, material: THREE.Material, centre: THREE.Vector3) => {
+    bendNose(bp, geometry.translate(centre.x, centre.y, centre.z));
+    add(name, geometry.translate(-centre.x, -centre.y, -centre.z), material, centre);
+  };
 
   // Chrome bumpers, subdivided along their length so they can bend.
-  add('bumper-front', box(2.0, 0.12, 0.13, 10), mat.chrome, at(0, 0.5, bp.front - 0.06));
+  noseAdd('bumper-front', box(2.0, 0.12, 0.13, 10), mat.chrome, at(0, 0.5, bp.front - 0.06));
   add('bumper-rear', box(1.98, 0.12, 0.13, 10), mat.chrome, at(0, 0.56, bp.rear + 0.06));
 
   // Grille with a chrome surround, covering the grille opening (its frame overlaps the edge).
   // Subdivided across so a crumpled nose bends it along with it.
   const grille = bp.openings.grille;
-  add('grille-frame', box(grille.width + 0.1, grille.height + 0.1, 0.03, 8), mat.chrome, at(0, grille.h, bp.front - 0.005));
-  add('grille', box(grille.width + 0.04, grille.height + 0.04, 0.03, 8), mat.dark, at(0, grille.h, bp.front - 0.02));
+  noseAdd('grille-frame', box(grille.width + 0.1, grille.height + 0.1, 0.03, 8), mat.chrome, at(0, grille.h, bp.front - 0.005));
+  noseAdd('grille', box(grille.width + 0.04, grille.height + 0.04, 0.03, 8), mat.dark, at(0, grille.h, bp.front - 0.02));
 
   // Lights are rigid fixtures (see CarLights), posed relative to their mount point. Head- and
   // taillights cover real openings in the end panels (see the blueprint's openings); side markers
@@ -383,7 +390,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   for (const side of [-1, 1]) {
     for (const hx of head.x) {
       const x = side * hx;
-      fixture(`headlight-${x}`, 'head', at(x, head.h, bp.front), forward, [
+      fixture(`headlight-${x}`, 'head', onNose(x, head.h, bp.front), forward, [
         [disc(head.radius * 1.3, 0.04), mat.chrome, new THREE.Vector3(0, 0, -0.01)],
         [disc(head.radius * 0.98, 0.05), mat.headlight, new THREE.Vector3(0, 0, -0.02)],
       ]);
@@ -400,7 +407,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     const out = new THREE.Vector3(side, 0, 0);
     const zf = bp.front + 0.25;
     const zr = bp.rear - 0.25;
-    fixture(`marker-front-${side}`, 'marker', at(side * sideHalfWidth(bp, zf, 0.72), 0.72, zf), out, [
+    fixture(`marker-front-${side}`, 'marker', onNose(side * sideHalfWidth(bp, zf, 0.72), 0.72, zf), out, [
       [box(0.02, 0.05, 0.14), mat.marker, new THREE.Vector3(side * 0.01, 0, 0)],
     ], box(0.01, 0.045, 0.13));
     fixture(`marker-rear-${side}`, 'tail', at(side * sideHalfWidth(bp, zr, 0.74), 0.74, zr), out, [

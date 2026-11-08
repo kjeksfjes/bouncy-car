@@ -65,6 +65,12 @@ export interface CarBlueprint {
     depth: number;
   };
   hoodBulge: { from: number; to: number; halfWidth: number; height: number };
+  /**
+   * The nose leans forward (a shark nose) and forms a shallow V in plan: points near `front` are
+   * set back by `profile` (along the centre line, by height: [height, metres]) plus `vee` growing
+   * linearly to `cornerX` across the width, fading out over `blend` metres behind the front.
+   */
+  nose: { profile: Curve; vee: number; cornerX: number; blend: number };
   /** Twin exhaust under the floor, mirrored to both sides. Heights as for the body. */
   exhaust: {
     /** Pipe centre line on the right side, [x, height, z], from the manifold to the tip. */
@@ -112,6 +118,20 @@ export function sideSection(bp: CarBlueprint, z: number): [number, number][] {
   const bottom = Math.max(rocker, archHeight(bp, z));
   const from = (bottom - rocker) / (deck - rocker);
   return bp.side.map(([f, w]) => [hw * w, rocker + (deck - rocker) * (from + (1 - from) * f)]);
+}
+
+/**
+ * How far (m, toward +Z) the nose shape sets a rest point back. A pure function of position, so
+ * everything built at the nose (panels, recesses, grille, bumper, lights) moves together.
+ * Heights above the drawing's ground line.
+ */
+export function noseShift(bp: CarBlueprint, x: number, h: number, z: number): number {
+  const n = bp.nose;
+  const t = Math.max(0, (z - bp.front) / n.blend);
+  if (t >= 1) return 0;
+  // (1 − t)²: steepest at the front, where its slope (2 / blend × shift) must stay well under 1
+  // or the panels fold through each other.
+  return (sample(n.profile, h) + n.vee * Math.min(1, Math.abs(x) / n.cornerX)) * (1 - t) ** 2;
 }
 
 /** Half width of the body's side at `z` and height `h` (above the drawing's ground line). */
@@ -163,7 +183,8 @@ export function buildPanels(bp: CarBlueprint): Panels {
     if (_n.lengthSq() < 1e-10) return;
     _c.copy(a).add(b).add(c).divideScalar(3).sub(ref);
     const [p, q] = _n.dot(_c) >= 0 ? [b, c] : [c, b];
-    target(loft, part, mat).push(a.x, a.y, a.z, p.x, p.y, p.z, q.x, q.y, q.z);
+    const out = target(loft, part, mat);
+    for (const v of [a, p, q]) out.push(v.x, v.y, v.z + noseShift(bp, v.x, v.y - gy, v.z));
   };
   const quad = (part: string, mat: PanelMaterial, a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, ref: THREE.Vector3) => {
     tri(part, mat, a, b, c, ref);
@@ -173,6 +194,7 @@ export function buildPanels(bp: CarBlueprint): Panels {
   const addBox = (part: string, mat: PanelMaterial, geo: THREE.BufferGeometry, center: THREE.Vector3) => {
     const flat = geo.toNonIndexed();
     flat.translate(center.x, center.y, center.z);
+    bendNose(bp, flat);
     target(panels, part, mat).push(...flat.getAttribute('position').array);
     flat.dispose();
     geo.dispose();
@@ -365,6 +387,16 @@ export function buildPanels(bp: CarBlueprint): Panels {
   );
 
   return panels;
+}
+
+/** Applies the nose shape (see noseShift) to a car-local geometry, in place. */
+export function bendNose(bp: CarBlueprint, geometry: THREE.BufferGeometry): THREE.BufferGeometry {
+  const pos = geometry.getAttribute('position');
+  for (let i = 0; i < pos.count; i++) {
+    pos.setZ(i, pos.getZ(i) + noseShift(bp, pos.getX(i), pos.getY(i) - bp.groundY, pos.getZ(i)));
+  }
+  pos.needsUpdate = true;
+  return geometry;
 }
 
 type Tri = (part: string, mat: PanelMaterial, a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, ref: THREE.Vector3) => void;
