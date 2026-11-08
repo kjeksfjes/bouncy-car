@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { createSunFlare } from './sunFlare';
 
 const PALETTE = {
   skyTop: '#4a7fc1',
@@ -7,10 +8,18 @@ const PALETTE = {
   sun: '#fff0d9',
 };
 
+/** Colour of sunlight (the sun light, its disc in the sky, glints and flares). */
+export const SUN_COLOR = new THREE.Color(PALETTE.sun);
+
+/** Device pixels per CSS pixel the renderer draws at (capped for fill rate). */
+export const pixelRatio = () => Math.min(window.devicePixelRatio, 2);
+
 /** Direction *towards* the sun: right-front, fairly low for long shadows. */
 export const SUN_DIR = new THREE.Vector3(0.6, 0.55, -0.45).normalize();
 
 const SHADOW_EXTENT = 45;
+/** The lens flare's anchor sits this far from the camera toward the sun: inside the sky dome and the far plane. */
+const FLARE_DISTANCE = 800;
 
 function makeSky(radius: number): THREE.Mesh {
   const material = new THREE.ShaderMaterial({
@@ -64,10 +73,11 @@ export class Stage {
   readonly viewDistance = 250;
   private readonly sun: THREE.DirectionalLight;
   private readonly sky: THREE.Mesh;
+  private readonly flare: THREE.Object3D;
 
   constructor(container: HTMLElement) {
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(pixelRatio());
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -106,6 +116,8 @@ export class Stage {
     sun.shadow.radius = 2;
     this.scene.add(sun, sun.target);
     this.sun = sun;
+    this.flare = createSunFlare(pixelRatio(), SUN_COLOR);
+    this.scene.add(this.flare);
 
     window.addEventListener('resize', () => {
       this.camera.aspect = window.innerWidth / window.innerHeight;
@@ -114,11 +126,12 @@ export class Stage {
     });
   }
 
-  /** Keeps the shadow frustum and sky centred on the action. */
+  /** Keeps the shadow frustum, the sky and the sun's flare centred on the action. Call after the camera moves. */
   follow(target: THREE.Vector3): void {
     this.sun.position.copy(target).addScaledVector(SUN_DIR, 150);
     this.sun.target.position.copy(target);
     this.sky.position.copy(this.camera.position);
+    this.flare.position.copy(this.camera.position).addScaledVector(SUN_DIR, FLARE_DISTANCE);
   }
 
   render(): void {

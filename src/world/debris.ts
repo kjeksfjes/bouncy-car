@@ -121,7 +121,7 @@ export class Debris {
    * @param alpha how far the frame is between the last two physics steps (0..1)
    */
   update(dt: number, player: THREE.Vector3, view: Visibility, alpha: number): void {
-    this.shards.update(dt, view.eye);
+    this.shards.update(dt);
     this.fluids.update(dt);
     const C = CLEANUP;
 

@@ -184,6 +184,7 @@ export class Game {
       // scene can be looked around.
       (this.cameraMode === 'orbit' ? this.orbit : this.heli).update(dt, this.car.model.root, this.car.velocity, true);
       this.view.update(this.stage.camera, this.stage.viewDistance);
+      this.stage.follow(this.car.position);
       this.stage.render();
       return;
     }

@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { GRAVITY } from '../constants';
-import { SUN_DIR } from '../render/stage';
 import type { TerrainField } from './terrainField';
 
 /** Feel values for glass shards. Tuned for readability on snow, not realism (tempered glass is ~1 cm crumbs). */
@@ -20,12 +19,19 @@ const SHARDS = {
    * the orbit camera instead of travelling along with the car.
    */
   drag: 1.4,
-  /** Glass-edge tint; lit by a fake sun term since the material is unlit. */
-  tint: new THREE.Color('#5fa3b3'),
-  /** Sun glint: sharpness (higher = shorter flashes) and strength (how fully it whitens the tint). */
-  glintPower: 24,
-  glint: 1.6,
+  /** Window glass: clear with a faint green-blue tint (coloured lenses pass their own). */
+  tint: new THREE.Color('#cfeaee'),
+  /**
+   * The glass: physically transmissive, so it's clear head-on, mirrors the sky at grazing angles
+   * and throws the sun's highlight at full strength, flashing across its whole face as it turns
+   * to catch it (a flat face under a distant sun lights up all at once). Smoother = shorter,
+   * brighter flashes.
+   */
+  roughness: 0.2,
+  ior: 1.5,
+  thickness: 0.01,
 };
+
 
 interface Shard {
   position: THREE.Vector3;
@@ -41,16 +47,13 @@ interface Shard {
 const _m = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
 const _s = new THREE.Vector3();
-const _n = new THREE.Vector3();
-const _h = new THREE.Vector3();
-const _c = new THREE.Color();
 const WHITE = new THREE.Color(1, 1, 1);
 
 /**
  * Glass shards: visual-only particles (one instanced draw call) that fly,
  * tumble and bounce on the analytic terrain, then shrink away. No physics
- * bodies, so a shattered windshield costs next to nothing. Unlit, with
- * per-shard colour from a fake sun glint, so they sparkle as they turn.
+ * bodies, so a shattered windshield costs next to nothing. Lit glass, so they
+ * mirror the sky and flash in the sun as they turn.
  */
 export class Shards {
   private readonly mesh: THREE.InstancedMesh;
@@ -62,10 +65,22 @@ export class Shards {
   ) {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0.2, 0.3, 0, 0.9], 3));
-    const material = new THREE.MeshBasicMaterial({ side: THREE.DoubleSide });
+    geometry.computeVertexNormals();
+    const S = SHARDS;
+    // Transmission costs an extra render of the scene behind it each frame, but only while there
+    // are shards to draw (the mesh hides when empty, see update).
+    const material = new THREE.MeshPhysicalMaterial({
+      roughness: S.roughness,
+      metalness: 0,
+      transmission: 1,
+      ior: S.ior,
+      thickness: S.thickness,
+      side: THREE.DoubleSide,
+    });
     this.mesh = new THREE.InstancedMesh(geometry, material, SHARDS.capacity);
     this.mesh.setColorAt(0, WHITE); // allocates instanceColor
     this.mesh.count = 0;
+    this.mesh.visible = false;
     this.mesh.frustumCulled = false;
     scene.add(this.mesh);
   }
@@ -95,8 +110,7 @@ export class Shards {
     }
   }
 
-  /** @param eye camera position, for the sun glint */
-  update(dt: number, eye: THREE.Vector3): void {
+  update(dt: number): void {
     const S = SHARDS;
     const drag = Math.exp(-S.drag * dt);
     let n = 0;
@@ -117,16 +131,12 @@ export class Shards {
       const fade = Math.min(1, (S.lifetime - s.age) / S.fadeTime);
       this.mesh.setMatrixAt(n, _m.compose(s.position, s.rotation, _s.setScalar(s.size * fade)));
 
-      // Double-sided flat shard: light and glint use |n·x|.
-      _n.set(0, 1, 0).applyQuaternion(s.rotation);
-      _h.subVectors(eye, s.position).normalize().add(SUN_DIR).normalize();
-      const lit = 0.6 + 0.4 * Math.abs(_n.dot(SUN_DIR));
-      const glint = Math.abs(_n.dot(_h)) ** S.glintPower * S.glint;
-      this.mesh.setColorAt(n, _c.copy(s.tint).multiplyScalar(lit).lerp(WHITE, Math.min(1, glint)));
+      this.mesh.setColorAt(n, s.tint);
       this.shards[n++] = s;
     }
     this.shards.length = n;
     this.mesh.count = n;
+    this.mesh.visible = n > 0;
     this.mesh.instanceMatrix.needsUpdate = true;
     this.mesh.instanceColor!.needsUpdate = true;
   }
