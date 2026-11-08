@@ -38,10 +38,19 @@ const AI = {
   cautionDistance: 25,
   /** Allowed overspeed before braking (m/s); gravity alone keeps pushing downhill. */
   brakeMargin: 5,
-  /** Below this speed with throttle on for `stuckTime` s → back out for `reverseTime` s. */
-  stuckSpeed: 1,
-  stuckTime: 1.5,
-  reverseTime: 1.6,
+  /**
+   * Stuck: on the throttle for `stuckTime` s without getting `stuckProgress` m from where it was.
+   * Judged by progress, not speed: a car pinned nose-first against a trunk on a steep slope bounces
+   * off it and back at ±2 m/s for ever. Then it backs out, turning the other way, until it has
+   * reversed `reverseDistance` m, `reverseTime` s have passed, or it stops making headway
+   * (`reverseStall` s without `reverseStallProgress` m: backed into something).
+   */
+  stuckProgress: 2.5,
+  stuckTime: 2,
+  reverseTime: 3,
+  reverseDistance: 4,
+  reverseStall: 1,
+  reverseStallProgress: 0.5,
   /** Upside down / on its side for this long → reset. */
   flippedTime: 1.5,
 };
@@ -60,7 +69,11 @@ export class AiDriver {
   /** Chosen heading as a world-space direction, for the debug arrow. */
   readonly heading = new THREE.Vector3(0, 0, -1);
   private reversing = 0;
-  private stuck = 0;
+  /** Where the car last made progress, and how long it's been on the throttle since without making more. */
+  private readonly anchor = new THREE.Vector3();
+  private sinceProgress = 0;
+  /** Where backing out started. */
+  private readonly reverseFrom = new THREE.Vector3();
   private flipped = 0;
   private reverseSteer = 0;
 
@@ -83,18 +96,28 @@ export class AiDriver {
     this.flipped = _up.y < 0.3 && car.velocity.length() < 3 ? this.flipped + dt : 0;
     if (this.flipped > AI.flippedTime) {
       this.flipped = 0;
-      this.stuck = 0;
       this.reversing = 0;
+      this.madeProgress(pos);
       return { input: idle, reset: true };
     }
 
-    // Airborne: hold S to engage the air levelling.
-    if (car.groundedWheels === 0) return { input: { ...idle, brake: 1 }, reset: false };
+    // Airborne: hold S to engage the air levelling. Flying isn't being stuck.
+    if (car.groundedWheels === 0) {
+      this.madeProgress(pos);
+      return { input: { ...idle, brake: 1 }, reset: false };
+    }
 
-    // Backing out after getting stuck.
+    // Backing out after getting stuck, until far enough back, out of time, or backed into something.
     if (this.reversing > 0) {
       this.reversing -= dt;
-      return { input: { ...idle, brake: 1, steer: this.reverseSteer }, reset: false };
+      const backed = pos.distanceTo(this.reverseFrom);
+      const elapsed = AI.reverseTime - this.reversing;
+      const stalled = elapsed > AI.reverseStall && backed < AI.reverseStallProgress;
+      if (this.reversing > 0 && backed < AI.reverseDistance && !stalled) {
+        return { input: { ...idle, brake: 1, steer: this.reverseSteer }, reset: false };
+      }
+      this.reversing = 0;
+      this.madeProgress(pos);
     }
 
     const carYaw = Math.atan2(-_fwd.x, -_fwd.z);
@@ -131,14 +154,21 @@ export class AiDriver {
       handbrake: false,
     };
 
-    // Stuck: pushing but not moving. Back out, turning the other way.
-    this.stuck = input.throttle > 0 && Math.abs(speed) < AI.stuckSpeed ? this.stuck + dt : 0;
-    if (this.stuck > AI.stuckTime) {
-      this.stuck = 0;
+    // Stuck: pushing without getting anywhere. Back out, turning the other way.
+    if (input.throttle === 0 || pos.distanceTo(this.anchor) > AI.stuckProgress) this.madeProgress(pos);
+    else this.sinceProgress += dt;
+    if (this.sinceProgress > AI.stuckTime) {
       this.reversing = AI.reverseTime;
+      this.reverseFrom.copy(pos);
       this.reverseSteer = steer >= 0 ? -1 : 1;
+      this.madeProgress(pos);
     }
     return { input, reset: false };
+  }
+
+  private madeProgress(pos: THREE.Vector3): void {
+    this.anchor.copy(pos);
+    this.sinceProgress = 0;
   }
 
   /** Yaw toward each nearby car and how strongly it pulls (+) or pushes (−). */
