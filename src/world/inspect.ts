@@ -23,6 +23,7 @@ const C = {
   upperFlank: '#d2d36c',
   ridgeTop: '#e0893a',
   gully: '#3d6f6a',
+  ledge: '#a58fd6',
   openSlope: '#d6d0bf',
   base: '#cfcfc8',
   moguls: '#8f8f88',
@@ -48,6 +49,7 @@ export const INSPECT_LEGENDS: Record<InspectMode, { title: string; entries: Lege
       { colour: C.lowerFlank, label: 'flank, low' },
       { colour: C.upperFlank, label: 'flank, high' },
       { colour: C.ridgeTop, label: 'ridge top' },
+      { colour: C.ledge, label: 'ledge' },
       { colour: C.gully, label: 'gully (darker = deeper)' },
       { colour: C.openSlope, label: 'open slope (no valley)' },
       { colour: '#555', label: 'contour every 5 m' },
@@ -82,6 +84,8 @@ const col = Object.fromEntries(Object.entries(C).map(([k, v]) => [k, new THREE.C
 const CONTOUR = 5;
 /** A valley shallower than this (m) is too faint to count: the ground counts as open slope. */
 const FAINT_VALLEY = 8;
+/** Ledge strength (0..1) from which a flank is marked as ledge. */
+const LEDGE_MARK = 0.5;
 /** Gully groove depth (m) shown at full colour. */
 const GULLY_MARK = 1.5;
 /** Ground within this height (m) of the ridge tops counts as ridge top. */
@@ -123,6 +127,7 @@ export function inspectColour(
   else if (spot.fromLine < 2.5) out.copy(col.valleyLine);
   else if (spot.flank < 0) out.copy(col.valleyFloor);
   else out.copy(col.lowerFlank).lerp(col.upperFlank, Math.min(1, spot.flank));
+  if (spot.ledge > LEDGE_MARK && spot.depth >= FAINT_VALLEY) out.copy(col.ledge);
   // Gully grooves shade in over the landform colour: full colour at GULLY_MARK m deep.
   if (spot.gully < 0) out.lerp(col.gully, Math.min(1, -spot.gully / GULLY_MARK));
   // Contours of the smooth landform (moguls left out), so the lines run clean.

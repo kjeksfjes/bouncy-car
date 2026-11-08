@@ -49,6 +49,25 @@ const VALLEYS = {
 };
 
 /**
+ * Ledges: shoulders along a valley's flank where it levels off for a stretch, steeper above and
+ * below to make up the height. Each side of each valley has its own ledge height, and ledges come
+ * and go along the valley. Feel values.
+ */
+const LEDGES = {
+  /** Where up the flank (0 floor .. 1 crest) a side's ledge sits: per side, between these. */
+  at: [0.3, 0.65] as const,
+  /**
+   * Half width of the ledge, as a share of the flank (× VALLEYS.flank m: ≈22 m). At full strength
+   * its middle is level and the rest of the flank steepens by 1 / (1 − width): ≈14 %.
+   */
+  width: 0.12,
+  /** Ledges come and go along the valley: strength from noise at `scale` m of descent, full past `fullAt`. */
+  scale: 450,
+  from: -0.1,
+  fullAt: 0.35,
+};
+
+/**
  * Gullies: grooves cut down the valley flanks, following the ground's own fall line (so they run
  * slantwise into the valleys and bend with them), forking and joining. An analytic erosion filter:
  * stripes along the fall line, blended between jittered points so their phase wanders. Feel values.
@@ -66,6 +85,13 @@ const GULLIES = {
    * between: it turns smoothly over ridge lines (no notches where it swings round) and is cached.
    */
   directionGrid: 16,
+  /**
+   * Where the fall line turns sharply from one grid node to the next (ridge lines, ledges, floor
+   * edges) the stripes would spin round and leave notches: gullies fade out as neighbouring
+   * directions part from `turnFrom`° to `turnTo`°.
+   */
+  turnFrom: 10,
+  turnTo: 80,
   /** How quickly a jittered point's stripes fade with distance (per cell², Gaussian). */
   falloff: 2.5,
   /** On a valley's flank: grow in over this share above the floor, fade out above `crestFade`. */
@@ -95,6 +121,8 @@ export interface LandformSpot {
   fromLine: number;
   /** That valley's depth here (m): little where the country is open, and it fades in and out along its length. */
   depth: number;
+  /** Ledge strength here (0..1): 1 in the level middle of a full ledge. */
+  ledge: number;
   /** How far (m) the ground lies below the next-lowest valley's flank: 0 on a ridge line between two valleys. */
   ridgeGap: number;
   /** The gullies' height offset (m): negative in a groove, positive on the rib between two. */
@@ -111,9 +139,11 @@ export class Landform {
   private readonly fade: NoiseFunction2D;
   private readonly relief: NoiseFunction2D;
   private readonly patch: NoiseFunction2D;
+  private readonly ledgeNoise: NoiseFunction2D;
   private readonly scratch: LandformSpot = emptySpot();
   /** Fall-line direction at directionGrid nodes, by node key: pure, so safe to keep. */
   private readonly directions = new Map<string, [number, number]>();
+  private readonly coherences = new Map<string, number>();
 
   /**
    * @param base the smooth ground the landforms are laid on (the downhill slope and gentle hills),
@@ -128,6 +158,7 @@ export class Landform {
     this.fade = makeNoise(seed + 22);
     this.relief = makeNoise(seed + 23);
     this.patch = makeNoise(seed + 24);
+    this.ledgeNoise = makeNoise(seed + 25);
   }
 
   /** The smooth lie of the land at (x, z): the base with valleys and gullies cut into it. */
@@ -142,6 +173,16 @@ export class Landform {
     return spot;
   }
 
+  /** The ledge on one side of valley k at descent z, applied to flank position t. */
+  private ledge(k: number, right: boolean, z: number, t: number): { t: number; here: number } {
+    const L = LEDGES;
+    if (t <= 0 || t >= 1) return { t, here: 0 };
+    const side = right ? 1 : 0;
+    const at = L.at[0] + (L.at[1] - L.at[0]) * hash2(k, side, this.seed + 251);
+    const strength = smoothstep(L.from, L.fullAt, this.ledgeNoise(k * 7.7 + side * 3.1, z / L.scale));
+    return ledgeShift(t, at, L.width, strength);
+  }
+
   private evaluate(x: number, z: number, spot: LandformSpot): number {
     const valleys = this.valleys(x, z, spot);
     spot.below = VALLEYS.depth - valleys;
@@ -149,8 +190,11 @@ export class Landform {
     return this.base(x, z) + valleys + spot.gully;
   }
 
-  /** The ground's gradient (base and valleys) at (x, z), blended from the direction grid. */
-  private fallLine(x: number, z: number): [number, number] {
+  /**
+   * The ground's gradient (base and valleys) at (x, z), blended from the direction grid, and how
+   * steady the direction is around here (see gridCoherence), blended the same way.
+   */
+  private fallLine(x: number, z: number): [number, number, number] {
     const n = GULLIES.directionGrid;
     const fx = x / n;
     const fz = z / n;
@@ -164,7 +208,32 @@ export class Landform {
     const d = this.gridGradient(ix + 1, iz + 1);
     const gx = (a[0] * (1 - tx) + b[0] * tx) * (1 - tz) + (c[0] * (1 - tx) + d[0] * tx) * tz;
     const gz = (a[1] * (1 - tx) + b[1] * tx) * (1 - tz) + (c[1] * (1 - tx) + d[1] * tx) * tz;
-    return [gx, gz];
+    const ca = this.gridCoherence(ix, iz);
+    const cb = this.gridCoherence(ix + 1, iz);
+    const cc = this.gridCoherence(ix, iz + 1);
+    const cd = this.gridCoherence(ix + 1, iz + 1);
+    const coherence = (ca * (1 - tx) + cb * tx) * (1 - tz) + (cc * (1 - tx) + cd * tx) * tz;
+    return [gx, gz, coherence];
+  }
+
+  /** Cosine of the widest angle between a grid node's direction and its four neighbours'. */
+  private gridCoherence(ix: number, iz: number): number {
+    const key = `${ix},${iz}`;
+    let c = this.coherences.get(key);
+    if (c !== undefined) return c;
+    const unit = (g: [number, number]) => {
+      const len = Math.hypot(g[0], g[1]);
+      return [g[0] / len, g[1] / len];
+    };
+    const [ux, uz] = unit(this.gridGradient(ix, iz));
+    c = 1;
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const [vx, vz] = unit(this.gridGradient(ix + dx, iz + dz));
+      c = Math.min(c, ux * vx + uz * vz);
+    }
+    if (this.coherences.size > 200_000) this.coherences.clear();
+    this.coherences.set(key, c);
+    return c;
   }
 
   private gridGradient(ix: number, iz: number): [number, number] {
@@ -190,10 +259,14 @@ export class Landform {
     const valley = smoothstep(G.openBelow[0], G.openBelow[1], spot.depth);
     const patch = G.patchMin + (1 - G.patchMin) * smoothstep(-0.3, 0.3, this.patch(x / G.patchScale, z / G.patchScale));
     const belowRidge = smoothstep(0, G.ridgeFade, spot.ridgeGap);
-    const strength = (G.open + (onFlank - G.open) * valley) * patch * belowRidge;
+    // Across a ledge the fall line swings round within metres (as on a ridge line): fade them out.
+    const offLedge = 1 - spot.ledge;
+    const strength = (G.open + (onFlank - G.open) * valley) * patch * belowRidge * offLedge;
     if (strength <= 0) return 0;
     // Stripes run along the fall line: their phase advances across it.
-    const [gx, gz] = this.fallLine(x, z);
+    const [gx, gz, coherence] = this.fallLine(x, z);
+    const steady = smoothstep(Math.cos((G.turnTo * Math.PI) / 180), Math.cos((G.turnFrom * Math.PI) / 180), coherence);
+    if (steady <= 0) return 0;
     const len = Math.hypot(gx, gz);
     const ax = gz / len;
     const az = -gx / len;
@@ -214,7 +287,7 @@ export class Landform {
         weights += w;
       }
     }
-    return (G.depth / 2) * strength * (sum / weights);
+    return (G.depth / 2) * strength * steady * (sum / weights);
   }
 
   /** Height offset (m) of the valleys: 0 on the deepest floors, up to VALLEYS.depth on a crest. */
@@ -235,12 +308,13 @@ export class Landform {
       const relief = V.reliefMin + (1 - V.reliefMin) * smoothstep(-0.4, 0.4, this.relief(line / V.reliefScale, z / (V.reliefScale * 2)));
       const depth = V.depth * relief * smoothstep(-0.8, 0.0, this.fade(k * 9.3, z / V.fadeScale));
       const t = (Math.abs(u - line) - floor) / V.flank;
-      const profile = V.depth - depth * (1 - flankProfile(t, V.roundFloor, V.roundCrest));
+      const ledge = this.ledge(k, u > line, z, t);
+      const profile = V.depth - depth * (1 - flankProfile(ledge.t, V.roundFloor, V.roundCrest));
       h = smoothMin(h, profile, V.crestRounding);
       if (spot && profile < lowest) {
         second = lowest;
         lowest = profile;
-        Object.assign(spot, { flank: t, fromLine: Math.abs(u - line), depth });
+        Object.assign(spot, { flank: t, fromLine: Math.abs(u - line), depth, ledge: ledge.here });
       } else if (profile < second) {
         second = profile;
       }
@@ -251,7 +325,7 @@ export class Landform {
 }
 
 function emptySpot(): LandformSpot {
-  return { below: 0, flank: Infinity, fromLine: Infinity, depth: 0, ridgeGap: Infinity, gully: 0 };
+  return { below: 0, flank: Infinity, fromLine: Infinity, depth: 0, ledge: 0, ridgeGap: Infinity, gully: 0 };
 }
 
 /**
@@ -265,6 +339,22 @@ function flankProfile(t: number, bottom: number, top: number): number {
   if (t < bottom) return (m * t * t) / (2 * bottom);
   if (t > 1 - top) return 1 - (m * (1 - t) * (1 - t)) / (2 * top);
   return m * (t - bottom / 2);
+}
+
+/**
+ * Moves position `t` along a flank (0..1) so the flank levels off around `at` (half width `w`)
+ * with `strength` 0..1, steepening the rest to keep both ends in place. Returns the moved
+ * position and how level it is here (0..1).
+ */
+function ledgeShift(t: number, at: number, w: number, strength: number): { t: number; here: number } {
+  if (strength <= 0 || t <= 0 || t >= 1) return { t, here: 0 };
+  // A cosine bump of area w around `at`, and its integral up to t.
+  const d = t - at;
+  const bump = Math.abs(d) < w ? 0.5 * (1 + Math.cos((Math.PI * d) / w)) : 0;
+  const area = d <= -w ? 0 : d >= w ? w : 0.5 * (d + w) + (w / (2 * Math.PI)) * Math.sin((Math.PI * d) / w);
+  // The slope dt'/dt is 1 − a (bump − w): level at the middle when a = 1 / (1 − w).
+  const a = strength / (1 - w);
+  return { t: t - a * (area - w * t), here: strength * bump };
 }
 
 /** Polynomial smooth minimum: like Math.min, but rounded where a and b are within k of each other. */
