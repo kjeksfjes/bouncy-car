@@ -57,10 +57,6 @@ const BIOME = {
   loneTrees: 0.006,
   /** Bare ground is dry and brown just after the snow, lush green from `greenAt` m further down. */
   greenAt: 900,
-  /** Dirt patches: noise scale (m) and the noise range over which they fade in. */
-  dirtScale: 28,
-  dirtFrom: 0.35,
-  dirtTo: 0.65,
   /**
    * Stone by steepness (normal.y, cos of the slope angle): from ≈37° to full at ≈50°. Steeper than
    * the drop walls' snow-to-ice range, since bare ground holds steeper than packed snow looks.
@@ -130,7 +126,6 @@ interface Shift {
 /** Ground cover across the biomes. Pure functions of position (and the surface's normal). */
 export class Biome {
   private readonly patch: NoiseFunction2D;
-  private readonly dirt: NoiseFunction2D;
   private readonly kind: NoiseFunction2D;
   private readonly copse: NoiseFunction2D;
   private readonly shifts: Shift[] = [];
@@ -140,7 +135,6 @@ export class Biome {
     private readonly sun: THREE.Vector3,
   ) {
     this.patch = makeNoise(seed + 20);
-    this.dirt = makeNoise(seed + 21);
     this.kind = makeNoise(seed + 22);
     this.copse = makeNoise(seed + 23);
   }
@@ -218,7 +212,9 @@ export class Biome {
     const B = BIOME;
     const snow = this.snowCover(x, z, normal);
     const stone = smoothstep(B.stoneFrom, B.stoneTo, normal.y);
-    const dirt = (1 - stone) * smoothstep(B.dirtFrom, B.dirtTo, this.dirt(x / B.dirtScale, z / B.dirtScale));
+    // Bare ground is grass and stone only. `dirt` stays in the mix (always 0 here) so the ground
+    // effects keep handling it if dirt or mud comes back.
+    const dirt = 0;
     const bare = 1 - snow;
     out.snow = snow;
     out.stone = bare * stone;
