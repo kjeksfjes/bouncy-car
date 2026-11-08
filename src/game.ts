@@ -4,8 +4,9 @@ import { GRAVITY, PHYSICS_STEP } from './constants';
 import { GameAudio } from './audio/audio';
 import { Hud } from './hud';
 import { Input } from './input';
-import { ChaseCamera } from './render/chaseCamera';
+import { OrbitCamera } from './render/orbitCamera';
 import { HeliCamera } from './render/heliCamera';
+import { PointerOrbit } from './render/pointerOrbit';
 import { Juice } from './render/juice';
 import { Stage } from './render/stage';
 import { Visibility } from './render/visibility';
@@ -18,7 +19,7 @@ import { LOAD_RADIUS, Terrain, type StreamCenter } from './world/terrain';
 import { TerrainField } from './world/terrainField';
 import { TreeLayout } from './world/trees';
 
-const CAMERA_MODES = ['chase', 'heli'] as const;
+const CAMERA_MODES = ['orbit', 'heli'] as const;
 type CameraMode = (typeof CAMERA_MODES)[number];
 
 /** No car legitimately goes this fast (m/s); beyond it the physics has blown up. */
@@ -41,10 +42,12 @@ export class Game {
   private readonly events = new RAPIER.EventQueue(true);
   private readonly terrain: Terrain;
   private readonly debris: Debris;
-  private readonly chase: ChaseCamera;
+  private readonly orbit: OrbitCamera;
   private readonly heli: HeliCamera;
   /** Active camera; C cycles through CAMERA_MODES. */
-  private cameraMode: CameraMode = 'chase';
+  private cameraMode: CameraMode = 'orbit';
+  /** Esc pauses: the simulation stops, the camera keeps running. */
+  private paused = false;
   private readonly input = new Input();
   private readonly hud = new Hud();
   private readonly audio = new GameAudio();
@@ -76,11 +79,13 @@ export class Game {
     this.stage.scene.add(this.aiArrow);
     this.debris = new Debris(this.stage.scene, this.world, this.field);
     this.traffic = new Traffic(this.field, this.trees, this.terrain, (at, yaw, paint) => this.newCar(at, yaw, paint));
-    this.chase = new ChaseCamera(this.stage.camera, this.field);
-    this.heli = new HeliCamera(this.stage.camera, this.field);
-    this.heli.attach(this.stage.renderer.domElement);
+    // Both cameras orbit with the mouse; only the active one takes the input.
+    const pointer = new PointerOrbit();
+    pointer.attach(this.stage.renderer.domElement);
+    this.orbit = new OrbitCamera(this.stage.camera, this.field, pointer);
+    this.heli = new HeliCamera(this.stage.camera, this.field, pointer);
     this.juice = new Juice(
-      this.stage.scene, this.field, this.chase, this.stage.camera,
+      this.stage.scene, this.field, this.orbit, this.stage.camera,
       (car) => car === this.car,
       (seconds) => (this.hitStop = Math.max(this.hitStop, seconds)),
     );
@@ -138,12 +143,28 @@ export class Game {
     const dt = Math.min(0.1, (now - this.lastTime) / 1000);
     this.lastTime = now;
 
-    if (this.input.consume('KeyR')) this.car.resetUpright(this.field);
-    if (this.input.consume('KeyN')) this.replaceCar();
-    if (this.input.consume('KeyP')) this.toggleAutopilot(this.input.shift);
+    if (this.input.consume('Escape')) this.togglePause();
+    // While paused, only the camera and mute keys act; the rest are dropped, not queued.
+    const reset = this.input.consume('KeyR');
+    const replace = this.input.consume('KeyN');
+    const autopilot = this.input.consume('KeyP');
+    if (!this.paused) {
+      if (reset) this.car.resetUpright(this.field);
+      if (replace) this.replaceCar();
+      if (autopilot) this.toggleAutopilot(this.input.shift);
+    }
     if (this.input.consume('KeyM')) this.audio.toggleMute();
     if (this.input.consume('KeyC')) this.cycleCamera();
     this.input.endFrame();
+
+    if (this.paused) {
+      // Everything stands still except the camera, which runs on real time so the frozen
+      // scene can be looked around.
+      (this.cameraMode === 'orbit' ? this.orbit : this.heli).update(dt, this.car.model.root, this.car.velocity, true);
+      this.view.update(this.stage.camera, this.stage.viewDistance);
+      this.stage.render();
+      return;
+    }
 
     const controls = new Map<Car, CarInput>();
     controls.set(this.car, this.autopilot ? this.drive(this.ai, this.car, dt) : this.input.car());
@@ -176,7 +197,7 @@ export class Game {
       ...this.traffic.cars.map((a) => ({ position: a.car.position, radius: AI_STREAM_RADIUS })),
     ];
     this.terrain.update(centers, STREAM_BUDGET);
-    const camera = this.cameraMode === 'chase' ? this.chase : this.heli;
+    const camera = this.cameraMode === 'orbit' ? this.orbit : this.heli;
     camera.update(dt, this.car.model.root, this.car.velocity);
     this.view.update(this.stage.camera, this.stage.viewDistance);
     this.debris.update(dt, pos, this.view);
@@ -195,11 +216,15 @@ export class Game {
     this.stage.render();
   }
 
+  private togglePause(): void {
+    this.paused = !this.paused;
+    this.hud.setPaused(this.paused);
+    this.audio.setPaused(this.paused);
+  }
+
   private cycleCamera(): void {
     this.cameraMode = CAMERA_MODES[(CAMERA_MODES.indexOf(this.cameraMode) + 1) % CAMERA_MODES.length];
-    (this.cameraMode === 'chase' ? this.chase : this.heli).reset();
-    this.heli.active = this.cameraMode === 'heli';
-    this.stage.renderer.domElement.style.cursor = this.heli.active ? 'grab' : '';
+    (this.cameraMode === 'orbit' ? this.orbit : this.heli).reset();
   }
 
   /** P toggles the autopilot; Shift+P toggles its heading arrow (switching the autopilot on if needed). */

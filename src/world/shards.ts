@@ -17,7 +17,7 @@ const SHARDS = {
   scatter: 3,
   /**
    * Air drag (1/s): shards lose the car's speed quickly, so at speed they spray back past
-   * the chase camera instead of travelling along with the car.
+   * the orbit camera instead of travelling along with the car.
    */
   drag: 1.4,
   /** Glass-edge tint; lit by a fake sun term since the material is unlit. */

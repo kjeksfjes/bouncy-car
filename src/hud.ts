@@ -9,8 +9,13 @@ export class Hud {
   private readonly status = document.getElementById('status')!;
   private readonly air = document.getElementById('air')!;
   private readonly autopilot = document.getElementById('autopilot')!;
+  private readonly paused = document.getElementById('paused')!;
   private seenJumps = 0;
   private airTimer = 0;
+
+  setPaused(paused: boolean): void {
+    this.paused.classList.toggle('visible', paused);
+  }
 
   update(dt: number, car: Car, autopilot: boolean): void {
     this.autopilot.classList.toggle('visible', autopilot);

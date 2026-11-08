@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { Car, CarEvents, ContactSurface } from '../vehicle/car';
 import type { TerrainField } from '../world/terrainField';
-import type { ChaseCamera } from './chaseCamera';
+import type { OrbitCamera } from './orbitCamera';
 import { Particles } from './particles';
 
 /** Feel values for all the feedback effects. */
@@ -56,7 +56,7 @@ export class Juice implements CarEvents {
   constructor(
     scene: THREE.Scene,
     private readonly field: TerrainField,
-    private readonly chase: ChaseCamera,
+    private readonly orbit: OrbitCamera,
     private readonly camera: THREE.Camera,
     private readonly isPlayer: (car: Car) => boolean,
     private readonly hitStop: (seconds: number) => void,
@@ -92,11 +92,11 @@ export class Juice implements CarEvents {
 
     const J = JUICE;
     if (this.isPlayer(car)) {
-      this.chase.addTrauma(Math.min(J.maxImpactShake, severity * J.shakePerSeverity));
+      this.orbit.addTrauma(Math.min(J.maxImpactShake, severity * J.shakePerSeverity));
       if (severity > J.hitStopFrom) this.hitStop(Math.min(J.hitStopMax, J.hitStopBase + (severity - J.hitStopFrom) * 0.01));
     } else {
       const d = at.distanceTo(this.camera.position);
-      if (d < J.nearbyShakeRange) this.chase.addTrauma((1 - d / J.nearbyShakeRange) * severity * J.shakePerSeverity * 0.5);
+      if (d < J.nearbyShakeRange) this.orbit.addTrauma((1 - d / J.nearbyShakeRange) * severity * J.shakePerSeverity * 0.5);
     }
   }
 
@@ -113,8 +113,8 @@ export class Juice implements CarEvents {
     }
     if (!this.isPlayer(car)) return;
     const J = JUICE;
-    if (strength > J.landingShakeFrom) this.chase.addTrauma(Math.min(J.maxLandingShake, (strength - J.landingShakeFrom) * J.shakePerLanding));
-    this.chase.kick(strength * J.kickPerLanding);
+    if (strength > J.landingShakeFrom) this.orbit.addTrauma(Math.min(J.maxLandingShake, (strength - J.landingShakeFrom) * J.shakePerLanding));
+    this.orbit.kick(strength * J.kickPerLanding);
   }
 
   // --- Continuous emitters

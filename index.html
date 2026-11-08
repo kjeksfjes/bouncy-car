@@ -47,6 +47,13 @@
         background: #2b7de9; color: #fff; font-weight: 800; letter-spacing: 0.08em; display: none;
       }
       #autopilot.visible { display: block; }
+      #paused {
+        position: absolute; top: 72px; left: 50%; transform: translateX(-50%); padding: 10px 18px; border-radius: 10px;
+        background: rgba(20, 24, 30, 0.72); color: #fff; text-align: center; display: none;
+      }
+      #paused strong { display: block; font-size: 20px; letter-spacing: 0.12em; }
+      #paused small { opacity: 0.8; }
+      #paused.visible { display: block; }
       #error {
         position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: min(640px, calc(100% - 32px));
         padding: 10px 14px; border-radius: 8px; background: #b3261e; color: #fff; font-weight: 600;
@@ -60,10 +67,11 @@
     <div id="hud">
       <div class="hint">
         <kbd>W</kbd>/<kbd>S</kbd> drive · <kbd>A</kbd>/<kbd>D</kbd> steer · <kbd>Space</kbd> handbrake ·
-        <kbd>R</kbd> reset · <kbd>N</kbd> new car · <kbd>C</kbd> camera (drag/scroll in TV view) · <kbd>P</kbd> autopilot (<kbd>Shift</kbd>+<kbd>P</kbd> with heading) · <kbd>M</kbd> mute
+        <kbd>R</kbd> reset · <kbd>N</kbd> new car · <kbd>C</kbd> camera · drag to orbit, scroll to zoom · <kbd>P</kbd> autopilot (<kbd>Shift</kbd>+<kbd>P</kbd> with heading) · <kbd>M</kbd> mute · <kbd>Esc</kbd> pause
       </div>
       <div id="air"></div>
       <div id="autopilot">AUTOPILOT</div>
+      <div id="paused"><strong>PAUSED</strong><small>Esc to resume · drag to orbit, scroll to zoom · C camera</small></div>
       <div id="error" hidden></div>
       <div class="panel">
         <div class="speed"><span id="speed">0</span> <small>km/h</small></div>

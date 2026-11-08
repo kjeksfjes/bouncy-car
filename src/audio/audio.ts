@@ -139,12 +139,13 @@ class CarVoice {
 export class GameAudio implements CarEvents {
   private engine: AudioEngine | null = null;
   private muted = false;
+  private paused = false;
 
   constructor() {
     const start = () => {
       if (this.engine) return;
       this.engine = new AudioEngine();
-      this.engine.setMuted(this.muted);
+      this.engine.setMuted(this.muted || this.paused);
     };
     window.addEventListener('keydown', start, { once: true });
     window.addEventListener('pointerdown', start, { once: true });
@@ -152,7 +153,13 @@ export class GameAudio implements CarEvents {
 
   toggleMute(): void {
     this.muted = !this.muted;
-    this.engine?.setMuted(this.muted);
+    this.engine?.setMuted(this.muted || this.paused);
+  }
+
+  /** Silences everything while the game is paused (the mute setting is kept apart). */
+  setPaused(paused: boolean): void {
+    this.paused = paused;
+    this.engine?.setMuted(this.muted || this.paused);
   }
 
   update(dt: number, camera: THREE.Camera, cars: readonly Car[]): void {
