@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { buildPanels, sample, type CarBlueprint, type PanelMaterial, type Panels } from './blueprint';
+import { buildPanels, sample, sideHalfWidth, type CarBlueprint, type PanelMaterial, type Panels } from './blueprint';
 import type { CarConfig } from './carConfig';
 import type { LightFixtureDef, LightKind } from './lights';
 
@@ -204,8 +204,8 @@ function hingesFor(cfg: CarConfig): Record<string, HingeSpec> {
   const Y = new THREE.Vector3(0, 1, 0);
   const Z = new THREE.Vector3(0, 0, 1);
   const doorZ = bp.door[0];
-  const doorX = sample(bp.halfWidth, doorZ);
   const doorH = (sample(bp.rocker, doorZ) + sample(bp.deck, doorZ)) / 2;
+  const doorX = sideHalfWidth(bp, doorZ, doorH);
   const ajar = 0.05;
   const door = { axis: Y, mass: 35, damping: 4 };
   const lid = { axis: X, damping: 3 };
@@ -400,10 +400,10 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     const out = new THREE.Vector3(side, 0, 0);
     const zf = bp.front + 0.25;
     const zr = bp.rear - 0.25;
-    fixture(`marker-front-${side}`, 'marker', at(side * sample(bp.halfWidth, zf), 0.72, zf), out, [
+    fixture(`marker-front-${side}`, 'marker', at(side * sideHalfWidth(bp, zf, 0.72), 0.72, zf), out, [
       [box(0.02, 0.05, 0.14), mat.marker, new THREE.Vector3(side * 0.01, 0, 0)],
     ], box(0.01, 0.045, 0.13));
-    fixture(`marker-rear-${side}`, 'tail', at(side * sample(bp.halfWidth, zr), 0.74, zr), out, [
+    fixture(`marker-rear-${side}`, 'tail', at(side * sideHalfWidth(bp, zr, 0.74), 0.74, zr), out, [
       [box(0.02, 0.05, 0.14), mat.taillight, new THREE.Vector3(side * 0.01, 0, 0)],
     ], box(0.01, 0.045, 0.13));
   }

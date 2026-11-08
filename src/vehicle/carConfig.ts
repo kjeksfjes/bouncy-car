@@ -175,7 +175,12 @@ const COUPE_BLUEPRINT: CarBlueprint = {
   front: -2.44,
   rear: 2.44,
   station: 0.1,
-  halfWidth: [[-2.44, 0.84], [-2.36, 0.92], [-2.1, 0.955], [-1.6, 0.96], [2.1, 0.96], [2.36, 0.94], [2.44, 0.88]],
+  // 2.05 m wide at the hips, as the top, front and rear views agree.
+  halfWidth: [[-2.44, 0.9], [-2.36, 0.98], [-2.1, 1.02], [-1.6, 1.025], [2.1, 1.025], [2.36, 1.0], [2.44, 0.94]],
+  // From the front and rear views: tucked in at the bottom (flush with the tyres' outer faces),
+  // widest at the hips around headlight/taillight height, in again to the shoulder crease
+  // (side view: ≈0.89 of the way up) and a rounded top edge.
+  side: [[0, 0.91], [0.15, 0.94], [0.35, 0.98], [0.62, 1], [0.78, 0.99], [0.89, 0.97], [0.97, 0.955], [1, 0.92]],
   deck: [
     [-2.44, 0.78], [-2.4, 0.86], [-2.33, 0.91], [-1.6, 0.98], [-0.77, 1.04], [0, 1.03], [0.9, 1.04],
     [1.53, 1.07], [2.0, 1.05], [2.32, 1.03], [2.4, 0.98], [2.44, 0.78],
@@ -192,8 +197,9 @@ const COUPE_BLUEPRINT: CarBlueprint = {
   door: [-0.76, 0.64],
   greenhouse: {
     roof: [[-0.77, 1.04], [-0.3, 1.39], [-0.18, 1.44], [0.7, 1.44], [0.9, 1.4], [1.2, 1.25], [1.53, 1.07]],
-    sillHalf: 0.8,
-    roofHalf: 0.7,
+    // Top view: window line at ±0.875 (outside), roof at ±0.73.
+    sillHalf: 0.86,
+    roofHalf: 0.72,
     windshieldTo: -0.27,
     rearGlassFrom: 0.92,
     doorGlass: [-0.7, 0.46],

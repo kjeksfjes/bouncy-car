@@ -16,8 +16,14 @@ export interface CarBlueprint {
   rear: number;
   /** Nominal spacing between loft stations (m). */
   station: number;
-  /** Plan-view half width of the body. */
+  /** Plan-view half width of the body (at its widest, the hips). */
   halfWidth: Curve;
+  /**
+   * Cross-section of the lower body's side, from the lower lip up to the deck edge, as
+   * [height, width] pairs: height as a fraction from the rocker (0) to the deck (1), width as a
+   * fraction of `halfWidth`. Over a wheel arch the side starts at the arch instead (see sideSection).
+   */
+  side: Curve;
   /** Upper edge of the lower body: hood, beltline, trunk. */
   deck: Curve;
   /** Lower edge of the body outside the wheel arches. */
@@ -81,6 +87,38 @@ export function sample(curve: Curve, z: number): number {
     }
   }
   return curve[curve.length - 1][1];
+}
+
+/** Top of the wheel arches at `z` (−Infinity away from them). */
+function archHeight(bp: CarBlueprint, z: number): number {
+  let h = -Infinity;
+  for (const a of bp.arches) {
+    const dz = z - a.z;
+    if (Math.abs(dz) < a.radius) h = Math.max(h, a.h + Math.sqrt(a.radius * a.radius - dz * dz));
+  }
+  return h;
+}
+
+/**
+ * The lower body's side at `z` (right half), from the lower lip to the deck edge, as [x, height]
+ * (heights above the drawing's ground line). Over an arch the profile's heights are squeezed into
+ * the span between arch and deck while each point keeps its width, so the strips along the car
+ * stay planar (flat shading shows twisted ones as saw teeth) and the arch lip stays tucked in.
+ */
+export function sideSection(bp: CarBlueprint, z: number): [number, number][] {
+  const hw = sample(bp.halfWidth, z);
+  const deck = sample(bp.deck, z);
+  const rocker = sample(bp.rocker, z);
+  const bottom = Math.max(rocker, archHeight(bp, z));
+  const from = (bottom - rocker) / (deck - rocker);
+  return bp.side.map(([f, w]) => [hw * w, rocker + (deck - rocker) * (from + (1 - from) * f)]);
+}
+
+/** Half width of the body's side at `z` and height `h` (above the drawing's ground line). */
+export function sideHalfWidth(bp: CarBlueprint, z: number, h: number): number {
+  const rocker = sample(bp.rocker, z);
+  const deck = sample(bp.deck, z);
+  return sample(bp.halfWidth, z) * sample(bp.side, (h - rocker) / (deck - rocker));
 }
 
 /** `recess` is drawn like `dark` but thin-walled: lamp recesses sit right behind the panel edges. */
@@ -157,25 +195,19 @@ export function buildPanels(bp: CarBlueprint): Panels {
   }
   stations.sort((a, b) => a - b);
 
-  const archHeight = (z: number) => {
-    let h = -Infinity;
-    for (const a of bp.arches) {
-      const dz = z - a.z;
-      if (Math.abs(dz) < a.radius) h = Math.max(h, a.h + Math.sqrt(a.radius * a.radius - dz * dz));
-    }
-    return h;
-  };
-
   // Lower body cross-section (right half, x ≥ 0), from floor centre round to deck centre.
   // The floor and the deck between the sills are split into several strips: crumple zones
   // push the middle in further than the sides, and one wide strip would shear into slivers.
   const DECK_STRIPS = 4;
+  // Point indices: the side runs from the lower lip (LIP) to the deck edge (DECK_EDGE).
+  const LIP = 4;
+  const DECK_EDGE = LIP + bp.side.length - 1;
   const lower = (z: number): [number, number][] => {
-    const hw = sample(bp.halfWidth, z);
     const deck = sample(bp.deck, z);
     const rocker = sample(bp.rocker, z);
-    const bottom = Math.max(rocker, archHeight(z));
-    const sill = deck + bp.crown * (1 - gh.sillHalf / (hw * 0.92));
+    const side = sideSection(bp, z);
+    const [edgeX] = side[side.length - 1];
+    const sill = deck + bp.crown * (1 - gh.sillHalf / edgeX);
     const centre = deck + bp.crown;
     const inner: [number, number][] = [];
     for (let k = 1; k < DECK_STRIPS; k++) {
@@ -186,25 +218,22 @@ export function buildPanels(bp: CarBlueprint): Panels {
       [0, rocker], // 0 floor centre
       [bp.wellHalf / 2, rocker], // 1 floor middle
       [bp.wellHalf, rocker], // 2 floor edge
-      [bp.wellHalf, bottom], // 3 top of inner wheel-well wall
-      [hw * 0.96, bottom], // 4 outer lower lip
-      [hw, bottom + (deck - bottom) * 0.3], // 5 lower side
-      [hw, deck - 0.1], // 6 shoulder crease
-      [hw * 0.97, deck - 0.02], // 7 rounded top edge
-      [hw * 0.92, deck], // 8 deck edge
-      [gh.sillHalf, sill], // 9 window sill line
-      ...inner, // 10.. deck between the sills
+      [bp.wellHalf, side[0][1]], // 3 top of inner wheel-well wall
+      ...side, // LIP .. DECK_EDGE: lower lip, side, shoulder, deck edge
+      [gh.sillHalf, sill], // window sill line
+      ...inner, // deck between the sills
       [0, centre], // deck centre
     ];
   };
   /** Part and material for lower-body segment `seg` (between points seg and seg + 1), or null where the cabin is open. */
   const lowerPart = (zm: number, seg: number, side: number): [string, PanelMaterial] | null => {
-    if (seg <= 3) return ['shell', 'dark']; // floor and wheel wells
-    if (seg <= 6) return within(zm, bp.door) ? [`door-${sideName(side)}`, 'paint'] : ['shell', 'paint'];
-    if (seg >= 8 && within(zm, bp.hood)) return ['hood', 'paint'];
-    if (seg >= 8 && within(zm, bp.trunk)) return ['trunk', 'paint'];
+    if (seg < LIP) return ['shell', 'dark']; // floor, wheel wells and the ledge under the lip
+    // The door is the side up to the shoulder; the rounded top edge above it stays on the body.
+    if (seg < DECK_EDGE - 1) return within(zm, bp.door) ? [`door-${sideName(side)}`, 'paint'] : ['shell', 'paint'];
+    if (seg >= DECK_EDGE && within(zm, bp.hood)) return ['hood', 'paint'];
+    if (seg >= DECK_EDGE && within(zm, bp.trunk)) return ['trunk', 'paint'];
     // Between the sills the cabin opens up into the greenhouse; only a beltline ledge remains.
-    if (seg >= 9 && zm > ghFrom && zm < ghTo) return null;
+    if (seg > DECK_EDGE && zm > ghFrom && zm < ghTo) return null;
     return ['shell', 'paint'];
   };
 
