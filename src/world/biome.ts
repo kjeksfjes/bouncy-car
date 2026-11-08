@@ -165,6 +165,11 @@ export class Biome {
     this.shifts.push({ from, length, amount });
   }
 
+  /** How warm the air is here (0 in the snow, 1 in the grassland), for the sky and fog. */
+  warmth(z: number): number {
+    return smoothstep(BIOME.thawStart, BIOME.thawEnd + 500, this.distance(z));
+  }
+
   /** How far into the grassland's tree layout (0 above the thaw, 1 below it). */
   grassland(z: number): number {
     // Short and early: halfway through, the snow forest's even scatter and the grassland's woods

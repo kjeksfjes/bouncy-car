@@ -31,6 +31,8 @@ const SLOW_RAMP = 10;
  * so the change can't be seen happening; and ramps it in over `ramp` m. Shift+B looks up to
  * `searchRange` m downhill for where the next biome starts.
  */
+/** How quickly the sky and fog follow the biome's warmth (1/s): a few seconds. */
+const WARMTH_EASE = 0.8;
 const BIOME_JUMP = { ahead: 260, ramp: 400, searchRange: 20_000 };
 type CameraMode = (typeof CAMERA_MODES)[number];
 
@@ -64,6 +66,8 @@ export class Game {
   private slowMotion = false;
   private slowLevel = 1;
   private timeScale = 1;
+  /** The atmosphere's warmth (see Stage.setWarmth), eased toward the biome's. */
+  private warmth = 0;
   private readonly input = new Input();
   private readonly hud = new Hud();
   private readonly audio = new GameAudio();
@@ -241,6 +245,7 @@ export class Game {
     this.debris.update(gt, pos, this.view, alpha);
     this.traffic.update(gt, pos, this.view);
     this.stage.follow(pos);
+    this.updateWarmth(dt);
     this.aiArrow.visible = this.autopilot && this.showAiHeading;
     if (this.aiArrow.visible) {
       this.aiArrow.position.copy(pos).setY(pos.y + 1.6);
@@ -252,6 +257,14 @@ export class Game {
     this.audio.update(gt, this.stage.camera, live);
     this.hud.update(gt, this.car, this.autopilot);
     this.stage.render();
+  }
+
+  /** Eases the sky and fog toward the warmth of the biome the car is in (so Shift+B doesn't jump it). */
+  private updateWarmth(dt: number): void {
+    const target = this.field.biome.warmth(this.car.position.z);
+    this.warmth += (target - this.warmth) * (1 - Math.exp(-WARMTH_EASE * dt));
+    if (Math.abs(target - this.warmth) < 0.002) this.warmth = target;
+    this.stage.setWarmth(this.warmth);
   }
 
   private togglePause(): void {

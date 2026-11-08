@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { fogFade, installFogFade } from './fogFade';
 import { createSunFlare } from './sunFlare';
 
 const PALETTE = {
@@ -7,6 +8,27 @@ const PALETTE = {
   belowHorizon: '#c4d2e0',
   sun: '#fff0d9',
 };
+
+/**
+ * The summer end of the atmosphere (Stage.setWarmth): a deeper blue that comes in lower (a
+ * steeper gradient `curve`), above a light blue haze that gives distant hills a bluish aerial
+ * perspective. Keep the horizon pale and bluish:
+ * most of a normal view is horizon colour, and the fog takes it too, so a cream horizon turns the
+ * scene sepia and a neutral one reads as overcast.
+ */
+const WARM = {
+  skyTop: '#3f80d0',
+  horizon: '#d2e2ee',
+  belowHorizon: '#c6d6df',
+  /** Distance fades (desaturates) here rather than whitening, see fogFade; it can start fairly near. */
+  fogNear: 50,
+  curve: 0.4,
+};
+/** The sky gradient's curve in the snow: how quickly it turns from horizon to top colour (lower = sooner). */
+const COOL_CURVE = 0.6;
+const COOL_FOG_NEAR = 60;
+/** The ambient light (baked from the sky) is re-baked when the warmth has moved this much. */
+const REBAKE_STEP = 0.1;
 
 /** Colour of sunlight (the sun light, its disc in the sky, glints and flares). */
 export const SUN_COLOR = new THREE.Color(PALETTE.sun);
@@ -18,6 +40,7 @@ export const pixelRatio = () => Math.min(window.devicePixelRatio, 2);
 export const SUN_DIR = new THREE.Vector3(0.6, 0.55, -0.45).normalize();
 
 const SHADOW_EXTENT = 45;
+const _warm = new THREE.Color();
 /** The lens flare's anchor sits this far from the camera toward the sun: inside the sky dome and the far plane. */
 const FLARE_DISTANCE = 800;
 
@@ -34,6 +57,7 @@ function makeSky(radius: number): THREE.Mesh {
       below: { value: new THREE.Color(PALETTE.belowHorizon) },
       sunColor: { value: new THREE.Color(PALETTE.sun) },
       sunDir: { value: SUN_DIR },
+      curve: { value: COOL_CURVE },
     },
     vertexShader: /* glsl */ `
       varying vec3 vDir;
@@ -47,10 +71,14 @@ function makeSky(radius: number): THREE.Mesh {
       uniform vec3 below;
       uniform vec3 sunColor;
       uniform vec3 sunDir;
+      uniform float curve;
       varying vec3 vDir;
       void main() {
         vec3 d = normalize(vDir);
-        vec3 col = mix(horizon, top, pow(max(d.y, 0.0), 0.6));
+        // A curve under 1 rises steeply right above the horizon, which reads as a hard line;
+        // the smoothstep eases it out of the horizon colour over the first ≈3.5°.
+        float h = max(d.y, 0.0);
+        vec3 col = mix(horizon, top, pow(h, curve) * smoothstep(0.0, 0.06, h));
         col = mix(col, below, smoothstep(0.0, -0.2, d.y));
         float s = max(dot(d, sunDir), 0.0);
         col += sunColor * (pow(s, 900.0) * 3.0 + pow(s, 10.0) * 0.18);
@@ -74,8 +102,12 @@ export class Stage {
   private readonly sun: THREE.DirectionalLight;
   private readonly sky: THREE.Mesh;
   private readonly flare: THREE.Object3D;
+  /** The sky the ambient light is baked from, and the warmth it was last baked at. */
+  private readonly envSky: THREE.Mesh;
+  private bakedWarmth = 0;
 
   constructor(container: HTMLElement) {
+    installFogFade();
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.setPixelRatio(pixelRatio());
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -89,17 +121,14 @@ export class Stage {
     this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1500);
 
     // Fog far must stay inside the streamed terrain radius (see LOAD_RADIUS).
-    this.scene.fog = new THREE.Fog(PALETTE.horizon, 60, this.viewDistance);
+    this.scene.fog = new THREE.Fog(PALETTE.horizon, COOL_FOG_NEAR, this.viewDistance);
     this.sky = makeSky(900);
     this.scene.add(this.sky);
 
     // Image-based ambient light from the same sky gradient: cool fill in the shadows.
-    const envScene = new THREE.Scene();
-    envScene.add(makeSky(50));
-    const pmrem = new THREE.PMREMGenerator(renderer);
-    this.scene.environment = pmrem.fromScene(envScene, 0.04).texture;
+    this.envSky = makeSky(50);
+    this.bakeEnvironment();
     this.scene.environmentIntensity = 0.75;
-    pmrem.dispose();
 
     const sun = new THREE.DirectionalLight(PALETTE.sun, 2.6);
     sun.castShadow = true;
@@ -124,6 +153,40 @@ export class Stage {
       this.camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
+  }
+
+  /**
+   * Shifts the sky, horizon and fog from wintry (0) toward summer (1), keeping the fog matched to
+   * the horizon; in summer the fog fades distant colours instead of whitening them (see fogFade).
+   * Re-bakes the ambient light now and then (it costs a few ms).
+   */
+  setWarmth(warmth: number): void {
+    const t = THREE.MathUtils.clamp(warmth, 0, 1);
+    for (const sky of [this.sky, this.envSky]) {
+      const u = (sky.material as THREE.ShaderMaterial).uniforms;
+      u.top.value.set(PALETTE.skyTop).lerp(_warm.set(WARM.skyTop), t);
+      u.horizon.value.set(PALETTE.horizon).lerp(_warm.set(WARM.horizon), t);
+      u.below.value.set(PALETTE.belowHorizon).lerp(_warm.set(WARM.belowHorizon), t);
+      u.curve.value = THREE.MathUtils.lerp(COOL_CURVE, WARM.curve, t);
+    }
+    const fog = this.scene.fog as THREE.Fog;
+    fog.color.copy((this.sky.material as THREE.ShaderMaterial).uniforms.horizon.value);
+    fog.near = THREE.MathUtils.lerp(COOL_FOG_NEAR, WARM.fogNear, t);
+    fogFade.value = t;
+    if (Math.abs(t - this.bakedWarmth) >= REBAKE_STEP || (t !== this.bakedWarmth && (t === 0 || t === 1))) {
+      this.bakedWarmth = t;
+      this.bakeEnvironment();
+    }
+  }
+
+  private bakeEnvironment(): void {
+    const envScene = new THREE.Scene();
+    envScene.add(this.envSky);
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const old = this.scene.environment;
+    this.scene.environment = pmrem.fromScene(envScene, 0.04).texture;
+    old?.dispose();
+    pmrem.dispose();
   }
 
   /** Keeps the shadow frustum, the sky and the sun's flare centred on the action. Call after the camera moves. */
