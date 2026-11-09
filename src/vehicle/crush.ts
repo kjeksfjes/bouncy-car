@@ -101,6 +101,7 @@ const MAX_STRAIN = 0.8;
 const WRAP_FOLD_MAX = 0.5;
 
 const _p = new THREE.Vector3();
+const _shift = new THREE.Vector3();
 
 /**
  * Front and rear crumple zones. Each end tracks how far it has been pushed in, per
@@ -118,6 +119,7 @@ export class Crush {
   private readonly noise = [createNoise3D(), createNoise3D(), createNoise3D()];
   /** Per piece: indices of the vertices inside a crumple zone (computed on first use). */
   private readonly affected = new Map<CarPiece, Uint32Array>();
+  private readonly everyVertex = new Map<CarPiece, Uint32Array>();
 
   constructor(
     private readonly bp: CarBlueprint,
@@ -240,15 +242,18 @@ export class Crush {
       if (piece.glass) continue;
       const onCar = piece.state === 'closed' && piece.mesh.parent === root;
       if (!onCar && !(piece.state === 'hinged' && loose.has(piece))) continue;
-      const indices = this.affectedVertices(piece);
-      if (indices.length === 0) continue;
       const pos = piece.mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
       const o = piece.origin;
       const rest = piece.original;
       const base = piece.base;
+      // A rigid piece moves as a whole, by the displacement at its origin; the rest crumples.
+      const shift = piece.rigid ? this.displace(_shift.copy(o)).sub(o) : null;
+      const indices = shift ? this.allVertices(piece) : this.affectedVertices(piece);
+      if (indices.length === 0) continue;
       for (const i of indices) {
         const k = i * 3;
-        this.displace(_p.set(rest[k] + o.x, rest[k + 1] + o.y, rest[k + 2] + o.z)).sub(o);
+        if (shift) _p.set(rest[k], rest[k + 1], rest[k + 2]).add(shift);
+        else this.displace(_p.set(rest[k] + o.x, rest[k + 1] + o.y, rest[k + 2] + o.z)).sub(o);
         pos.setXYZ(i, _p.x + pos.getX(i) - base[k], _p.y + pos.getY(i) - base[k + 1], _p.z + pos.getZ(i) - base[k + 2]);
         base[k] = _p.x;
         base[k + 1] = _p.y;
@@ -361,6 +366,13 @@ export class Crush {
       tent = Math.max(tent, zone.columns[i] * Math.exp((-dx * dx) / (2 * spread * spread)));
     }
     return tent;
+  }
+
+  /** Every vertex of a piece, by index (for a rigid piece, which moves as a whole). */
+  private allVertices(piece: CarPiece): Uint32Array {
+    let indices = this.everyVertex.get(piece);
+    if (!indices) this.everyVertex.set(piece, (indices = Uint32Array.from({ length: piece.original.length / 3 }, (_, i) => i)));
+    return indices;
   }
 
   private affectedVertices(piece: CarPiece): Uint32Array {

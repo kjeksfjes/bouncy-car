@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { bendEnds, buildPanels, endShift, sample, sideHalfWidth, type Bumper, type CarBlueprint, type PanelMaterial, type Panels } from './blueprint';
 import type { CarConfig } from './carConfig';
 import type { LightFixtureDef, LightKind } from './lights';
+import { engineParts } from './engine';
 import { Linkage, underbodyParts } from './underbody';
 
 /** A dentable mesh on the car. Detachable pieces can be knocked off. */
@@ -13,6 +14,8 @@ export interface CarPiece {
   original: Float32Array;
   /** Car-local position of the piece's origin as built (its mesh moves off the car once it breaks loose). */
   origin: THREE.Vector3;
+  /** Doesn't crumple: the crush moves it as a whole, by the displacement at its origin (the engine). */
+  rigid: boolean;
   /** Rest shape after crumple-zone crush (see Crush); dents are capped against it. */
   base: Float32Array;
   /** Car-local bounds at build time, for hit proximity. */
@@ -96,12 +99,21 @@ interface CarMaterials {
   brokenHead: THREE.Material;
   brokenTail: THREE.Material;
   brokenMarker: THREE.Material;
-  engine: THREE.Material;
+  /** Engine: cast-iron block and oil pan, painted valve covers, bare aluminium (intake, air cleaner, alternator), heat-bleached headers, the coolant tank's plastic. */
+  engineBlock: THREE.Material;
+  valveCover: THREE.Material;
+  aluminium: THREE.Material;
+  header: THREE.Material;
+  coolantTank: THREE.Material;
+  radiator: THREE.Material;
   upholstery: THREE.Material;
   plate: THREE.Material;
   /** Unpainted cast and galvanised metal: gearbox, differential, fuel tank. */
   alloy: THREE.Material;
 }
+
+/** Pieces the crush moves as a whole instead of crumpling: an engine block doesn't fold. */
+const RIGID = new Set(['engine']);
 
 /** Glass panes (from the blueprint's part names). */
 const GLASS = /glass|windshield/;
@@ -190,7 +202,12 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
       brokenHead: std('#c3c9cf', { roughness: 0.35, metalness: 0.8 }),
       brokenTail: std('#5a1418', { roughness: 0.6 }),
       brokenMarker: std('#7a4a14', { roughness: 0.6 }),
-      engine: std('#c0502d', { roughness: 0.5, metalness: 0.3 }),
+      engineBlock: std('#2c2d31', { roughness: 0.65, metalness: 0.35 }),
+      valveCover: std('#df6328', { roughness: 0.45, metalness: 0.15 }),
+      aluminium: std('#b7bdc4', { roughness: 0.45, metalness: 0.5 }),
+      header: std('#d6d0c6', { roughness: 0.55, metalness: 0.3 }),
+      coolantTank: std('#d9cfb5', { roughness: 0.7 }),
+      radiator: std('#5c5f63', { roughness: 0.6, metalness: 0.4 }),
       upholstery: std('#5a2e24', { roughness: 0.75 }),
       plate: std('#e6e1cc', { roughness: 0.6 }),
       alloy: std('#8b8e91', { roughness: 0.45, metalness: 0.5 }),
@@ -397,6 +414,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
       mesh,
       original: Float32Array.from(geometry.getAttribute('position').array),
       origin: mesh.position.clone(),
+      rigid: RIGID.has(name),
       base: Float32Array.from(geometry.getAttribute('position').array),
       bounds: geometry.boundingBox!.clone().translate(mesh.position),
       detachable: DETACHABLE.has(name),
@@ -625,19 +643,10 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   );
   assemble('interior', cabin);
 
-  // Engine bay: V8 block with valve covers and air cleaner, radiator, battery.
-  assemble('engine', [
-    [put(new THREE.BoxGeometry(0.55, 0.38, 0.8), 0, 0.62, -1.45), mat.engine],
-    [put(new THREE.BoxGeometry(0.16, 0.08, 0.7), -0.26, 0.86, -1.45, 0, 0.5), mat.chrome],
-    [put(new THREE.BoxGeometry(0.16, 0.08, 0.7), 0.26, 0.86, -1.45, 0, -0.5), mat.chrome],
-    [put(new THREE.CylinderGeometry(0.2, 0.2, 0.06, 12), 0, 0.88, -1.45), mat.chrome],
-    // Exhaust manifolds along the block's sides; the exhaust pipes start at their rear ends.
-    [put(new THREE.BoxGeometry(0.06, 0.07, 0.5), -0.31, 0.55, -1.5), mat.steel],
-    [put(new THREE.BoxGeometry(0.06, 0.07, 0.5), 0.31, 0.55, -1.5), mat.steel],
-    [put(new THREE.BoxGeometry(1.1, 0.4, 0.08, 8), 0, 0.66, -2.18), mat.dark],
-    [put(new THREE.BoxGeometry(0.24, 0.2, 0.18), 0.55, 0.62, -2.0), mat.dark],
-    [put(new THREE.BoxGeometry(0.04, 0.03, 0.04), 0.6, 0.735, -2.04), mat.taillight],
-  ]);
+  // Engine bay: a V8 and what's in front of it, after the user's reference (09.11.2026). See engineParts.
+  const bay = engineParts(cfg, mat);
+  assemble('engine', bay.engine);
+  assemble('engine-front', bay.front);
 
   // Underbody (frame, floor ribs, drivetrain, fuel tank) and the suspension parts that follow
   // the wheels, from the underside drawing.
