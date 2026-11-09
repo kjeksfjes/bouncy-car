@@ -501,8 +501,180 @@ function panelOpenings(bp: CarBlueprint, end: 'front' | 'rear'): Opening[] {
 }
 
 /**
+ * Longest edge (m) along an end panel's openings and their recesses (END_PANEL_EDGE), and inside
+ * the panel and the recess back walls (END_PANEL_INNER). The crumple zones bend the body only at
+ * its vertices: a longer edge stays a straight bar across a crushed nose, and triangulating a
+ * panel that's a thin frame round wide openings joins points far across it. Under the crush
+ * columns' spacing (≈0.22 m). The panel's outer edge keeps the body skin's own points (every
+ * 0.2–0.3 m), so the seam with the skin stays closed.
+ */
+const END_PANEL_EDGE = 0.1;
+const END_PANEL_INNER = 0.15;
+
+/**
+ * Triangulates a polygon with holes into triangles no wider than `max` inside, so it bends with a
+ * crush (see END_PANEL_INNER). Returns the points (the rings' own, then added ones) and the
+ * triangles as index triples. Steps:
+ * 1. Triangulate the rings without the points lying in a row between their neighbours: on its own,
+ *    three's triangulator lays zero-area triangles along such rows and fans long slivers off them.
+ * 2. Put those points back, each splitting the ring edge it lies on (one triangle uses it).
+ * 3. Delaunay flips: an inside edge whose two opposite corners see it at over 180° together is
+ *    swapped for the other diagonal of their (convex) quad. This turns slivers into fat triangles.
+ * 4. Split every inside edge longer than `max` at its middle, in both triangles, longest first,
+ *    flipping again after each pass, until none is left. An edge whose middle would land within
+ *    OUTLINE_GAP of a ring is left: it runs along a sliver of panel too thin to bend anyway.
+ * Ring edges are never split or flipped, so the panel keeps its outline's points exactly.
+ */
+function triangulateFine(contour: THREE.Vector2[], holes: THREE.Vector2[][], max: number): { points: THREE.Vector2[]; tris: number[][] } {
+  const OUTLINE_GAP = 0.002;
+  const cross = (a: THREE.Vector2, b: THREE.Vector2, c: THREE.Vector2) => (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+  const key = (a: number, b: number) => (a < b ? a * 1_000_000 + b : b * 1_000_000 + a);
+  const rings = [contour, ...holes];
+
+  // 1. Corners only: a point in a row with its neighbours and between them is left out for now
+  // (a point where the ring doubles back on itself stays).
+  const between = (a: THREE.Vector2, p: THREE.Vector2, b: THREE.Vector2) =>
+    Math.abs(cross(a, p, b)) <= 1e-9 && p.clone().sub(a).dot(b.clone().sub(p)) > 0;
+  const simple = rings.map((ring) => ring.filter((p, i) => !between(ring[(i - 1 + ring.length) % ring.length], p, ring[(i + 1) % ring.length])));
+  // triangulateShape reorders the rings in place: list the points after it.
+  const tris = THREE.ShapeUtils.triangulateShape(simple[0], simple.slice(1)).map((t) => [...t]);
+  const points = simple.flat();
+  const indexOf = new Map(points.map((p, i) => [p, i]));
+  const edgeIn = (t: number[], e: number) => t.findIndex((v, i) => key(v, t[(i + 1) % 3]) === e);
+  /** Splits edge e (index pair) at point m in triangle t: (p, q, r) → (p, m, r) and (m, q, r). */
+  const splitIn = (t: number, e: number, m: number): number => {
+    const tri = tris[t];
+    const k = edgeIn(tri, e);
+    const [p, q, r] = [tri[k], tri[(k + 1) % 3], tri[(k + 2) % 3]];
+    tris[t] = [p, m, r];
+    return tris.push([m, q, r]) - 1;
+  };
+
+  // 2. The left-out points back, walking each ring from a corner.
+  const outline = new Set<number>();
+  for (let r = 0; r < rings.length; r++) {
+    const ring = rings[r];
+    const kept = new Set(simple[r]);
+    const start = ring.findIndex((p) => kept.has(p));
+    let prev = indexOf.get(ring[start])!;
+    for (let s = 1; s <= ring.length; s++) {
+      const p = ring[(start + s) % ring.length];
+      if (kept.has(p)) {
+        outline.add(key(prev, indexOf.get(p)!));
+        prev = indexOf.get(p)!;
+        continue;
+      }
+      let n = s;
+      while (!kept.has(ring[(start + n) % ring.length])) n++;
+      const e = key(prev, indexOf.get(ring[(start + n) % ring.length])!);
+      const t = tris.findIndex((tri) => edgeIn(tri, e) >= 0);
+      if (t < 0) throw new Error('End panel: a ring edge is missing from its triangulation');
+      const m = points.push(p) - 1;
+      indexOf.set(p, m);
+      splitIn(t, e, m);
+      outline.add(key(prev, m));
+      prev = m;
+    }
+  }
+
+  const owners = () => {
+    const map = new Map<number, number[]>();
+    tris.forEach((t, i) => {
+      for (let k = 0; k < 3; k++) {
+        const e = key(t[k], t[(k + 1) % 3]);
+        const list = map.get(e);
+        if (list) list.push(i);
+        else map.set(e, [i]);
+      }
+    });
+    return map;
+  };
+  const angle = (o: number, p: number, q: number) => {
+    const u = points[p].clone().sub(points[o]);
+    const w = points[q].clone().sub(points[o]);
+    return Math.acos(THREE.MathUtils.clamp(u.dot(w) / (u.length() * w.length()), -1, 1));
+  };
+  // 3. Flips, until a round makes none.
+  const flip = () => {
+    for (let round = 0; ; round++) {
+      if (round > 200) throw new Error('End panel: edge flips did not settle');
+      let flips = 0;
+      const done = new Set<number>();
+      for (const [e, users] of owners()) {
+        if (users.length !== 2 || outline.has(e) || users.some((t) => done.has(t))) continue;
+        const a = Math.floor(e / 1_000_000);
+        const b = e % 1_000_000;
+        const [t1, t2] = users;
+        const c = tris[t1].find((v) => v !== a && v !== b)!;
+        const d = tris[t2].find((v) => v !== a && v !== b)!;
+        if (angle(c, a, b) + angle(d, a, b) <= Math.PI + 1e-9) continue;
+        // Only a convex quad: a and b on either side of c–d.
+        if (Math.sign(cross(points[c], points[d], points[a])) === Math.sign(cross(points[c], points[d], points[b]))) continue;
+        tris[t1] = [c, d, a];
+        tris[t2] = [d, c, b];
+        done.add(t1).add(t2);
+        flips++;
+      }
+      if (flips === 0) return;
+    }
+  };
+  flip();
+
+  // 4. Split long inside edges.
+  const segments = rings.flatMap((ring) => ring.map((p, i) => new THREE.Line3(new THREE.Vector3(p.x, p.y), new THREE.Vector3(ring[(i + 1) % ring.length].x, ring[(i + 1) % ring.length].y))));
+  const _m = new THREE.Vector3();
+  const _c = new THREE.Vector3();
+  const nearOutline = (m: THREE.Vector2) => segments.some((s) => s.closestPointToPoint(_m.set(m.x, m.y, 0), true, _c).distanceTo(_m) < OUTLINE_GAP);
+  for (let pass = 0; ; pass++) {
+    // A panel needs under 10 passes; more means the splitting doesn't converge.
+    if (pass > 40) throw new Error(`End panel refinement didn't converge (${tris.length} triangles)`);
+    const users = owners();
+    const long: { e: number; length: number }[] = [];
+    for (const e of users.keys()) {
+      if (outline.has(e)) continue;
+      const length = points[Math.floor(e / 1_000_000)].distanceTo(points[e % 1_000_000]);
+      if (length > max) long.push({ e, length });
+    }
+    long.sort((a, b) => b.length - a.length);
+    const touched = new Set<number>();
+    let splits = 0;
+    for (const { e } of long) {
+      const ts = users.get(e)!;
+      if (ts.some((t) => touched.has(t))) continue;
+      const mid = points[Math.floor(e / 1_000_000)].clone().lerp(points[e % 1_000_000], 0.5);
+      if (nearOutline(mid)) continue;
+      const m = points.push(mid) - 1;
+      for (const t of ts) touched.add(t).add(splitIn(t, e, m));
+      splits++;
+    }
+    if (splits === 0) break;
+    flip();
+  }
+  // Zero-area triangles (where a ring doubles back on itself) draw nothing.
+  return { points, tris: tris.filter(([a, b, c]) => Math.abs(cross(points[a], points[b], points[c])) > 1e-12) };
+}
+
+/**
+ * The closed polygon with extra points along any edge longer than `max`, so none is. A point
+ * repeated where the outline closes (or anywhere in a row) is dropped.
+ */
+function densify(polygon: readonly THREE.Vector2[], max: number): THREE.Vector2[] {
+  const out: THREE.Vector2[] = [];
+  for (let i = 0; i < polygon.length; i++) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % polygon.length];
+    const length = a.distanceTo(b);
+    if (length < 1e-6) continue;
+    const steps = Math.ceil(length / max);
+    for (let k = 0; k < steps; k++) out.push(a.clone().lerp(b, k / steps));
+  }
+  return out;
+}
+
+/**
  * An end panel (nose or tail cap) as a polygon with openings, plus a dark recess behind each
  * opening: walls facing the opening's axis and a back wall (with its hole, if any) facing out.
+ * Openings are densified and the insides split fine (END_PANEL_EDGE), so they bend with a crush.
  */
 function capWithOpenings(
   ring: THREE.Vector3[],
@@ -520,21 +692,24 @@ function capWithOpenings(
     if (!contour.length || contour[contour.length - 1].distanceTo(q) > 1e-6) contour.push(q);
   }
   if (contour[0].distanceTo(contour[contour.length - 1]) <= 1e-6) contour.pop();
-  const outlines = openings.map((o) => o.outline);
-  for (const outline of outlines) {
+  const outline0 = openings.map((o) => o.outline);
+  for (const outline of outline0) {
     for (const p of outline) {
       if (!insidePolygon(p, contour)) {
         throw new Error(`Panel opening at (${p.x.toFixed(3)}, ${p.y.toFixed(3)}) sticks out of the end panel at z=${z}`);
       }
     }
   }
-  const points = [...contour, ...outlines.flat()].map((p) => new THREE.Vector3(p.x, p.y, z));
-  for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(contour, outlines)) {
-    tri('shell', 'paint', points[a], points[b], points[c], ref);
-  }
+  const outlines = outline0.map((o) => densify(o, END_PANEL_EDGE));
+  const panel = triangulateFine(contour, outlines, END_PANEL_INNER);
+  const points = panel.points.map((p) => new THREE.Vector3(p.x, p.y, z));
+  for (const [a, b, c] of panel.tris) tri('shell', 'paint', points[a], points[b], points[c], ref);
 
-  for (const { outline: opening, hole } of openings) {
-    const centre = opening.reduce((sum, p) => sum.add(p), new THREE.Vector2()).divideScalar(opening.length);
+  for (const [n, { outline: sparse, hole: sparseHole }] of openings.entries()) {
+    // The centre from the outline as drawn: the added points would pull it toward long edges.
+    const centre = sparse.reduce((sum, p) => sum.add(p), new THREE.Vector2()).divideScalar(sparse.length);
+    const opening = outlines[n];
+    const hole = sparseHole && densify(sparseHole, END_PANEL_EDGE);
     // Inset toward the centre, then a front ring (at the panel) and a back ring (at depth).
     const rim = opening.map((p) => p.clone().sub(centre).setLength(p.distanceTo(centre) - RECESS_INSET).add(centre));
     const front = rim.map((p) => new THREE.Vector3(p.x, p.y, z + inward * RECESS_START));
@@ -549,10 +724,9 @@ function capWithOpenings(
       tri('shell', 'recess', front[i], back[j], back[i], out);
     }
     const behind = new THREE.Vector3(centre.x, centre.y, z + inward * (depth + 0.2));
-    const backPoints = [...back, ...(hole ?? []).map((p) => new THREE.Vector3(p.x, p.y, z + inward * depth))];
-    for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(rim, hole ? [hole] : [])) {
-      tri('shell', 'recess', backPoints[a], backPoints[b], backPoints[c], behind);
-    }
+    const wall = triangulateFine(rim, hole ? [hole] : [], END_PANEL_INNER);
+    const backPoints = wall.points.map((p) => new THREE.Vector3(p.x, p.y, z + inward * depth));
+    for (const [a, b, c] of wall.tris) tri('shell', 'recess', backPoints[a], backPoints[b], backPoints[c], behind);
   }
 }
 
