@@ -420,10 +420,13 @@ export const COUPE_70S: CarConfig = {
     lightWireHp: 120,
     lightDropAtCrush: 0.15,
     lightSnapChance: 0.4,
+    lightSnapChanceHard: 0.85,
     wireLength: 0.25,
     // Linear air drag on a dangling light: ≈3 m/s² at 15 m/s, well under gravity, so it hangs and swings.
     wireDrag: 0.25,
-    // Measured while driving: ≈10 hanging still, 100–180 on bumps (95th pct), 400–800 on jump landings.
-    wireTearAccel: 300,
+    // Measured while driving (20 s of autopilot down a bumpy slope): median 6, 95th pct 78, 99th
+    // 176, ordinary bumps and small landings up to ≈400, hard jump landings ≈800. A wire should
+    // last over bumps and snap on a hard landing.
+    wireTearAccel: 600,
   },
 };
