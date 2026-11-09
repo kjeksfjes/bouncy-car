@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { emptySample, type EnvGrid, type EnvSample } from './environment';
 import { inspectColour, type InspectMode } from './inspect';
 import { hash2 } from './noise';
+import { DetailScatter, type RockLayout } from './details';
 import { PropScatter, type ChunkProps } from './props';
 import type { TerrainField } from './terrainField';
 import type { TreeLayout } from './trees';
@@ -36,6 +37,7 @@ export class Terrain {
     roughness: 0.95,
   });
   private readonly props: PropScatter;
+  private readonly details: DetailScatter;
   private inspectMode: InspectMode | null = null;
 
   constructor(
@@ -43,8 +45,10 @@ export class Terrain {
     private readonly scene: THREE.Scene,
     private readonly world: RAPIER.World,
     trees: TreeLayout,
+    rocks: RockLayout,
   ) {
     this.props = new PropScatter(trees, world);
+    this.details = new DetailScatter(field, trees, rocks, world);
   }
 
   /**
@@ -201,7 +205,15 @@ export class Terrain {
       body,
     );
 
-    const props = this.props.populate(x0, z0, CHUNK_SIZE, body);
+    const trees = this.props.populate(x0, z0, CHUNK_SIZE, body);
+    const details = this.details.populate(x0, z0, CHUNK_SIZE, step, env, body);
+    const props: ChunkProps = {
+      objects: [...trees.objects, ...details.objects],
+      dispose: () => {
+        trees.dispose();
+        details.dispose();
+      },
+    };
     props.objects.forEach((o) => this.scene.add(o));
 
     return { mesh, body, props };

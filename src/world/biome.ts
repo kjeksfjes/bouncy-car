@@ -349,6 +349,18 @@ export class Biome {
     return out;
   }
 
+  /**
+   * 1 just outside a grassland wood (its copse noise within `band` below where the wood starts),
+   * else 0: where shrubs gather.
+   */
+  woodEdge(x: number, z: number, env: EnvSample, band: number): number {
+    if (this.grassland(z) < 0.5) return 0;
+    const B = BIOME;
+    const from = B.copseFrom - SUITABILITY.shift * treeSuitability(env, this.areaKind(x, z, env));
+    const n = this.copse(x / B.copseScale, z / B.copseScale);
+    return n > from - band && n <= from ? 1 : 0;
+  }
+
   /** The kind of tree an area at (x, z) grows on this ground: the regional kind, sorted by the ground. */
   areaKind(x: number, z: number, env: EnvSample): Species {
     const B = BIOME;

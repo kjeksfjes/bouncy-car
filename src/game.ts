@@ -20,6 +20,7 @@ import type { TerrainPreset } from './world/features';
 import { INSPECT_LEGENDS, INSPECT_MODES, type InspectMode } from './world/inspect';
 import { LOAD_RADIUS, Terrain, type StreamCenter } from './world/terrain';
 import { TerrainField } from './world/terrainField';
+import { Obstacles, RockLayout } from './world/details';
 import { TreeLayout } from './world/trees';
 
 const CAMERA_MODES = ['orbit', 'heli'] as const;
@@ -82,6 +83,7 @@ export class Game {
   private readonly lastSafe = new THREE.Vector3();
   private readonly bufferSize = new THREE.Vector2();
   private readonly trees: TreeLayout;
+  private readonly rocks: RockLayout;
   /** Drives the player's car while the autopilot is on. */
   private readonly ai: AiDriver;
   /** Shows the AI's chosen heading while the autopilot drives. */
@@ -101,12 +103,14 @@ export class Game {
     this.world.timestep = PHYSICS_STEP;
     this.field = new TerrainField(seed, terrain);
     this.trees = new TreeLayout(this.field);
-    this.terrain = new Terrain(this.field, this.stage.scene, this.world, this.trees);
-    this.ai = new AiDriver(this.trees);
+    this.rocks = new RockLayout(this.field, this.trees);
+    const obstacles = new Obstacles(this.trees, this.rocks);
+    this.terrain = new Terrain(this.field, this.stage.scene, this.world, this.trees, this.rocks);
+    this.ai = new AiDriver(obstacles);
     this.aiArrow.visible = false;
     this.stage.scene.add(this.aiArrow);
     this.debris = new Debris(this.stage.scene, this.world, this.field);
-    this.traffic = new Traffic(this.field, this.trees, this.terrain, (at, yaw, paint) => this.newCar(at, yaw, paint));
+    this.traffic = new Traffic(this.field, obstacles, this.terrain, (at, yaw, paint) => this.newCar(at, yaw, paint));
     // Both cameras orbit with the mouse; only the active one takes the input.
     const pointer = new PointerOrbit();
     pointer.attach(this.stage.renderer.domElement);
@@ -346,6 +350,7 @@ export class Game {
     const next = BIOMES.find((b) => b.from > reached + 50) ?? BIOMES[0];
     biome.shift(from, next.from - reached, BIOME_JUMP.ramp);
     this.trees.invalidate();
+    this.rocks.invalidate();
     this.terrain.refreshBeyond(-from);
     this.hud.toast(`${next.name} ahead`);
   }

@@ -24,8 +24,8 @@ export interface CarInput {
   handbrake: boolean;
 }
 
-/** What a body contact touched: snow/rock ground, a tree trunk, or another moving body. */
-export type ContactSurface = 'ground' | 'tree' | 'metal';
+/** What a body contact touched: snow/rock ground, a tree trunk, a boulder, or another moving body. */
+export type ContactSurface = 'ground' | 'tree' | 'rock' | 'metal';
 
 /** Read-only view of a tyre, for effects. */
 export interface TyreState {
@@ -974,8 +974,9 @@ export class Car {
   }
 }
 
-/** Classifies what a contact touched: moving bodies are cars or debris, cylinders are tree trunks. */
+/** Classifies what a contact touched: moving bodies are cars or debris, cylinders tree trunks, convex hulls boulders. */
 function surfaceOf(other: RAPIER.Collider): ContactSurface {
   if (other.parent()?.isDynamic()) return 'metal';
-  return other.shapeType() === RAPIER.ShapeType.Cylinder ? 'tree' : 'ground';
+  const shape = other.shapeType();
+  return shape === RAPIER.ShapeType.Cylinder ? 'tree' : shape === RAPIER.ShapeType.ConvexPolyhedron ? 'rock' : 'ground';
 }

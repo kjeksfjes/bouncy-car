@@ -106,9 +106,9 @@ export class Juice implements CarEvents {
   impact(car: Car, at: THREE.Vector3, severity: number, surface: ContactSurface): void {
     if (this.near(at)) {
       const k = Math.min(1, severity / 12);
-      if (surface === 'metal' || (surface === 'ground' && this.isHard(at))) {
+      if (surface === 'metal' || surface === 'rock' || (surface === 'ground' && this.isHard(at))) {
         this.burstSparks(at, car.velocity, 10 + Math.round(30 * k));
-        if (surface === 'ground') this.burstDust(at, car.velocity, 6, 1.5, COLOR.rockDust);
+        if (surface !== 'metal') this.burstDust(at, car.velocity, 6, 1.5, COLOR.rockDust);
       } else {
         this.burstGround(at, car.velocity, 8 + Math.round(40 * k), 2 + 4 * k);
       }
@@ -169,7 +169,7 @@ export class Juice implements CarEvents {
     const speed = car.velocity.length();
     if (!car.scraping || speed < 3) return;
     const at = car.scrapePoint;
-    const metal = car.scrapeSurface === 'metal' || (car.scrapeSurface === 'ground' && this.isHard(at));
+    const metal = car.scrapeSurface === 'metal' || car.scrapeSurface === 'rock' || (car.scrapeSurface === 'ground' && this.isHard(at));
     const n = this.take(car, speed * (metal ? 3 : 2) * dt);
     if (metal) this.burstSparks(at, car.velocity, n);
     else if (n > 0) this.burstGround(at, car.velocity, n, 1.5);
