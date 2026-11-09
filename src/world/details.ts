@@ -134,10 +134,12 @@ export class RockLayout {
     return rock;
   }
 
-  /** Whether a boulder was knocked loose from within `clearance` of (x, z): its hollow is there. */
+  /**
+   * Whether a boulder was knocked loose from within `clearance` of (x, z): its hollow is there.
+   * Only where it lay (its radius), so nothing that grew round it goes when it does.
+   */
   scarred(x: number, z: number, clearance: number): boolean {
-    // The hollow and its lip reach about 1.5 × the boulder's radius out (see IMPRINT.lipTo).
-    for (const rock of this.gone.values()) if (Math.hypot(rock.x - x, rock.z - z) < rock.radius * 1.5 + clearance) return true;
+    for (const rock of this.gone.values()) if (Math.hypot(rock.x - x, rock.z - z) < rock.radius + clearance) return true;
     return false;
   }
 
@@ -468,7 +470,7 @@ export class DetailScatter {
     this.scatter(x0, z0, size, GRASS.cell, 61, (x, z, r) => {
       const e = sample(x, z);
       if (!e || !this.bare(x, z, e)) return;
-      if (this.rocks.scarred(x, z, 0.3)) return;
+      if (this.rocks.scarred(x, z, 0)) return;
       const G = GRASS;
       const green = this.field.biome.warmth(z);
       const patch = smoothstep(G.patchFrom, G.patchFrom + 0.3, this.patch(x / G.patchScale, z / G.patchScale));

@@ -273,14 +273,12 @@ export class Terrain {
         }
       }
       col.copy(ground);
-      // Imprints: bare soil in the hollow (darker deeper) and on the lip.
+      // Imprints: bare soil in the hollow (darker deeper), or darker rock in rock.
       const moved = (offsets[indices[f]] + offsets[indices[f + 1]] + offsets[indices[f + 2]]) / 3;
       if (moved < -0.01 && inRock.has(f / 3)) {
         col.multiplyScalar(IMPRINT.rockShade + (IMPRINT.rockDeep - IMPRINT.rockShade) * Math.min(1, -moved / 0.25));
       } else if (moved < -0.01) {
         col.copy(IMPRINT.soil).lerp(IMPRINT.soilDark, Math.min(1, -moved / 0.25));
-      } else if (moved > 0.005) {
-        col.lerp(IMPRINT.soilLight, Math.min(1, moved / 0.03));
       }
 
       va.fromArray(vertices, indices[f] * 3);

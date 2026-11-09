@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import type { Rock, RockShape } from './details';
-import { smoothstep } from './noise';
 
 /** What a boulder lay bedded in: grass, bare soil (in the snow, the earth under it), or rock. */
 export type BedGround = 'grass' | 'soil' | 'rock';
@@ -10,23 +9,12 @@ export const IMPRINT = {
   /** Ground cells (2 m) under an imprint are rebuilt this many times finer per side: 0.25 m. */
   subdivisions: 8,
   /**
-   * The lip of soil pushed up round the hollow: up to `lip` × the boulder's radius high, from
-   * `lipFrom` out to `lipTo` × its footprint (crest at `lipAt`). The footprint is the boulder's
-   * width at the ground line: `footprint` × its sx and sz (its unit shape is ≈0.9 across there).
-   */
-  lip: 0.07,
-  lipFrom: 0.8,
-  lipAt: 1.05,
-  lipTo: 1.45,
-  footprint: 0.9,
-  /**
    * In rock the hollow is the rock's own colour, darker deeper in: × `rockShade` at its edge
-   * down to × `rockDeep` at its deepest. Rock has no lip: nothing gets pushed up.
+   * down to × `rockDeep` at its deepest.
    */
   rockShade: 0.85,
   rockDeep: 0.6,
-  /** Bare soil colours: the lip, the hollow's sides, and its deepest part. */
-  soilLight: new THREE.Color('#77583d'),
+  /** Bare soil colours: the hollow's sides and its deepest part. */
   soil: new THREE.Color('#5e4330'),
   soilDark: new THREE.Color('#3f2d20'),
 };
@@ -38,17 +26,17 @@ const RAY_MATERIAL = new THREE.MeshBasicMaterial();
 
 /**
  * The hollow one boulder left: its own underside pressed into the ground (traced with rays
- * against its shape, posed as it lay bedded), with a lip of soil round it.
+ * against its shape, posed as it lay bedded). Nothing changes outside the boulder's footprint,
+ * so while it still lies there it hides the whole of it: the ground can take the hollow the
+ * moment it breaks loose, and rolling away it uncovers a hollow that seems always to have been there.
  */
 export class Imprint {
-  /** Nothing changes farther than this (m) from the boulder's middle. */
+  /** Nothing changes farther than this (m) from the boulder's middle: past its widest point. */
   readonly reach: number;
   /** Deepest the hollow goes (m), for shading it. */
   readonly depth: number;
   private readonly mesh: THREE.Mesh;
   private readonly raycaster = new THREE.Raycaster();
-  private readonly cos: number;
-  private readonly sin: number;
 
   constructor(
     readonly rock: Rock,
@@ -61,32 +49,24 @@ export class Imprint {
     this.mesh.quaternion.setFromAxisAngle(UP, rock.yaw);
     this.mesh.scale.set(rock.sx, rock.sy, rock.sz);
     this.mesh.updateMatrixWorld(true);
-    this.reach = rock.radius * IMPRINT.lipTo;
-    this.cos = Math.cos(rock.yaw);
-    this.sin = Math.sin(rock.yaw);
+    // Its unit shape reaches up to 1.22 out (vertex jitter), × its larger horizontal scale.
+    this.reach = rock.radius * 1.25;
     this.depth = Math.max(0.05, rock.sy * 0.35);
   }
 
-  /** How the ground at (x, z), at height `ground` before, is moved (m): down into the hollow, up on the lip. */
+  /** How far the ground at (x, z), at height `ground` before, is moved (m): down into the hollow, ≤ 0. */
   offset(x: number, z: number, ground: number): number {
-    const I = IMPRINT;
     const r = this.rock;
     const dx = x - r.x;
     const dz = z - r.z;
     if (dx * dx + dz * dz >= this.reach * this.reach) return 0;
-    // Into the boulder's own frame (it was turned by its yaw about the vertical).
-    const u = dx * this.cos - dz * this.sin;
-    const v = dx * this.sin + dz * this.cos;
-    const e = Math.hypot(u / (r.sx * I.footprint), v / (r.sz * I.footprint));
-    const lip = this.ground === 'rock' ? 0 : I.lip * r.radius * (smoothstep(I.lipFrom, I.lipAt, e) - smoothstep(I.lipAt, I.lipTo, e));
     // Its underside here: the first face a ray from below meets.
     this.raycaster.set(_origin.set(x, r.y - 1, z), UP);
     _hits.length = 0;
     this.mesh.raycast(this.raycaster, _hits);
     let under = Infinity;
     for (const h of _hits) under = Math.min(under, h.point.y);
-    const dent = under === Infinity ? 0 : Math.max(0, ground - under);
-    return lip - dent;
+    return under === Infinity ? 0 : -Math.max(0, ground - under);
   }
 }
 
