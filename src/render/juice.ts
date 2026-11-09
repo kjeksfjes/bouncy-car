@@ -125,6 +125,19 @@ export class Juice implements CarEvents {
     }
   }
 
+  /** A boulder tearing out of its bed: soil clods and a brown cloud (stone chips and grey dust from rock), more for a bigger one. */
+  uproot(at: THREE.Vector3, velocity: THREE.Vector3, radius: number, rock: boolean): void {
+    const count = Math.round(6 + 10 * radius);
+    for (let i = 0; i < count; i++) {
+      _v.copy(velocity).multiplyScalar(0.5);
+      _v.x += (Math.random() - 0.5) * 3;
+      _v.y += 1 + Math.random() * 2.5;
+      _v.z += (Math.random() - 0.5) * 3;
+      _p.set(at.x + (Math.random() - 0.5) * radius, at.y + 0.1, at.z + (Math.random() - 0.5) * radius);
+      this.emitGround(rock ? 'stone' : 'dirt', _p, _v, 0.3 + 0.2 * radius);
+    }
+  }
+
   glass(): void {}
 
   clank(): void {}

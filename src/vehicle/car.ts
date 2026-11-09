@@ -974,9 +974,11 @@ export class Car {
   }
 }
 
-/** Classifies what a contact touched: moving bodies are cars or debris, cylinders tree trunks, convex hulls boulders. */
+/** Classifies what a contact touched: convex hulls are boulders, other moving bodies cars or debris, cylinders tree trunks. */
 function surfaceOf(other: RAPIER.Collider): ContactSurface {
-  if (other.parent()?.isDynamic()) return 'metal';
   const shape = other.shapeType();
-  return shape === RAPIER.ShapeType.Cylinder ? 'tree' : shape === RAPIER.ShapeType.ConvexPolyhedron ? 'rock' : 'ground';
+  // Boulders, bedded or knocked loose, are the only convex hulls.
+  if (shape === RAPIER.ShapeType.ConvexPolyhedron) return 'rock';
+  if (other.parent()?.isDynamic()) return 'metal';
+  return shape === RAPIER.ShapeType.Cylinder ? 'tree' : 'ground';
 }

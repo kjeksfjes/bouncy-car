@@ -20,6 +20,8 @@ import type { TerrainPreset } from './world/features';
 import { INSPECT_LEGENDS, INSPECT_MODES, type InspectMode } from './world/inspect';
 import { LOAD_RADIUS, Terrain, type StreamCenter } from './world/terrain';
 import { TerrainField } from './world/terrainField';
+import { Boulders } from './world/boulders';
+import { Clods } from './world/clods';
 import { Obstacles, RockLayout } from './world/details';
 import { TreeLayout } from './world/trees';
 
@@ -84,6 +86,8 @@ export class Game {
   private readonly bufferSize = new THREE.Vector2();
   private readonly trees: TreeLayout;
   private readonly rocks: RockLayout;
+  private readonly boulders: Boulders;
+  private readonly clods: Clods;
   /** Drives the player's car while the autopilot is on. */
   private readonly ai: AiDriver;
   /** Shows the AI's chosen heading while the autopilot drives. */
@@ -121,6 +125,11 @@ export class Game {
       (car) => car === this.car,
       (seconds) => (this.hitStop = Math.max(this.hitStop, seconds)),
     );
+    this.clods = new Clods(this.stage.scene, (x, z) => this.terrain.surfaceHeight(x, z));
+    this.boulders = new Boulders(this.world, this.stage.scene, this.field, this.terrain, this.debris, (at, velocity, radius, ground) => {
+      this.juice.uproot(at, velocity, radius, ground === 'rock');
+      this.clods.burst(at, velocity, radius, ground);
+    });
 
     const spawn = new THREE.Vector3(0, this.field.height(0, -start) + 1.5, -start);
     this.terrain.update([{ position: spawn, radius: LOAD_RADIUS }], INITIAL_CHUNKS);
@@ -232,9 +241,12 @@ export class Game {
       for (const car of cars) car.step(PHYSICS_STEP, controls.get(car)!);
       this.world.step(this.events);
       this.events.drainContactForceEvents((e) => {
-        for (const car of cars) car.handleContactForce(e.collider1(), e.collider2(), e.totalForceMagnitude());
+        // A boulder knocked loose takes its share of the hit (see Boulders).
+        const force = this.boulders.contact(e);
+        for (const car of cars) car.handleContactForce(e.collider1(), e.collider2(), force);
       });
       for (const car of cars) car.afterStep();
+      this.boulders.afterStep();
       this.debris.afterStep();
       this.accumulator -= PHYSICS_STEP;
     }
@@ -255,6 +267,7 @@ export class Game {
     camera.update(dt, this.car.model.root, this.car.velocity, false, this.timeScale);
     this.view.update(this.stage.camera, this.stage.viewDistance);
     this.debris.update(gt, pos, this.view, alpha);
+    this.clods.update(gt);
     this.traffic.update(gt, pos, this.view);
     this.stage.follow(pos);
     this.updateWarmth(dt);

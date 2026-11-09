@@ -2,6 +2,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import type { NoiseFunction2D } from 'simplex-noise';
 import * as THREE from 'three';
 import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+import { PHYSICS_STEP } from '../constants';
 import { GROUND } from './biome';
 import { emptySample, type EnvGrid, type EnvSample } from './environment';
 import { hash2, makeNoise, mulberry32, smoothstep } from './noise';
@@ -13,7 +14,7 @@ import type { TreeLayout } from './trees';
  * Small-scale detail: boulders (solid; the AI steers around them like trees), shrubs and grass
  * clumps (looks only). Placed by the ground's environment, sparse. Feel values.
  */
-const ROCKS = {
+export const ROCKS = {
   /** Candidate cell (m): at most one boulder per cell. */
   cell: 10,
   /** Chance per cell on bare rock (boulders lying about on rocky ground). */
@@ -34,6 +35,22 @@ const ROCKS = {
   spawnClear: 60,
   cliffBelow: 0.1,
   lipBelow: 0.05,
+  /**
+   * How deep a boulder is bedded (× its height) below the lowest ground under its edge: most of
+   * its rounded underside, so it sits in the ground rather than on it.
+   */
+  bury: 0.22,
+  /**
+   * Rock density (kg/m³; granite ≈ 2700): mass is the hull's volume × this. A 0.9 m stone weighs
+   * ≈ 0.7 t, a 2.4 m one ≈ 14 t, the biggest ≈ 100 t (the car is 1.6 t).
+   */
+  density: 2700,
+  /**
+   * Bedded in the ground, a boulder breaks loose only from a hit whose impulse in one physics step
+   * (N·s) would set it moving at this speed (m/s) or more: ≈ 1–2 m/s of car speed for the smallest
+   * stones, ≈ 80 km/h for a 2.4 m one, never for the biggest.
+   */
+  breakout: 2.5,
 };
 
 const SHRUBS = {
@@ -68,8 +85,10 @@ const ROCK_SHAPES = 4;
 const CACHE_LIMIT = 20000;
 
 export interface Rock {
+  /** Its cell's key (see RockLayout.inCell). */
+  cell: number;
   x: number;
-  /** Base height: the rock is sunk to the lowest ground under it. */
+  /** Height of the rock's lowest point: bedded below the lowest ground under its edge (ROCKS.bury). */
   y: number;
   z: number;
   /** Horizontal radius (m), for the AI and spacing. */
@@ -92,6 +111,8 @@ const _env = emptySample();
  */
 export class RockLayout {
   private readonly cache = new Map<number, Rock | null>();
+  /** Boulders knocked loose from their beds: gone from their cells for good. */
+  private readonly gone = new Map<number, Rock>();
   private readonly cluster: NoiseFunction2D;
 
   constructor(
@@ -104,12 +125,25 @@ export class RockLayout {
   /** The boulder in cell (cellX, cellZ), if there is one. */
   inCell(cellX: number, cellZ: number): Rock | null {
     const key = (cellX + 1048576) * 2097152 + (cellZ + 1048576);
+    if (this.gone.has(key)) return null;
     const cached = this.cache.get(key);
     if (cached !== undefined) return cached;
-    const rock = this.place(cellX, cellZ);
+    const rock = this.place(cellX, cellZ, key);
     if (this.cache.size >= CACHE_LIMIT) this.cache.clear();
     this.cache.set(key, rock);
     return rock;
+  }
+
+  /** Whether a boulder was knocked loose from within `clearance` of (x, z): its hollow is there. */
+  scarred(x: number, z: number, clearance: number): boolean {
+    // The hollow and its lip reach about 1.5 × the boulder's radius out (see IMPRINT.lipTo).
+    for (const rock of this.gone.values()) if (Math.hypot(rock.x - x, rock.z - z) < rock.radius * 1.5 + clearance) return true;
+    return false;
+  }
+
+  /** Takes a boulder out of its cell for good (it was knocked loose). */
+  dislodge(rock: Rock): void {
+    this.gone.set(rock.cell, rock);
   }
 
   /** Forgets every cached boulder (after the biomes change: snow on them). */
@@ -137,7 +171,7 @@ export class RockLayout {
     return best;
   }
 
-  private place(cellX: number, cellZ: number): Rock | null {
+  private place(cellX: number, cellZ: number, cell: number): Rock | null {
     const R = ROCKS;
     const f = this.field;
     const seed = f.seed;
@@ -158,16 +192,18 @@ export class RockLayout {
     if (this.trees.blocking(x, z, radius + 0.5)) return null;
     const flat = 0.55 + 0.3 * hash2(cellX, cellZ, seed + 45);
     const stretch = 0.8 + 0.4 * hash2(cellX, cellZ, seed + 46);
-    // Sunk to the lowest ground under its edge, so no side floats on a slope.
+    // Bedded below the lowest ground under its edge, so no side floats on a slope.
     let y = f.height(x, z);
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) y = Math.min(y, f.height(x + dx * radius, z + dz * radius));
+    const sy = radius * flat * 1.4;
     return {
+      cell,
       x,
-      y: y - 0.15 * radius,
+      y: y - R.bury * UNIT_HEIGHT * sy,
       z,
       radius: radius * Math.max(stretch, 1 / stretch),
       sx: radius * stretch,
-      sy: radius * flat * 1.4,
+      sy,
       sz: radius / stretch,
       yaw: hash2(cellX, cellZ, seed + 47) * Math.PI * 2,
       shape: Math.floor(hash2(cellX, cellZ, seed + 48) * ROCK_SHAPES),
@@ -189,21 +225,33 @@ export class Obstacles {
   }
 }
 
-/** Unit rock shapes: jittered, faceted blobs, base at y = 0, radius ≈1. */
-function buildRockShapes(): { geometry: THREE.BufferGeometry; snowy: THREE.BufferGeometry; hull: Float32Array }[] {
+/** Unit rock shapes stand about this tall (× sy), lowest point at y = 0. */
+const UNIT_HEIGHT = 1.35;
+/** How much flatter a rock is below its middle than above (a boulder's underside is rounded but squat). */
+const UNDERSIDE = 0.65;
+
+/** Unit rock shapes: jittered, faceted blobs rounded all round, lowest point at y = 0, radius ≈1, ≈ UNIT_HEIGHT tall. */
+function buildRockShapes(): RockShape[] {
   const shapes = [];
   for (let i = 0; i < ROCK_SHAPES; i++) {
     const random = mulberry32(911 + i * 17);
     const base = new THREE.IcosahedronGeometry(1, i % 2);
-    // Jitter shared vertices (merge first so faces stay closed), flatten the bottom a little.
+    // Jitter shared vertices (merge first so faces stay closed), squash the underside a little.
     base.deleteAttribute('normal');
     base.deleteAttribute('uv');
     const merged = mergeVertices(base);
     const pos = merged.getAttribute('position') as THREE.BufferAttribute;
+    let low = Infinity;
+    let high = -Infinity;
     for (let v = 0; v < pos.count; v++) {
       const k = 0.78 + random() * 0.44;
-      pos.setXYZ(v, pos.getX(v) * k, Math.max(pos.getY(v) * k, -0.35) + 0.35, pos.getZ(v) * k);
+      const y = pos.getY(v) * k * (pos.getY(v) < 0 ? UNDERSIDE : 1);
+      pos.setXYZ(v, pos.getX(v) * k, y, pos.getZ(v) * k);
+      low = Math.min(low, y);
+      high = Math.max(high, y);
     }
+    // Lowest point to y = 0, scaled to UNIT_HEIGHT tall.
+    for (let v = 0; v < pos.count; v++) pos.setY(v, ((pos.getY(v) - low) * UNIT_HEIGHT) / (high - low));
     const hull = new Float32Array(pos.array as Float32Array);
     const flat = merged.toNonIndexed();
     flat.computeVertexNormals();
@@ -284,9 +332,33 @@ function buildGrass(tip: THREE.Color): THREE.BufferGeometry {
 
 type DetailKind = 'shrub' | 'grass' | 'grassDry';
 
+/** A rock shape: its geometry (and snowy twin), and its hull points (unit size). */
+export interface RockShape {
+  geometry: THREE.BufferGeometry;
+  snowy: THREE.BufferGeometry;
+  hull: Float32Array;
+}
+
+/** A boulder bedded in a loaded chunk: its fixed collider, and the instance that draws it. */
+export interface BeddedRock {
+  rock: Rock;
+  shape: RockShape;
+  collider: RAPIER.Collider;
+  /** kg, from the hull's volume (ROCKS.density). */
+  mass: number;
+  mesh: THREE.InstancedMesh | null;
+  index: number;
+}
+
+const HIDDEN = new THREE.Matrix4().makeScale(0, 0, 0);
+
 /** Builds each chunk's boulders (with colliders), shrubs and grass clumps. */
 export class DetailScatter {
-  private readonly rockShapes = buildRockShapes();
+  readonly rockShapes: RockShape[] = buildRockShapes();
+  /** The material boulders are drawn with, for loose ones too. */
+  readonly rockMaterial: THREE.Material;
+  /** Bedded boulders in the loaded chunks, by collider handle. */
+  private readonly bedded = new Map<number, BeddedRock>();
   private readonly geometries: Record<DetailKind, THREE.BufferGeometry> = {
     shrub: buildShrub(),
     grass: buildGrass(GROUND.grass),
@@ -304,6 +376,26 @@ export class DetailScatter {
     private readonly world: RAPIER.World,
   ) {
     this.patch = makeNoise(field.seed + 45);
+    this.rockMaterial = this.material;
+  }
+
+  /** The bedded boulder with this collider, if it is one. */
+  beddedRock(handle: number): BeddedRock | undefined {
+    return this.bedded.get(handle);
+  }
+
+  /**
+   * Takes a bedded boulder out of its chunk (collider and drawn instance) and out of the layout
+   * for good, for it to carry on as a loose body.
+   */
+  release(bed: BeddedRock): void {
+    this.bedded.delete(bed.collider.handle);
+    this.world.removeCollider(bed.collider, true);
+    if (bed.mesh) {
+      bed.mesh.setMatrixAt(bed.index, HIDDEN);
+      bed.mesh.instanceMatrix.needsUpdate = true;
+    }
+    this.rocks.dislodge(bed.rock);
   }
 
   /** Details for the chunk at (x0, z0), `size` m square, using its environment grid (`step` m spacing). */
@@ -320,6 +412,7 @@ export class DetailScatter {
 
     // Boulders: from the layout, with a collider shaped like the rock.
     const R = ROCKS;
+    const beds: { bed: BeddedRock; list: THREE.Matrix4[] }[] = [];
     for (let cz = Math.floor(z0 / R.cell); cz <= Math.floor((z0 + size) / R.cell); cz++) {
       for (let cx = Math.floor(x0 / R.cell); cx <= Math.floor((x0 + size) / R.cell); cx++) {
         const r = this.rocks.inCell(cx, cz);
@@ -327,13 +420,21 @@ export class DetailScatter {
         const shape = this.rockShapes[r.shape];
         q.setFromAxisAngle(UP, r.yaw);
         const m = new THREE.Matrix4().compose(p.set(r.x, r.y, r.z), q, s.set(r.sx, r.sy, r.sz));
-        group(r.snowy ? shape.snowy : shape.geometry, this.material, true).push(m);
+        const list = group(r.snowy ? shape.snowy : shape.geometry, this.material, true);
+        list.push(m);
         const points = new Float32Array(shape.hull.length);
         const v = new THREE.Vector3();
         for (let i = 0; i < points.length; i += 3) v.fromArray(shape.hull, i).applyMatrix4(m).toArray(points, i);
         const desc = RAPIER.ColliderDesc.convexHull(points);
         if (!desc) throw new Error(`Boulder at (${r.x.toFixed(1)}, ${r.z.toFixed(1)}) has no convex hull`);
-        this.world.createCollider(desc.setFriction(0.8), body);
+        const collider = this.world.createCollider(desc.setFriction(0.8), body);
+        const mass = collider.volume() * R.density;
+        // Reports hits from its break-out force up (see Boulders), whatever the hitter reports on its own.
+        collider.setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS);
+        collider.setContactForceEventThreshold((mass * R.breakout) / PHYSICS_STEP);
+        const bed: BeddedRock = { rock: r, shape, collider, mass, mesh: null, index: list.length - 1 };
+        this.bedded.set(collider.handle, bed);
+        beds.push({ bed, list });
       }
     }
 
@@ -360,13 +461,14 @@ export class DetailScatter {
       const edge = this.field.biome.woodEdge(x, z, e, S.edgeBand);
       if (r() >= Math.max(S.open, S.edge * edge)) return;
       // Not growing through a trunk or a boulder.
-      if (this.trees.blocking(x, z, 0.8) || this.rocks.blocking(x, z, 0.5)) return;
+      if (this.trees.blocking(x, z, 0.8) || this.rocks.blocking(x, z, 0.5) || this.rocks.scarred(x, z, 0.5)) return;
       const k = S.minScale + r() * (S.maxScale - S.minScale);
       this.put(group(this.geometries.shrub, this.material, true), x, z, k, k * (0.8 + 0.4 * r()), r());
     });
     this.scatter(x0, z0, size, GRASS.cell, 61, (x, z, r) => {
       const e = sample(x, z);
       if (!e || !this.bare(x, z, e)) return;
+      if (this.rocks.scarred(x, z, 0.3)) return;
       const G = GRASS;
       const green = this.field.biome.warmth(z);
       const patch = smoothstep(G.patchFrom, G.patchFrom + 0.3, this.patch(x / G.patchScale, z / G.patchScale));
@@ -376,15 +478,25 @@ export class DetailScatter {
       this.put(group(this.geometries[kind], this.bladeMaterial, false), x, z, k, k, r());
     });
 
+    const built = new Map<THREE.Matrix4[], THREE.InstancedMesh>();
     const objects: THREE.Object3D[] = meshes.map(({ geometry, material, shadow, matrices }) => {
       const mesh = new THREE.InstancedMesh(geometry, material, matrices.length);
       matrices.forEach((m, i) => mesh.setMatrixAt(i, m));
       mesh.castShadow = shadow;
       mesh.receiveShadow = true;
       mesh.computeBoundingSphere();
+      built.set(matrices, mesh);
       return mesh;
     });
-    return { objects, dispose: () => objects.forEach((o) => (o as THREE.InstancedMesh).dispose()) };
+    for (const { bed, list } of beds) bed.mesh = built.get(list)!;
+    return {
+      objects,
+      dispose: () => {
+        // The chunk's body goes with its colliders: forget its boulders (handles get reused).
+        for (const { bed } of beds) if (this.bedded.get(bed.collider.handle) === bed) this.bedded.delete(bed.collider.handle);
+        objects.forEach((o) => (o as THREE.InstancedMesh).dispose());
+      },
+    };
   }
 
   /** Bare (snow-free, not rock) ground that isn't a drop wall: where shrubs and grass can grow. */
