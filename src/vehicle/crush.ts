@@ -15,9 +15,27 @@ export interface CrushTuning {
   crushSpreadWide: number;
   /** Trees concentrate the force into a deeper notch. */
   crushTreeFactor: number;
-  /** Hood/trunk lid tenting up and fenders bowing out, in metres per metre of local crush. */
+  /**
+   * How much the body wraps round a notch. The skin can't stretch: where the crush slopes across
+   * the car, each span between crush columns keeps its length, which draws everything outside
+   * the deepest point in toward it (corners, headlights, bumper ends). 1 = a skin that bends
+   * smoothly along the crush profile between the columns; a real skin kinks at the notch, which
+   * takes up more of its width, so more than 1 (see WRAP_FOLD_MAX for the limit).
+   */
+  crushWrap: number;
+  /** Hood/trunk lid tenting up at the crease, in metres per metre of the tent (see crushFoldSpread). */
   crushFold: number;
+  /**
+   * How much (0..1) of its ideal bow a fender takes. The accordion shortens the fender between
+   * the tip and the wheel arch, and a strip of length L shortened by δ bows out by ≈ (2/π)·√(L·δ)
+   * (its first buckling mode); real panels wrinkle instead of bowing cleanly, so less than all.
+   */
   crushBuckle: number;
+  /**
+   * How far across the car (m, Gaussian σ) the hood or trunk lid tents from where it's pushed in
+   * deepest: a stiff panel buckles up as a ridge across its width, even over a narrow tree notch.
+   */
+  crushFoldSpread: number;
   /** Crumple wrinkles: amplitude per metre of local crush, and their size (m). */
   crushWrinkle: number;
   crushWrinkleSize: number;
@@ -38,8 +56,12 @@ interface Zone {
   tip: number;
   length: number;
   max: number;
+  /** Where along the zone (0 = tip, 1 = bulkhead) the nearest wheel arch begins. */
+  arch: number;
   /** Crush depth (m) per column across the car's width. */
   columns: Float32Array;
+  /** Sideways shift (m, signed along x) per column from the body wrapping round the deepest column (see updatePull). */
+  pull: Float32Array;
 }
 
 /** The roof: how far it's pushed down per column across the width, and its sideways lean. */
@@ -71,6 +93,12 @@ const FOLD_END = 0.8;
  * (crush × FALLOFF / length); stay well short of that.
  */
 const MAX_STRAIN = 0.8;
+/**
+ * Wrapping round a notch can draw a span between two crush columns in to this fraction of its
+ * width at most: narrower and the columns can't tell the shape apart from the panel folded
+ * over itself.
+ */
+const WRAP_FOLD_MAX = 0.5;
 
 const _p = new THREE.Vector3();
 
@@ -85,6 +113,8 @@ export class Crush {
   private readonly zones: Record<CrushEnd, Zone>;
   private readonly roof: Roof;
   private readonly halfWidth: number;
+  /** Distance (m) between neighbouring crush columns. */
+  private readonly columnGap: number;
   private readonly noise = [createNoise3D(), createNoise3D(), createNoise3D()];
   /** Per piece: indices of the vertices inside a crumple zone (computed on first use). */
   private readonly affected = new Map<CarPiece, Uint32Array>();
@@ -99,13 +129,23 @@ export class Crush {
     const rearWall = gh.roof[gh.roof.length - 1][0];
     const zone = (sign: -1 | 1, tip: number, end: number, max: number): Zone => {
       const length = Math.abs(end - tip);
-      return { sign, tip, length, max: Math.min(max, (MAX_STRAIN * length) / FALLOFF), columns: new Float32Array(COLUMNS) };
+      // The wheel arch nearest this end: the fender between tip and arch is the strip that bows out.
+      const edges = bp.arches.map((a) => (sign < 0 ? a.z - a.radius : a.z + a.radius));
+      const archZ = sign < 0 ? Math.min(...edges) : Math.max(...edges);
+      return {
+        sign, tip, length,
+        max: Math.min(max, (MAX_STRAIN * length) / FALLOFF),
+        arch: THREE.MathUtils.clamp(Math.abs(archZ - tip) / length, 0.1, 1),
+        columns: new Float32Array(COLUMNS),
+        pull: new Float32Array(COLUMNS),
+      };
     };
     this.zones = {
       front: zone(-1, bp.front, firewall, tuning.crushMaxFront),
       rear: zone(1, bp.rear, rearWall, tuning.crushMaxRear),
     };
     this.halfWidth = Math.max(...bp.halfWidth.map(([, w]) => w));
+    this.columnGap = (2 * this.halfWidth) / (COLUMNS - 1);
     this.roof = { columns: new Float32Array(COLUMNS), max: tuning.roofCrushMax, lean: 0, from: firewall, to: rearWall };
   }
 
@@ -165,20 +205,45 @@ export class Crush {
       const add = depth * Math.exp((-dx * dx) / (2 * spread * spread));
       zone.columns[i] = Math.min(zone.max, zone.columns[i] + add);
     }
+    this.updatePull(zone);
+  }
+
+  /**
+   * How far the body is drawn sideways toward the deepest column, per column: the skin can't
+   * stretch, so a span between two columns that's pushed in more at one end than the other
+   * keeps its length and gets shorter across the car (by crushWrap times what the smooth
+   * profile alone implies). The deepest column stays where it is (pinned by what hit it); the
+   * pull adds up from there outward on either side.
+   */
+  private updatePull(zone: Zone): void {
+    const c = zone.columns;
+    const gap = this.columnGap;
+    let deepest = 0;
+    for (let i = 1; i < COLUMNS; i++) if (c[i] > c[deepest]) deepest = i;
+    const shortening = (i: number, j: number) =>
+      Math.min(WRAP_FOLD_MAX * gap, this.tuning.crushWrap * (gap - Math.sqrt(Math.max(0, gap * gap - (c[i] - c[j]) ** 2))));
+    zone.pull[deepest] = 0;
+    for (let i = deepest + 1; i < COLUMNS; i++) zone.pull[i] = zone.pull[i - 1] - shortening(i, i - 1);
+    for (let i = deepest - 1; i >= 0; i--) zone.pull[i] = zone.pull[i + 1] + shortening(i, i + 1);
   }
 
   /**
    * Reshapes every closed body piece to the current crush. Dents made so far ride along:
    * each piece's `base` (rest shape after crush) moves, and the dent offset on top is kept.
+   * @param loose hinged panels that broke loose in this same crash: they're still being pushed
+   *   in with the body around them, so they take the crush too (in their own frame, as if still
+   *   closed), instead of keeping the shape they had when they broke loose
    */
-  deform(pieces: readonly CarPiece[], root: THREE.Object3D): void {
+  deform(pieces: readonly CarPiece[], root: THREE.Object3D, loose: { has(piece: CarPiece): boolean } = new Set()): void {
     for (const piece of pieces) {
       // Glass panes crack instead; pieces parented to another piece aren't in car-local space.
-      if (piece.state !== 'closed' || piece.glass || piece.mesh.parent !== root) continue;
+      if (piece.glass) continue;
+      const onCar = piece.state === 'closed' && piece.mesh.parent === root;
+      if (!onCar && !(piece.state === 'hinged' && loose.has(piece))) continue;
       const indices = this.affectedVertices(piece);
       if (indices.length === 0) continue;
       const pos = piece.mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
-      const o = piece.mesh.position;
+      const o = piece.origin;
       const rest = piece.original;
       const base = piece.base;
       for (const i of indices) {
@@ -203,7 +268,9 @@ export class Crush {
       const t = Math.max(0, this.inward(zone, p.z)) / zone.length;
       if (t >= 1) continue;
       const crush = this.crushAt(zone, p.x);
-      if (crush <= 0) continue;
+      // The panel tents up over its width, from the crush nearby (not just here).
+      const tent = this.tentAt(zone, p.x);
+      if (crush <= 0 && tent <= 0) continue;
 
       // Where this point sits on the body: 0 at the rocker, 1 at the deck; 0 at the centre line, 1 at the side.
       const rocker = sample(bp.rocker, p.z) + bp.groundY;
@@ -214,6 +281,11 @@ export class Crush {
       const out = THREE.MathUtils.smoothstep(side, 0.6, 0.95);
       // Fold: zero at the tip, peaking at the crease, gone by FOLD_END.
       const fold = t < CREASE ? t / CREASE : Math.max(0, 1 - (t - CREASE) / (FOLD_END - CREASE));
+      // Fender bow: the strip from the tip to the wheel arch, shortened by the accordion over its
+      // length, bows out as a half sine between its ends (see crushBuckle).
+      const arch = zone.arch;
+      const shortened = crush * (1 - (1 - arch) ** FALLOFF);
+      const bow = t < arch ? (2 / Math.PI) * Math.sqrt(arch * zone.length * shortened) * Math.sin((Math.PI * t) / arch) : 0;
 
       const s = 1 / T.crushWrinkleSize;
       const wrinkle = T.crushWrinkle * crush * (1 - t);
@@ -221,9 +293,12 @@ export class Crush {
       const ny = this.noise[1](p.x * s, p.y * s, p.z * s);
       const nz = this.noise[2](p.x * s, p.y * s, p.z * s);
 
+      // Wrapping round the notch: drawn toward the deepest column, gone by the wheel arch (the
+      // fender stays off the wheel; behind the arch the body is held by the frame anyway).
+      const wrap = this.sampleColumns(zone.pull, p.x) * Math.max(0, 1 - t / arch);
       p.z -= zone.sign * crush * (1 - t) ** FALLOFF;
-      p.y += T.crushFold * crush * fold * up + ny * wrinkle;
-      p.x += Math.sign(p.x) * T.crushBuckle * crush * fold * out * (1 - up * 0.5) + nx * wrinkle;
+      p.y += T.crushFold * tent * fold * up + ny * wrinkle;
+      p.x += wrap + Math.sign(p.x) * T.crushBuckle * bow * out * (1 - up * 0.5) + nx * wrinkle;
       p.z += nz * wrinkle;
     }
 
@@ -263,9 +338,29 @@ export class Crush {
 
   /** Crush depth at car-local `x`, interpolated between columns (clamped at the sides). */
   private crushAt(zone: { columns: Float32Array }, x: number): number {
+    return this.sampleColumns(zone.columns, x);
+  }
+
+  /** A per-column value at car-local `x`, interpolated between columns (clamped at the sides). */
+  private sampleColumns(values: Float32Array, x: number): number {
     const f = THREE.MathUtils.clamp(((x + this.halfWidth) / (2 * this.halfWidth)) * (COLUMNS - 1), 0, COLUMNS - 1);
     const i = Math.min(COLUMNS - 2, Math.floor(f));
-    return THREE.MathUtils.lerp(zone.columns[i], zone.columns[i + 1], f - i);
+    return THREE.MathUtils.lerp(values[i], values[i + 1], f - i);
+  }
+
+  /**
+   * How far the hood or trunk lid tents at car-local `x`: the deepest crush of any column, falling
+   * off with its distance across the car (crushFoldSpread). Never below the crush right here, and
+   * as high as the deepest crush at its own column, so it widens the tent without lowering it.
+   */
+  private tentAt(zone: Zone, x: number): number {
+    const spread = this.tuning.crushFoldSpread;
+    let tent = this.crushAt(zone, x);
+    for (let i = 0; i < COLUMNS; i++) {
+      const dx = this.columnX(i) - x;
+      tent = Math.max(tent, zone.columns[i] * Math.exp((-dx * dx) / (2 * spread * spread)));
+    }
+    return tent;
   }
 
   private affectedVertices(piece: CarPiece): Uint32Array {
@@ -273,7 +368,7 @@ export class Crush {
     if (!indices) {
       const list: number[] = [];
       const rest = piece.original;
-      const o = piece.mesh.position;
+      const o = piece.origin;
       const R = this.roof;
       for (let i = 0; i < rest.length / 3; i++) {
         const z = rest[i * 3 + 2] + o.z;

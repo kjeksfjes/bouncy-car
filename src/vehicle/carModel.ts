@@ -11,6 +11,8 @@ export interface CarPiece {
   mesh: THREE.Mesh;
   /** Rest-state vertex positions (piece-local), as built. */
   original: Float32Array;
+  /** Car-local position of the piece's origin as built (its mesh moves off the car once it breaks loose). */
+  origin: THREE.Vector3;
   /** Rest shape after crumple-zone crush (see Crush); dents are capped against it. */
   base: Float32Array;
   /** Car-local bounds at build time, for hit proximity. */
@@ -394,6 +396,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
       name,
       mesh,
       original: Float32Array.from(geometry.getAttribute('position').array),
+      origin: mesh.position.clone(),
       base: Float32Array.from(geometry.getAttribute('position').array),
       bounds: geometry.boundingBox!.clone().translate(mesh.position),
       detachable: DETACHABLE.has(name),

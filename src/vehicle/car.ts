@@ -7,7 +7,7 @@ import type { TerrainField } from '../world/terrainField';
 import type { CarConfig } from './carConfig';
 import { buildCarModel, GLASS_OPACITY, GLASS_TINT, type CarModel, type CarPiece, type WheelVisual } from './carModel';
 import { hullBoxes } from './blueprint';
-import { Crush } from './crush';
+import { Crush, type CrushEnd } from './crush';
 import { CarLights } from './lights';
 import { BodyOutline } from './outline';
 import { applyDent, inwardDirection } from './damage';
@@ -94,9 +94,17 @@ const _pt = new THREE.Vector3();
 const _tmp = new THREE.Vector3();
 const _contactLocal = new THREE.Vector3();
 const _contactNormal = new THREE.Vector3();
+/** World-space move of the car by its crush (see advanceIntoCrush). */
+const _shift = new THREE.Vector3();
 
 /** Contacts closer than this (m) count as touching. */
 const CONTACT_TOUCH_DIST = 0.02;
+/**
+ * Steps (0.25 s) a panel that broke onto its hinge keeps taking the crash's crush: a crash pushes
+ * the body in over several steps, and the panel goes in with it. After that, an open panel
+ * no longer crumples with the body.
+ */
+const CRUSH_AFTER_HINGE = 15;
 
 export class Car {
   readonly body: RAPIER.RigidBody;
@@ -126,6 +134,8 @@ export class Car {
   private readonly rayFilter = (c: RAPIER.Collider) => !this.panels.owns(c);
   /** Front and rear crumple zones. */
   private readonly crush: Crush;
+  /** Panels that broke onto their hinge in this crash, with the steps left until it's over (see Crush.deform). */
+  private readonly justLoose = new Map<CarPiece, number>();
   private readonly lights: CarLights;
   /** The lower-body box and its uncrushed shape: its ends follow the crumple zones in. */
   private readonly lowerCollider: RAPIER.Collider;
@@ -472,6 +482,10 @@ export class Car {
   /** Resolves impacts from this step and snapshots the transform. Call after world.step(). */
   afterStep(): void {
     this.assertLive();
+    for (const [piece, steps] of this.justLoose) {
+      if (steps <= 1 || piece.state !== 'hinged') this.justLoose.delete(piece);
+      else this.justLoose.set(piece, steps - 1);
+    }
     this.captureTransform();
     this.panels.afterStep();
     // A door window goes when its door is torn off.
@@ -553,16 +567,18 @@ export class Car {
     const along = end === 'front' ? -normal.z : end === 'rear' ? normal.z : 0;
     let square = Math.max(0, along) ** 2;
     if (end && square > 0) {
+      const before = this.crush.depth(end);
       this.crush.hit(end, local.x, severity * square, surface === 'tree');
-      this.crush.deform(this.model.pieces, this.model.root);
+      this.crush.deform(this.model.pieces, this.model.root, this.justLoose);
       this.fitHullToCrush();
+      this.advanceIntoCrush(end, this.crush.depth(end) - before);
     }
     // Hits from above on the cabin (landing on the roof) push the roof down, and a hit on its
     // corner leans it over. The normal points out of the car, so "from above" is normal.y > 0.
     if (this.crush.inRoof(local) && normal.y > 0) {
       const down = normal.y ** 2;
       this.crush.hitRoof(local.x, severity * down, -normal.x);
-      this.crush.deform(this.model.pieces, this.model.root);
+      this.crush.deform(this.model.pieces, this.model.root, this.justLoose);
       this.fitHullToCrush();
       if (this.crush.roofDepth() > d.roofGlassBreak) {
         for (const piece of this.model.pieces) if (piece.glass && piece.state !== 'gone') this.shatter(piece);
@@ -647,6 +663,27 @@ export class Car {
     this.cabinCollider.setHalfExtents({ x: cabin.half.x, y: cabin.half.y - drop / 2, z: cabin.half.z });
     this.cabinCollider.setTranslationWrtParent(cabinOffset);
     this.colliderOffsets.set(this.cabinCollider.handle, cabinOffset);
+  }
+
+  /**
+   * Moves the car on by how far an end was just pushed in, along its own axis toward that end,
+   * so the crushed end stays where it hit. The body box is rigid, so the contact stops it dead
+   * where the uncrushed end touched; shrinking the box by the crush alone would leave the
+   * crumpled nose or tail standing that far short of what it hit. In a real crash the cabin
+   * travels on over the crumple zone, so the whole car (hanging panels and dangling lights
+   * with it) is carried forward by the crush, which puts the shrunk box's end face back exactly
+   * on the contact.
+   */
+  private advanceIntoCrush(end: CrushEnd, by: number): void {
+    if (by <= 0) return;
+    _shift.set(0, 0, end === 'front' ? -by : by).applyQuaternion(this.currQuat);
+    const t = this.body.translation();
+    this.body.setTranslation({ x: t.x + _shift.x, y: t.y + _shift.y, z: t.z + _shift.z }, true);
+    // A cut, not a slide: the snapshots both move, so nothing on the car lags behind the body.
+    this.currPos.add(_shift);
+    this.prevPos.add(_shift);
+    this.panels.shift(_shift);
+    this.lights.shift(_shift);
   }
 
   private damageWheel(wheel: Wheel, amount: number): void {
@@ -757,15 +794,34 @@ export class Car {
   /** A panel past its hp: hangs on its hinge if it has one, otherwise falls off entirely. */
   private breakLoose(piece: CarPiece, impact: THREE.Vector3): void {
     this.snapRootToPhysics();
+    const box = this.looseBox(piece);
     if (piece.hinge) {
-      this.panels.hinge(piece, piece.hinge, impact, (p) => this.pointVelocity(p));
+      this.panels.hinge(piece, piece.hinge, impact, (p) => this.pointVelocity(p), box);
+      this.justLoose.set(piece, CRUSH_AFTER_HINGE);
       this.events?.clank(this, piece.mesh.position.clone(), 0.5);
       return;
     }
     piece.state = 'gone';
     this.scene.attach(piece.mesh);
-    this.debris.adopt(piece.mesh, createPanelBody(this.world, piece.mesh, piece.mass, this.pointVelocity(piece.mesh.position)));
+    this.debris.adopt(piece.mesh, createPanelBody(this.world, piece.mesh, piece.mass, this.pointVelocity(piece.mesh.position), box));
     if (piece.mass < 10) this.events?.clank(this, piece.mesh.position.clone(), 0.2);
+  }
+
+  /**
+   * Collision box (piece-local) for a panel leaving the car: its build-time bounds, with an end
+   * that lies in a crushed crumple zone cut back by that zone's crush. The panel itself has been
+   * pushed in that far where the crush is deepest; a box reaching out to its less crushed
+   * corners would sit inside whatever crushed it (a tree in the nose's notch) and be shoved out,
+   * yanking the car on the hinge.
+   */
+  private looseBox(piece: CarPiece): THREE.Box3 {
+    const box = piece.bounds.clone().translate(_tmp.copy(piece.origin).negate());
+    const o = piece.origin;
+    const front = this.crush.depth('front');
+    const rear = this.crush.depth('rear');
+    if (front > 0 && this.crush.zoneAt(box.min.z + o.z) === 'front') box.min.z = Math.min(box.min.z + front, box.max.z - 0.03);
+    if (rear > 0 && this.crush.zoneAt(box.max.z + o.z) === 'rear') box.max.z = Math.max(box.max.z - rear, box.min.z + 0.03);
+    return box;
   }
 
   /** Moves a part from the car into the world as a tumbling debris body. */

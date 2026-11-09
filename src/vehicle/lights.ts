@@ -286,6 +286,19 @@ export class CarLights {
     }
   }
 
+  /**
+   * Moves dangling fixtures by a world-space offset along with the car (see Car.advanceIntoCrush),
+   * keeping their swing, so the move isn't a yank on the wire.
+   */
+  shift(delta: THREE.Vector3): void {
+    for (const f of this.fixtures) {
+      if (f.state !== 'dangling') continue;
+      f.pos.add(delta);
+      f.prev.add(delta);
+      f.socketPrev.add(delta);
+    }
+  }
+
   /** After the car is teleported: dangling fixtures re-hang at rest instead of being yanked off. */
   teleport(): void {
     for (const f of this.fixtures) if (f.state === 'dangling') f.snap = true;
