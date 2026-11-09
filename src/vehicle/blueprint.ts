@@ -308,6 +308,11 @@ export function buildPanels(bp: CarBlueprint): Panels {
     // point mostly forward/backward (nose, tail drop) still orient unambiguously.
     const refZ = THREE.MathUtils.clamp(zm, bp.front + 0.8, bp.rear - 0.8);
     const ref = v(0, (sample(bp.rocker, zm) + sample(bp.deck, zm)) / 2, refZ);
+    // The floor and wheel wells face outward, toward the road and the wheels: down and out, seen from
+    // a point well above the body. From mid-height instead, a housing's top (at the arch's height:
+    // above mid-height over the wheel, below it toward the arch's ends) flipped facing along its
+    // length, and the walls solidify grew on either side of the flip didn't meet: cracks.
+    const wellRef = v(0, sample(bp.deck, zm) + 1, refZ);
     for (let j = 0; j < s0.length - 1; j++) {
       for (const side of [1, -1]) {
         const slot = lowerPart(zm, j, side);
@@ -316,7 +321,7 @@ export function buildPanels(bp: CarBlueprint): Panels {
           slot[0], slot[1],
           v(side * s0[j][0], s0[j][1], z0), v(side * s1[j][0], s1[j][1], z1),
           v(side * s1[j + 1][0], s1[j + 1][1], z1), v(side * s0[j + 1][0], s0[j + 1][1], z0),
-          ref,
+          j < LIP ? wellRef : ref,
         );
       }
     }
