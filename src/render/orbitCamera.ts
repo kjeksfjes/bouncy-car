@@ -59,7 +59,7 @@ const ORBIT = {
   wheelZoom: 0.0012,
   zoomMin: 0.45,
   zoomMax: 3.5,
-  /** After `hold` s without input, a moving car pulls the view back behind it at `recenter` (1/s). */
+  /** After `hold` s without input, a moving car pulls the view back behind it at `recenter` (1/s), at normal speed only (not in slow motion). */
   hold: 3,
   recenter: 1.2,
   /** Below this speed (m/s) it never recentres, so a parked or wrecked car can be looked over. */
@@ -144,7 +144,8 @@ export class OrbitCamera {
    * @param frozen the game is paused: the car stands still (its velocity is stale), so the
    *   framing holds and the view never recentres, but the mouse still orbits and zooms.
    * @param timeScale slow motion: following the car, shake and the landing dip run on game
-   *   time (so they slow down with it); the mouse and the recentring stay on real time.
+   *   time (so they slow down with it); the mouse stays on real time, and the view never
+   *   recentres (slow motion is for looking around a moment from any angle).
    */
   update(dt: number, target: THREE.Object3D, velocity: THREE.Vector3, frozen = false, timeScale = 1): void {
     const O = ORBIT;
@@ -178,7 +179,7 @@ export class OrbitCamera {
     this.yawTarget -= input.dx * O.dragYaw;
     this.pitchTarget = THREE.MathUtils.clamp(this.pitchTarget + input.dy * O.dragPitch, O.pitchMin - restPitch, O.pitchMax - restPitch);
     this.zoomTarget = THREE.MathUtils.clamp(this.zoomTarget * Math.exp(input.scroll * O.wheelZoom), O.zoomMin, O.zoomMax);
-    if (!frozen && input.idle > O.hold && speed > O.recenterSpeed) {
+    if (!frozen && timeScale === 1 && input.idle > O.hold && speed > O.recenterSpeed) {
       // Back behind the car the short way round (wrapping both angles by the same turns, so the
       // smoothing doesn't spin); the zoom stays as it was left.
       const wrapped = Math.atan2(Math.sin(this.yawTarget), Math.cos(this.yawTarget));
