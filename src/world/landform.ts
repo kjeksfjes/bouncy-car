@@ -111,6 +111,60 @@ const GULLIES = {
   patchMin: 0.4,
 };
 
+/**
+ * Rocky knolls: small stone hills shaped like glacier-worn rock (roches moutonnées), a long gentle
+ * ramp on the uphill side where the ice rode up and a short steep face downhill where it plucked
+ * the rock away, steep sides between. Coming down the mountain you run up the ramp and fly off the
+ * face, or swing round it. Their steep faces and crowns are rock (Biome.isRock). Feel values.
+ */
+const KNOLLS = {
+  /** One candidate knoll per square cell this size (m), jittered inside it. */
+  cell: 150,
+  /** The chance a cell holds one: in grassy and in fully rocky country (Biome.rockiness). */
+  chance: 0.1,
+  rockyChance: 0.55,
+  /** Valley floors hold fewer (× `floorShare`): knolls stand on flanks, ledges and open slope. */
+  floorShare: 0.3,
+  /** Height (m), and half width across the slope as a multiple of it, so all are about as steep. */
+  height: [4, 8] as const,
+  widthPerHeight: [2.0, 2.8] as const,
+  /**
+   * Along the slope, as a multiple of the half width: the ramp uphill and the face downhill. The
+   * crown (this share of the way out) is rounded; the steepest slope is 1.5 × height / ((1 − crown) × length):
+   * sides ≈ 42°, face ≈ 52° (≈ 60° falling away with the base slope), ramp ≈ 18° (about level against it).
+   */
+  ramp: 2.6,
+  face: 0.7,
+  crown: 0.3,
+  /** Each knoll turns up to this far (radians) off the fall line. */
+  yaw: 0.35,
+  /** Ragged outline and crown: the distance out wobbles by ± this share (noise at `raggedScale` m). */
+  ragged: 0.12,
+  raggedScale: 9,
+};
+
+/** Where knolls may stand and how rocky the country is there (from the terrain around the landforms). */
+export interface KnollSites {
+  /** 0 grassy .. 1 rocky country. */
+  rockiness(x: number, z: number): number;
+  /** Whether a knoll reaching `reach` m from (x, z) stays clear of the set pieces and the start. */
+  clear(x: number, z: number, reach: number): boolean;
+}
+
+interface Knoll {
+  x: number;
+  z: number;
+  height: number;
+  /** Half width across, and lengths up the ramp and down the face (m). */
+  half: number;
+  ramp: number;
+  face: number;
+  cos: number;
+  sin: number;
+  /** Farthest any of it reaches from (x, z), ragged edge included. */
+  reach: number;
+}
+
 /** Where a spot sits among the valleys and what shapes it (see Landform.sample). */
 export interface LandformSpot {
   /** How far (m) the ground lies below the ridge tops. */
@@ -127,6 +181,8 @@ export interface LandformSpot {
   ridgeGap: number;
   /** The gullies' height offset (m): negative in a groove, positive on the rib between two. */
   gully: number;
+  /** How far up a rocky knoll (0 off one .. 1 on its crown), as a share of its height. */
+  knoll: number;
 }
 
 /**
@@ -140,18 +196,23 @@ export class Landform {
   private readonly relief: NoiseFunction2D;
   private readonly patch: NoiseFunction2D;
   private readonly ledgeNoise: NoiseFunction2D;
+  private readonly ragged: NoiseFunction2D;
   private readonly scratch: LandformSpot = emptySpot();
   /** Fall-line direction at directionGrid nodes, by node key: pure, so safe to keep. */
   private readonly directions = new Map<string, [number, number]>();
   private readonly coherences = new Map<string, number>();
+  /** Knoll (or none) per knoll cell, by cell key: pure, so safe to keep. */
+  private readonly knolls = new Map<number, Knoll | null>();
 
   /**
    * @param base the smooth ground the landforms are laid on (the downhill slope and gentle hills),
    *   which the gullies follow down along with the valleys
+   * @param sites where rocky knolls may stand
    */
   constructor(
     private readonly seed: number,
     private readonly base: (x: number, z: number) => number,
+    private readonly sites: KnollSites,
   ) {
     this.meander = makeNoise(seed + 20);
     this.bend = makeNoise(seed + 21);
@@ -159,9 +220,13 @@ export class Landform {
     this.relief = makeNoise(seed + 23);
     this.patch = makeNoise(seed + 24);
     this.ledgeNoise = makeNoise(seed + 25);
+    this.ragged = makeNoise(seed + 26);
+    const K = KNOLLS;
+    const biggest = (K.height[1] * K.widthPerHeight[1] * Math.max(K.ramp, 1)) / (1 - K.ragged);
+    if (biggest >= K.cell / 2) throw new Error(`Knolls reach up to ${biggest.toFixed(0)} m, more than half their ${K.cell} m cell`);
   }
 
-  /** The smooth lie of the land at (x, z): the base with valleys and gullies cut into it. */
+  /** The smooth lie of the land at (x, z): the base with valleys and gullies cut into it, and rocky knolls on it. */
   height(x: number, z: number): number {
     return this.evaluate(x, z, this.scratch);
   }
@@ -191,8 +256,62 @@ export class Landform {
   private evaluate(x: number, z: number, spot: LandformSpot): number {
     const valleys = this.valleys(x, z, spot);
     spot.below = VALLEYS.depth - valleys;
+    const knoll = this.knoll(x, z, spot);
     spot.gully = this.gullies(x, z, spot);
-    return this.base(x, z) + valleys + spot.gully;
+    return this.base(x, z) + valleys + spot.gully + knoll;
+  }
+
+  /** The rocky knoll's height (m) at (x, z), if one stands here, setting `spot.knoll`. */
+  private knoll(x: number, z: number, spot: LandformSpot): number {
+    const K = KNOLLS;
+    const k = this.knollIn(Math.floor(x / K.cell), Math.floor(z / K.cell));
+    spot.knoll = 0;
+    if (!k) return 0;
+    const dx = x - k.x;
+    const dz = z - k.z;
+    if (dx * dx + dz * dz >= k.reach * k.reach) return 0;
+    // Uphill (+z) is the ramp side, turned by the knoll's yaw.
+    const along = dz * k.cos + dx * k.sin;
+    const across = dx * k.cos - dz * k.sin;
+    const a = along >= 0 ? along / k.ramp : -along / k.face;
+    const out = Math.hypot(a, across / k.half) * (1 + K.ragged * this.ragged(x / K.raggedScale, z / K.raggedScale));
+    spot.knoll = 1 - smoothstep(K.crown, 1, out);
+    return k.height * spot.knoll;
+  }
+
+  /**
+   * The knoll in cell (ix, iz), or null. Jittered only so far that it stays inside its cell, so a
+   * spot only ever needs its own cell's knoll.
+   */
+  private knollIn(ix: number, iz: number): Knoll | null {
+    const K = KNOLLS;
+    const key = ix * 1_000_003 + iz;
+    let k = this.knolls.get(key);
+    if (k !== undefined) return k;
+    const r = (i: number) => hash2(ix * 31 + i, iz, this.seed + 261);
+    const height = K.height[0] + r(0) * (K.height[1] - K.height[0]);
+    const half = height * (K.widthPerHeight[0] + r(1) * (K.widthPerHeight[1] - K.widthPerHeight[0]));
+    const ramp = half * K.ramp;
+    const face = half * K.face;
+    const reach = Math.max(ramp, half) / (1 - K.ragged);
+    const room = K.cell / 2 - reach;
+    const x = (ix + 0.5) * K.cell + (r(2) * 2 - 1) * room;
+    const z = (iz + 0.5) * K.cell + (r(3) * 2 - 1) * room;
+    k = null;
+    if (this.sites.clear(x, z, reach)) {
+      const rocky = this.sites.rockiness(x, z);
+      const spot = emptySpot();
+      this.valleys(x, z, spot);
+      const onFloor = spot.flank < 0 && spot.depth > VALLEYS.depth * 0.25;
+      const chance = (K.chance + (K.rockyChance - K.chance) * rocky) * (onFloor ? K.floorShare : 1);
+      if (r(4) < chance) {
+        const yaw = (r(5) * 2 - 1) * K.yaw;
+        k = { x, z, height, half, ramp, face, cos: Math.cos(yaw), sin: Math.sin(yaw), reach };
+      }
+    }
+    if (this.knolls.size > 100_000) this.knolls.clear();
+    this.knolls.set(key, k);
+    return k;
   }
 
   /**
@@ -265,8 +384,10 @@ export class Landform {
     const patch = G.patchMin + (1 - G.patchMin) * smoothstep(-0.3, 0.3, this.patch(x / G.patchScale, z / G.patchScale));
     const belowRidge = smoothstep(0, G.ridgeFade, spot.ridgeGap);
     // Across a ledge the fall line swings round within metres (as on a ridge line): fade them out.
+    // Knolls are whole rock: no grooves up them.
     const offLedge = 1 - spot.ledge;
-    const strength = (G.open + (onFlank - G.open) * valley) * patch * belowRidge * offLedge;
+    const offKnoll = 1 - smoothstep(0, 0.3, spot.knoll);
+    const strength = (G.open + (onFlank - G.open) * valley) * patch * belowRidge * offLedge * offKnoll;
     if (strength <= 0) return 0;
     // Stripes run along the fall line: their phase advances across it.
     const [gx, gz, coherence] = this.fallLine(x, z);
@@ -333,7 +454,7 @@ export class Landform {
 }
 
 export function emptySpot(): LandformSpot {
-  return { below: 0, flank: Infinity, fromLine: Infinity, depth: 0, ledge: 0, ridgeGap: Infinity, gully: 0 };
+  return { below: 0, flank: Infinity, fromLine: Infinity, depth: 0, ledge: 0, ridgeGap: Infinity, gully: 0, knoll: 0 };
 }
 
 /**

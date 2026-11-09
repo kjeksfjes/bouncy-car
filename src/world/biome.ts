@@ -114,6 +114,9 @@ const COVER = {
   steepLower: 0.1,
   /** Rock anywhere on landform steeper than this (°). */
   steepRock: 36,
+  /** Rocky knolls (see Landform) are rock from this share of their height up, lower in rocky country (by `knollRocky`). */
+  knollRock: 0.45,
+  knollRocky: 0.25,
   /**
    * Drop walls (falling away steeper than `cliffFrom`, rise over run on top of the landform): rock
    * in rocky country (past `cliffRocky`). Elsewhere they're grassy banks, with rock outcrops only on
@@ -442,10 +445,17 @@ export class Biome {
     return out.lerp(GROUND.rock, smoothstep(rockFrom, S.rockTo, normal.y));
   }
 
+  /** 0 in grassy .. 1 in rocky country (see COVER). */
+  rockiness(x: number, z: number): number {
+    const C = COVER;
+    return smoothstep(C.rockyFrom, C.rockyTo, this.geology(x / C.geologyScale, z / (C.geologyScale * 1.5)));
+  }
+
   /** Whether bare ground at (x, z) is rock (see COVER): from the landforms, so whole forms go rocky together. */
   isRock(x: number, z: number, env: EnvSample): boolean {
     const C = COVER;
-    const rocky = smoothstep(C.rockyFrom, C.rockyTo, this.geology(x / C.geologyScale, z / (C.geologyScale * 1.5)));
+    const rocky = this.rockiness(x, z);
+    if (env.knoll > 0 && env.knoll > C.knollRock - C.knollRocky * rocky) return true;
     if (env.cliff > C.cliffFrom) {
       if (rocky > C.cliffRocky) return true;
       if (env.cliff > C.outcropFrom && this.outcrop(x / C.outcropScale, z / C.outcropScale) > C.outcropAbove) return true;

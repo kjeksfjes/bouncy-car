@@ -179,6 +179,22 @@ export class DescentFeatures {
     return out;
   }
 
+  /**
+   * Whether descent z lies at least `margin` m clear of every set piece (its hump or ramp, its drop
+   * or its bell, with the line's wiggle), for landforms that mustn't run into one.
+   */
+  clearOf(z: number, margin: number): boolean {
+    const k = Math.floor(-z / this.slot);
+    for (let j = Math.max(0, k - 1); j <= k + 1; j++) {
+      const f = this.feature(j);
+      if (!f) continue;
+      const up = f.bell !== 0 ? f.halfWidth : f.lipUp + f.lipDown;
+      const down = f.bell !== 0 ? f.halfWidth : f.length;
+      if (z < f.z + up + FEATURES.waveAmp + margin && z > f.z - down - FEATURES.waveAmp - margin) return false;
+    }
+    return true;
+  }
+
   private feature(k: number): Feature | null {
     let f = this.features.get(k);
     if (f !== undefined) return f;

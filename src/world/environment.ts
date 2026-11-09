@@ -20,6 +20,8 @@ export interface EnvSample {
   elevation: number;
   /** How steeply a set piece's drop falls away here (rise over run, on top of the landform): 0 off the drop walls. */
   cliff: number;
+  /** How far up a rocky knoll (0 off one .. 1 on its crown). */
+  knoll: number;
 }
 
 /**
@@ -71,6 +73,7 @@ export interface EnvGrid {
   exposure: Float32Array;
   elevation: Float32Array;
   cliff: Float32Array;
+  knoll: Float32Array;
 }
 
 export class Environment {
@@ -132,6 +135,7 @@ export class Environment {
       exposure: new Float32Array(size),
       elevation: new Float32Array(size),
       cliff: new Float32Array(size),
+      knoll: new Float32Array(size),
     };
     const s = emptySample();
     for (let j = 0; j < n; j++) {
@@ -147,6 +151,7 @@ export class Environment {
         grid.exposure[o] = s.exposure;
         grid.elevation[o] = s.elevation;
         grid.cliff[o] = this.cliff(x0 + i * step, z0 + j * step);
+        grid.knoll[o] = s.knoll;
       }
     }
     return grid;
@@ -168,6 +173,7 @@ export class Environment {
     const laplacian = (xm + xp + zm + zp - 4 * h) / (r * r);
     // Concave ground (positive Laplacian, a hollow) is negative curvature.
     out.curvature = Math.max(-1, Math.min(1, -laplacian / ENV.curvatureFull));
+    out.knoll = spot.knoll;
     const nl = Math.hypot(gx, 1, gz);
     out.exposure = (-gx * this.sun.x + this.sun.y - gz * this.sun.z) / nl;
 
@@ -188,5 +194,5 @@ export class Environment {
 }
 
 export function emptySample(): EnvSample {
-  return { slope: 0, curvature: 0, moisture: 0, exposure: 0, elevation: 0, cliff: 0 };
+  return { slope: 0, curvature: 0, moisture: 0, exposure: 0, elevation: 0, cliff: 0, knoll: 0 };
 }

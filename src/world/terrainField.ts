@@ -57,6 +57,9 @@ const SHAPE = {
   bigKickerTo: 0.55,
   bigKickerMax: 1.7,
   bigKickerWiden: 0.5,
+  /** No rocky knolls (see Landform) within this many metres of the start, or of a set piece. */
+  knollSpawnClear: 100,
+  knollFeatureClear: 30,
   /** Around the origin the ground blends into a plain downhill start pad. */
   spawnPadInner: 15,
   spawnPadOuter: 45,
@@ -144,7 +147,10 @@ export class TerrainField {
     this.rough = makeNoise(seed + 9);
     this.bigKicker = makeNoise(seed + 10);
     this.features = new DescentFeatures(seed, makeNoise(seed + 6), preset);
-    this.landforms = new Landform(seed, (x, z) => this.baseGround(x, z));
+    this.landforms = new Landform(seed, (x, z) => this.baseGround(x, z), {
+      rockiness: (x, z) => this.biome.rockiness(x, z),
+      clear: (x, z, reach) => Math.hypot(x, z) > SHAPE.knollSpawnClear + reach && this.features.clearOf(z, SHAPE.knollFeatureClear + reach),
+    });
     this.environment = new Environment(this, SUN_DIR);
     this.spawnHeight = this.rawHeight(0, 0);
   }
