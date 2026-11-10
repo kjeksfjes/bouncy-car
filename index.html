@@ -36,6 +36,7 @@
       #integrity[data-level='warn'] { background: var(--warn); }
       #integrity[data-level='bad'] { background: var(--bad); }
       #status { margin-top: 6px; font-size: 12px; min-height: 1em; }
+      #where { margin-top: 4px; font-size: 11px; opacity: 0.7; font-variant-numeric: tabular-nums; user-select: text; }
       #air {
         position: absolute; top: 18%; left: 50%; transform: translateX(-50%) scale(0.9);
         font-size: 40px; font-weight: 900; letter-spacing: 0.04em; color: #fff;
@@ -99,6 +100,7 @@
         <div class="speed"><span id="speed">0</span> <small>km/h</small></div>
         <div class="bar"><div id="integrity"></div></div>
         <div id="status"></div>
+        <div id="where" hidden></div>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

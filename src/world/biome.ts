@@ -289,6 +289,22 @@ const RHYTHM = {
 };
 
 /**
+ * Lanes through the woods, so even a great forest has a way through: every `spacing` m across the
+ * slope a lane runs down the fall line, wandering up to ±`meander` m (noise at `meanderScale` m
+ * down the slope, `meanderAcross` m across it, so neighbouring lanes wander differently). No trees
+ * within `clear` m of a lane's middle, thinning back to the usual stand over the next `edge` m.
+ * The car is ≈2 m wide; a 14 m lane leaves room to steer at speed. Feel values.
+ */
+const LANES = {
+  spacing: 110,
+  meander: 35,
+  meanderScale: 220,
+  meanderAcross: 400,
+  clear: 7,
+  edge: 6,
+};
+
+/**
  * How well a kind of tree takes to the ground here (see PREFERS): roughly −1 (ground it shuns) ..
  * 0.5 (ground it likes). Its woods and forest patches spread or shrink by it.
  */
@@ -320,6 +336,7 @@ export class Biome {
   private readonly rockTone: NoiseFunction2D;
   private readonly rhythm: NoiseFunction2D;
   private readonly great: NoiseFunction2D;
+  private readonly lanes: NoiseFunction2D;
   private readonly shifts: Shift[] = [];
 
   constructor(
@@ -335,6 +352,7 @@ export class Biome {
     this.rockTone = makeNoise(seed + 33);
     this.rhythm = makeNoise(seed + 34);
     this.great = makeNoise(seed + 35);
+    this.lanes = makeNoise(seed + 36);
   }
 
   /**
@@ -344,9 +362,22 @@ export class Biome {
    */
   woodsShift(x: number, z: number, env: EnvSample): number {
     const R = RHYTHM;
-    const wooded = smoothstep(R.woodedAbove - R.edge, R.woodedAbove + R.edge, this.rhythm(x / (R.scale * R.across), z / R.scale));
-    const usual = R.open + (R.wooded - R.open) * wooded + BIOME.floorClear * env.floor;
+    const usual = R.open + (R.wooded - R.open) * this.woodedStretch(x, z) + BIOME.floorClear * env.floor;
     return usual + (R.great - usual) * this.greatForest(x, z);
+  }
+
+  /** 1 in a wooded stretch of the descent, 0 in an open one (see RHYTHM). */
+  woodedStretch(x: number, z: number): number {
+    const R = RHYTHM;
+    return smoothstep(R.woodedAbove - R.edge, R.woodedAbove + R.edge, this.rhythm(x / (R.scale * R.across), z / R.scale));
+  }
+
+  /** 1 on a lane through the woods (see LANES), fading to 0 at its edge and between lanes. */
+  lane(x: number, z: number): number {
+    const L = LANES;
+    const u = (x + L.meander * this.lanes(x / L.meanderAcross, z / L.meanderScale)) / L.spacing;
+    const off = Math.abs(u - Math.round(u)) * L.spacing;
+    return 1 - smoothstep(L.clear, L.clear + L.edge, off);
   }
 
   /** 1 inside a great forest (see RHYTHM), 0 outside it. */

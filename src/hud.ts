@@ -13,6 +13,7 @@ export class Hud {
   private readonly slow = document.getElementById('slow')!;
   private readonly toastBox = document.getElementById('toast')!;
   private readonly inspect = document.getElementById('inspect')!;
+  private readonly where = document.getElementById('where')!;
   private toastTimer: number | undefined;
   private seenJumps = 0;
   private airTimer = 0;
@@ -48,6 +49,12 @@ export class Hud {
       row.append(swatch, label);
       this.inspect.append(row);
     }
+  }
+
+  /** Dev: where the car is (see Game.describeWhere). */
+  setWhere(text: string): void {
+    this.where.hidden = false;
+    if (this.where.textContent !== text) this.where.textContent = text;
   }
 
   setPaused(paused: boolean): void {

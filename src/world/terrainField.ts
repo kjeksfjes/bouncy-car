@@ -235,12 +235,14 @@ export class TerrainField {
     const shift = T.suitabilityShift * treeSuitability(env, 'spruce') - this.biome.woodsShift(x, z, env);
     const patches = smoothstep(-0.25 - shift, 0.45 - shift, this.forest(x / T.patchScale, z / T.patchScale));
     const open = smoothstep(T.meadowFrom, T.meadowTo, this.meadow(x / T.meadowScale, z / T.meadowScale));
-    const forest = patches * (1 - open) * this.treeline(z) * T.maxChance;
+    // Lanes keep a way open through every wood (see Biome.lane).
+    const keep = 1 - this.biome.lane(x, z);
+    const forest = patches * (1 - open) * this.treeline(z) * T.maxChance * keep;
     // In the grassland the trees gather into woods and groups instead.
     const g = this.biome.grassland(z);
     if (g <= 0) return Object.assign(out, { chance: forest, maturity: patches });
     const copse = this.biome.copseStand(x, z, env, _stand);
-    out.chance = forest + (copse.chance - forest) * g;
+    out.chance = forest + (copse.chance * keep - forest) * g;
     out.maturity = patches + (copse.maturity - patches) * g;
     return out;
   }

@@ -102,8 +102,9 @@ export class Game {
   /**
    * @param start metres downhill to spawn at (dev: to test the lower biomes)
    * @param terrain which terrain generator to use
+   * @param startX metres across the slope to spawn at (dev: to get back to a spot)
    */
-  constructor(container: HTMLElement, seed: number, start = 0, terrain: TerrainPreset = 'classic') {
+  constructor(container: HTMLElement, seed: number, start = 0, terrain: TerrainPreset = 'classic', startX = 0) {
     this.stage = new Stage(container);
     this.world = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
     this.world.timestep = PHYSICS_STEP;
@@ -133,7 +134,7 @@ export class Game {
       this.clods.burst(at, velocity, radius, ground);
     }, this.audio);
 
-    const spawn = new THREE.Vector3(0, this.field.height(0, -start) + 1.5, -start);
+    const spawn = new THREE.Vector3(startX, this.field.height(startX, -start) + 1.5, -start);
     this.terrain.update([{ position: spawn, radius: LOAD_RADIUS }], INITIAL_CHUNKS);
     this.car = this.newCar(spawn, 0);
   }
@@ -283,12 +284,25 @@ export class Game {
     this.juice.update(gt, live, this.stage.renderer.getDrawingBufferSize(this.bufferSize).y / 2);
     this.audio.update(gt, this.stage.camera, live);
     this.hud.update(gt, this.car, this.autopilot);
+    if (import.meta.env.DEV) this.hud.setWhere(this.describeWhere());
     // The first frame, with the camera behind the car, compiles the glass for the first crash.
     if (!this.warmedUp) {
       this.debris.warmUp();
       this.warmedUp = true;
     }
     this.stage.render();
+  }
+
+  /**
+   * Dev: where the car is, as the URL params that spawn there (?start= metres downhill, ?x= across),
+   * with the biome and whether it's an open or wooded stretch or a great forest.
+   */
+  private describeWhere(): string {
+    const { x, z } = this.car.position;
+    const biome = this.field.biome;
+    const name = [...BIOMES].reverse().find((b) => b.from <= biome.distance(z))?.name ?? BIOMES[0].name;
+    const woods = biome.greatForest(x, z) > 0.5 ? 'great forest' : biome.woodedStretch(x, z) > 0.5 ? 'wooded' : 'open';
+    return `start=${Math.round(-z)} x=${Math.round(x)} · ${name} · ${woods}`;
   }
 
   /** Eases the sky and fog toward the warmth of the biome the car is in (so Shift+B doesn't jump it). */
