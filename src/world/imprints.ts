@@ -6,8 +6,11 @@ export type BedGround = 'grass' | 'soil' | 'rock';
 
 /** The hollows boulders leave in the ground when knocked loose. Feel values. */
 export const IMPRINT = {
-  /** Ground cells (2 m) under an imprint are rebuilt this many times finer per side: 0.25 m. */
-  subdivisions: 8,
+  /**
+   * Ground cells (2 m) under an imprint are rebuilt this many times finer per side: 0.125 m, so the
+   * hollow's rim follows the boulder's outline closely.
+   */
+  subdivisions: 16,
   /**
    * In rock the hollow is the rock's own colour, darker deeper in: × `rockShade` at its edge
    * down to × `rockDeep` at its deepest.

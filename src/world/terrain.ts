@@ -202,6 +202,8 @@ export class Terrain {
     const coarse: number[] = [];
     /** Finer faces in a cell with a hollow in rock. */
     const inRock = new Set<number>();
+    /** The imprints over each finer face (by face index), for colouring it by its centre. */
+    const faceImprints = new Map<number, readonly Imprint[]>();
     for (let j = 0; j < CHUNK_RES; j++) {
       for (let i = 0; i < CHUNK_RES; i++) {
         const a = j * n + i; // (x0, z0)
@@ -218,6 +220,7 @@ export class Terrain {
           addImprintCell(imprints, bc, [a, b, c, d], t, x0 + i * step, z0 + j * step, step, env.heights, points, offsets, faces, coarse);
           // Hollows in rock stay rock-coloured (see IMPRINT.rockShade).
           if (imprints.some((m) => m.ground === 'rock')) for (let k = first; k < faces.length / 3; k++) inRock.add(k);
+          for (let k = first; k < faces.length / 3; k++) faceImprints.set(k, imprints);
         } else if (bc) {
           faces.push(a, b, c, c, b, d);
           coarse.push(t, t + 1);
@@ -273,11 +276,25 @@ export class Terrain {
         }
       }
       col.copy(ground);
-      // Imprints: bare soil in the hollow (darker deeper), or darker rock in rock.
-      const moved = (offsets[indices[f]] + offsets[indices[f + 1]] + offsets[indices[f + 2]]) / 3;
-      if (moved < -0.01 && inRock.has(f / 3)) {
+      // Imprints: bare soil in the hollow (darker deeper), or darker rock in rock. A face is in the
+      // hollow, and shaded, by the depth at its centre, measured against the boulder's shape (by its
+      // corners' average instead, long faces with one corner inside the rim reached far out past it);
+      // a face sloping down into it (any corner pushed down) is its wall, bare soil too.
+      const over = faceImprints.get(f / 3);
+      let moved = 0;
+      let wall = false;
+      if (over) {
+        wall = Math.min(offsets[indices[f]], offsets[indices[f + 1]], offsets[indices[f + 2]]) < -0.01;
+        const ia = indices[f] * 3, ib = indices[f + 1] * 3, ic = indices[f + 2] * 3;
+        const x = (vertices[ia] + vertices[ib] + vertices[ic]) / 3;
+        const z = (vertices[ia + 2] + vertices[ib + 2] + vertices[ic + 2]) / 3;
+        // The ground there before the imprint: the corners' heights less how far they were moved.
+        const before = (vertices[ia + 1] + vertices[ib + 1] + vertices[ic + 1] - offsets[indices[f]] - offsets[indices[f + 1]] - offsets[indices[f + 2]]) / 3;
+        for (const m of over) moved += m.offset(x, z, before);
+      }
+      if ((moved < -0.01 || wall) && inRock.has(f / 3)) {
         col.multiplyScalar(IMPRINT.rockShade + (IMPRINT.rockDeep - IMPRINT.rockShade) * Math.min(1, -moved / 0.25));
-      } else if (moved < -0.01) {
+      } else if (moved < -0.01 || wall) {
         col.copy(IMPRINT.soil).lerp(IMPRINT.soilDark, Math.min(1, -moved / 0.25));
       }
 
