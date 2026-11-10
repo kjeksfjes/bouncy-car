@@ -199,8 +199,8 @@ export class Landform {
   private readonly ragged: NoiseFunction2D;
   private readonly scratch: LandformSpot = emptySpot();
   /** Fall-line direction at directionGrid nodes, by node key: pure, so safe to keep. */
-  private readonly directions = new Map<string, [number, number]>();
-  private readonly coherences = new Map<string, number>();
+  private readonly directions = new Map<number, [number, number]>();
+  private readonly coherences = new Map<number, number>();
   /** Knoll (or none) per knoll cell, by cell key: pure, so safe to keep. */
   private readonly knolls = new Map<number, Knoll | null>();
 
@@ -285,7 +285,7 @@ export class Landform {
    */
   private knollIn(ix: number, iz: number): Knoll | null {
     const K = KNOLLS;
-    const key = ix * 1_000_003 + iz;
+    const key = nodeKey(ix, iz);
     let k = this.knolls.get(key);
     if (k !== undefined) return k;
     const r = (i: number) => hash2(ix * 31 + i, iz, this.seed + 261);
@@ -342,7 +342,7 @@ export class Landform {
 
   /** Cosine of the widest angle between a grid node's direction and its four neighbours'. */
   private gridCoherence(ix: number, iz: number): number {
-    const key = `${ix},${iz}`;
+    const key = nodeKey(ix, iz);
     let c = this.coherences.get(key);
     if (c !== undefined) return c;
     const unit = (g: [number, number]) => {
@@ -361,7 +361,7 @@ export class Landform {
   }
 
   private gridGradient(ix: number, iz: number): [number, number] {
-    const key = `${ix},${iz}`;
+    const key = nodeKey(ix, iz);
     let g = this.directions.get(key);
     if (g) return g;
     const n = GULLIES.directionGrid;
@@ -451,6 +451,11 @@ export class Landform {
     if (spot) spot.ridgeGap = second - lowest;
     return h;
   }
+}
+
+/** A numeric cache key for grid node (ix, iz), unique while |iz| < 500 000 (far beyond any reachable distance). */
+function nodeKey(ix: number, iz: number): number {
+  return ix * 1_000_003 + iz;
 }
 
 export function emptySpot(): LandformSpot {

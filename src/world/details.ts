@@ -122,13 +122,13 @@ export class RockLayout {
     this.cluster = makeNoise(field.seed + 40);
   }
 
-  /** The boulder in cell (cellX, cellZ), if there is one. */
-  inCell(cellX: number, cellZ: number): Rock | null {
+  /** The boulder in cell (cellX, cellZ), if there is one; `grid`, a chunk's, saves sampling its environment. */
+  inCell(cellX: number, cellZ: number, grid?: EnvGrid): Rock | null {
     const key = (cellX + 1048576) * 2097152 + (cellZ + 1048576);
     if (this.gone.has(key)) return null;
     const cached = this.cache.get(key);
     if (cached !== undefined) return cached;
-    const rock = this.place(cellX, cellZ, key);
+    const rock = this.place(cellX, cellZ, key, grid);
     if (this.cache.size >= CACHE_LIMIT) this.cache.clear();
     this.cache.set(key, rock);
     return rock;
@@ -173,14 +173,14 @@ export class RockLayout {
     return best;
   }
 
-  private place(cellX: number, cellZ: number, cell: number): Rock | null {
+  private place(cellX: number, cellZ: number, cell: number, grid: EnvGrid | undefined): Rock | null {
     const R = ROCKS;
     const f = this.field;
     const seed = f.seed;
     const x = (cellX + hash2(cellX, cellZ, seed + 41)) * R.cell;
     const z = (cellZ + hash2(cellX, cellZ, seed + 42)) * R.cell;
     if (Math.hypot(x, z) < R.spawnClear) return null;
-    const env = f.environment.at(x, z, _env);
+    const env = f.environment.atNode(x, z, grid, _env);
     if (env.cliff > R.cliffBelow || f.features.parts(x, z).lip > R.lipBelow) return null;
     const onRock = f.biome.isRock(x, z, env);
     const slope = (Math.atan(env.slope) * 180) / Math.PI;
@@ -417,7 +417,7 @@ export class DetailScatter {
     const beds: { bed: BeddedRock; list: THREE.Matrix4[] }[] = [];
     for (let cz = Math.floor(z0 / R.cell); cz <= Math.floor((z0 + size) / R.cell); cz++) {
       for (let cx = Math.floor(x0 / R.cell); cx <= Math.floor((x0 + size) / R.cell); cx++) {
-        const r = this.rocks.inCell(cx, cz);
+        const r = this.rocks.inCell(cx, cz, env);
         if (!r || r.x < x0 || r.x >= x0 + size || r.z < z0 || r.z >= z0 + size) continue;
         const shape = this.rockShapes[r.shape];
         q.setFromAxisAngle(UP, r.yaw);

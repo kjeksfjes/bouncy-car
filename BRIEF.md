@@ -57,5 +57,6 @@ mountain. Hit bumps, catch air, land hard, lose a bumper, keep going. The fun is
   `TerrainField.landform(x, z)` is the smooth part (slope, valleys, gullies, ledges, knolls) without moguls,
   kicker ridges or drops. `node scripts/terrain-map.mjs` draws relief maps with steepness stats.
 - Terrain colliders are trimeshes built from the same vertices as the render mesh.
+- Ground cover, trees and boulders read the ground's environment (slope, curvature, moisture…) at the 2 m mesh grid nodes: a chunk samples it once for its whole grid, and trees and boulders take the nearest node's values from it (or work out that node alone when the AI looks outside loaded chunks), so they come out the same either way.
 - Impact detection uses Rapier contact-force events on the chassis. Damage scales with the
   impact's Δv above a per-car toughness threshold.

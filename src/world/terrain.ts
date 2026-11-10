@@ -1,6 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { emptySample, type EnvGrid, type EnvSample } from './environment';
+import { emptySample, GRID_STEP, type EnvGrid, type EnvSample } from './environment';
 import { inspectColour, type InspectMode } from './inspect';
 import { hash2 } from './noise';
 import { DetailScatter, type Rock, type RockLayout, type RockShape } from './details';
@@ -10,7 +10,7 @@ import type { TerrainField } from './terrainField';
 import type { TreeLayout } from './trees';
 
 export const CHUNK_SIZE = 64;
-const CHUNK_RES = 32; // cells per side → 2 m grid
+const CHUNK_RES = CHUNK_SIZE / GRID_STEP; // cells per side
 /** Chunks loaded in each direction around the car. Keep fog far below LOAD_RADIUS * CHUNK_SIZE. */
 export const LOAD_RADIUS = 4;
 
@@ -323,7 +323,7 @@ export class Terrain {
       body,
     );
 
-    const trees = this.props.populate(x0, z0, CHUNK_SIZE, body);
+    const trees = this.props.populate(x0, z0, CHUNK_SIZE, env, body);
     const details = this.details.populate(x0, z0, CHUNK_SIZE, step, env, body);
     const props: ChunkProps = {
       objects: [...trees.objects, ...details.objects],

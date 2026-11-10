@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { Stand } from './biome';
-import { emptySample } from './environment';
+import { emptySample, type EnvGrid } from './environment';
 import { hash2 } from './noise';
 import type { TerrainField } from './terrainField';
 
@@ -55,8 +55,8 @@ export class TreeLayout {
 
   constructor(private readonly field: TerrainField) {}
 
-  /** The tree in grid cell (cellX, cellZ), if there is one. */
-  inCell(cellX: number, cellZ: number): Tree | null {
+  /** The tree in grid cell (cellX, cellZ), if there is one; `grid`, a chunk's, saves sampling its environment. */
+  inCell(cellX: number, cellZ: number, grid?: EnvGrid): Tree | null {
     // Cantor-free key: cells stay well inside ±2^20 for any reachable distance.
     const key = (cellX + 1048576) * 2097152 + (cellZ + 1048576);
     const cached = this.cache.get(key);
@@ -66,7 +66,7 @@ export class TreeLayout {
     let tree: Tree | null = null;
     const x = (cellX + hash2(cellX, cellZ, seed + 11)) * TREE_CELL;
     const z = (cellZ + hash2(cellX, cellZ, seed + 12)) * TREE_CELL;
-    const env = this.field.environment.at(x, z, _env);
+    const env = this.field.environment.atNode(x, z, grid, _env);
     const stand = this.field.treeStand(x, z, env, _stand);
     if (
       hash2(cellX, cellZ, seed + 13) < stand.chance &&

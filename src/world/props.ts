@@ -2,6 +2,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { SPECIES, TREE_CELL, type Tree, type TreeLayout } from './trees';
+import type { EnvGrid } from './environment';
 
 const COLORS = {
   trunk: new THREE.Color('#5b4636'),
@@ -159,7 +160,7 @@ export class PropScatter {
     private readonly world: RAPIER.World,
   ) {}
 
-  populate(x0: number, z0: number, size: number, body: RAPIER.RigidBody): ChunkProps {
+  populate(x0: number, z0: number, size: number, env: EnvGrid, body: RAPIER.RigidBody): ChunkProps {
     const q = new THREE.Quaternion();
     const s = new THREE.Vector3();
     const p = new THREE.Vector3();
@@ -169,7 +170,7 @@ export class PropScatter {
     // Cells don't align with chunk edges (64 / 9), so scan one extra and keep what falls inside.
     for (let gz = 0; gz <= size / TREE_CELL; gz++) {
       for (let gx = 0; gx <= size / TREE_CELL; gx++) {
-        const t = this.trees.inCell(Math.floor(x0 / TREE_CELL) + gx, Math.floor(z0 / TREE_CELL) + gz);
+        const t = this.trees.inCell(Math.floor(x0 / TREE_CELL) + gx, Math.floor(z0 / TREE_CELL) + gz, env);
         if (!t || t.x < x0 || t.x >= x0 + size || t.z < z0 || t.z >= z0 + size) continue;
 
         q.setFromAxisAngle(up, t.yaw);

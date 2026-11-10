@@ -24,6 +24,9 @@ export interface EnvSample {
   knoll: number;
 }
 
+/** The terrain mesh's grid spacing (m): chunks sample their environment at these nodes (see grid). */
+export const GRID_STEP = 2;
+
 /**
  * Feel values. Curvature and moisture are blends of shapes the landform already knows (where the
  * valleys, gullies and ledges are), not a water-flow simulation: cheap, exact, and in step with
@@ -32,7 +35,7 @@ export interface EnvSample {
 const ENV = {
   /**
    * Curvature is measured over ± this many metres (a Laplacian), so it sees gullies, floor edges
-   * and crests, not moguls. Keep it a multiple of the 2 m mesh grid (see grid).
+   * and crests, not moguls. Keep it a multiple of the mesh grid (see grid).
    */
   reach: 4,
   /**
@@ -66,6 +69,9 @@ const ENV = {
 export interface EnvGrid {
   /** Points per side; point (i, j) is at (x0 + i × step, z0 + j × step), row-major by j. */
   n: number;
+  x0: number;
+  z0: number;
+  step: number;
   heights: Float32Array;
   slope: Float32Array;
   curvature: Float32Array;
@@ -100,11 +106,47 @@ export class Environment {
   }
 
   /**
+   * The environment at the mesh grid node nearest (x, z), exactly as a chunk's grid holds it: read
+   * from `grid` when the node lies in it, else worked out like `at` (and rounded to the grid's
+   * float32). Things placed once and cached (trees, boulders) read this, so they come out the same
+   * whether a chunk build or an out-of-chunk lookup (the AI) placed them first.
+   */
+  atNode(x: number, z: number, grid?: EnvGrid, out: EnvSample = emptySample()): EnvSample {
+    const nx = Math.round(x / GRID_STEP) * GRID_STEP;
+    const nz = Math.round(z / GRID_STEP) * GRID_STEP;
+    if (grid) {
+      const i = (nx - grid.x0) / grid.step;
+      const j = (nz - grid.z0) / grid.step;
+      if (i >= 0 && j >= 0 && i < grid.n && j < grid.n) {
+        const o = j * grid.n + i;
+        out.slope = grid.slope[o];
+        out.curvature = grid.curvature[o];
+        out.moisture = grid.moisture[o];
+        out.exposure = grid.exposure[o];
+        out.elevation = grid.elevation[o];
+        out.cliff = grid.cliff[o];
+        out.knoll = grid.knoll[o];
+        return out;
+      }
+    }
+    this.at(nx, nz, out);
+    out.slope = Math.fround(out.slope);
+    out.curvature = Math.fround(out.curvature);
+    out.moisture = Math.fround(out.moisture);
+    out.exposure = Math.fround(out.exposure);
+    out.elevation = Math.fround(out.elevation);
+    out.cliff = Math.fround(out.cliff);
+    out.knoll = Math.fround(out.knoll);
+    return out;
+  }
+
+  /**
    * The environment and ground heights for an n × n grid of points `step` m apart from (x0, z0):
    * one landform sample per point (plus a margin for curvature), so a chunk pays once for both.
    * Values match `at` and `TerrainField.height` at the same points.
    */
   grid(x0: number, z0: number, n: number, step: number): EnvGrid {
+    if (step !== GRID_STEP || x0 % step !== 0 || z0 % step !== 0) throw new Error(`Environment grid must lie on the ${GRID_STEP} m mesh grid`);
     const m = ENV.reach / step;
     if (!Number.isInteger(m)) throw new Error(`Environment reach ${ENV.reach} m is not a multiple of the grid step ${step} m`);
     const w = n + 2 * m;
@@ -128,6 +170,9 @@ export class Environment {
     const size = n * n;
     const grid: EnvGrid = {
       n,
+      x0,
+      z0,
+      step,
       heights: new Float32Array(size),
       slope: new Float32Array(size),
       curvature: new Float32Array(size),

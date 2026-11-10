@@ -114,7 +114,8 @@ export class Boulders {
       hitter.applyImpulse(_v.copy(dir).multiplyScalar((impulse * m) / (m + M)), true);
 
       // In the snow the hollow goes down to the earth under it; bare ground is rock or grass.
-      const env = this.field.environment.at(rock.x, rock.z);
+      // The environment its placement read (see RockLayout), so the ground kind matches.
+      const env = this.field.environment.atNode(rock.x, rock.z);
       const bedGround: BedGround = rock.snowy ? 'soil' : this.field.biome.isRock(rock.x, rock.z, env) ? 'rock' : 'grass';
       left.push({ bed, ground: bedGround });
       this.onLoose(new THREE.Vector3(rock.x, this.field.height(rock.x, rock.z), rock.z), velocity, rock.radius, bedGround);
