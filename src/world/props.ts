@@ -229,8 +229,38 @@ function buildOak(): THREE.BufferGeometry {
 }
 
 /** The tree meshes: one geometry per kind of tree (spruce with and without snow), and the landmark oak. */
-type TreeKind = 'spruceSnowy' | 'spruce' | 'pine' | 'broadleaf' | 'oak';
-const kindOf = (t: Tree): TreeKind => (t.oak ? 'oak' : t.species === 'spruce' ? (t.snowy ? 'spruceSnowy' : 'spruce') : t.species);
+export type TreeKind = 'spruceSnowy' | 'spruce' | 'pine' | 'broadleaf' | 'oak';
+export const kindOf = (t: Tree): TreeKind => (t.oak ? 'oak' : t.species === 'spruce' ? (t.snowy ? 'spruceSnowy' : 'spruce') : t.species);
+
+/**
+ * Far-view stand-ins for the trees (FarTerrain), the same size at scale 1 and in the same colours
+ * but a handful of faces each: seen from past the streamed chunks, only the outline and colour tell.
+ */
+export function buildFarTrees(): Record<TreeKind, THREE.BufferGeometry> {
+  const blob = (r: number, y: number, squash: number, color: THREE.Color, x = 0, z = 0) => {
+    const g = new THREE.IcosahedronGeometry(r, 0);
+    g.scale(1, squash, 1).translate(x, y, z);
+    paintFaces(g, () => color);
+    return g;
+  };
+  const spruce = (snowy: boolean) => {
+    const cone = new THREE.ConeGeometry(2, 5.4, 6, 1).toNonIndexed();
+    cone.translate(0, 0.7 + 2.7, 0);
+    paintFaces(cone, (c, n) => (snowy && c.y > 3.6 && n.y > 0 ? COLORS.snow : COLORS.needles));
+    return mergeTree([cone]);
+  };
+  return {
+    spruceSnowy: spruce(true),
+    spruce: spruce(false),
+    pine: mergeTree([limb(new THREE.Vector3(), new THREE.Vector3(0, 5, 0), 0.25, 0.13, COLORS.pineBark), blob(1.7, 5, 0.55, COLORS.pineNeedles)]),
+    broadleaf: mergeTree([limb(new THREE.Vector3(), new THREE.Vector3(0, 2.6, 0), 0.26, 0.16, COLORS.broadTrunk), blob(2, 3.5, 0.85, COLORS.leaves)]),
+    oak: mergeTree([
+      limb(new THREE.Vector3(0, -0.3, 0), new THREE.Vector3(0, 6, 0), 1.6, 1.1, COLORS.oakBark),
+      blob(4.2, 11.5, 0.7, COLORS.oakLeaves),
+      ...[0, 1, 2, 3, 4].map((i) => blob(3.4, 9.5, 0.7, i % 2 ? COLORS.oakLeavesLight : COLORS.oakLeavesDeep, Math.cos(i * 1.26) * 5.5, Math.sin(i * 1.26) * 5.5)),
+    ]),
+  };
+}
 
 export interface ChunkProps {
   objects: THREE.Object3D[];

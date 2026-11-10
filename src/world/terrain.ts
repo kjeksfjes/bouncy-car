@@ -56,7 +56,7 @@ export class Terrain {
   ) {
     this.props = new PropScatter(trees, world);
     this.details = new DetailScatter(field, trees, rocks, world);
-    this.far = new FarTerrain(field, scene, CHUNK_SIZE);
+    this.far = new FarTerrain(field, scene, trees, CHUNK_SIZE);
   }
 
   /**
@@ -115,7 +115,7 @@ export class Terrain {
       }
     }
     // The far view builds only in frames the chunks left alone, so the two never add up.
-    this.far.update(centers[0].position, (cx, cz) => this.chunks.has(key(cx, cz)), built > 0 ? 0 : 1);
+    this.far.update(centers[0].position, (cx, cz) => this.chunks.has(key(cx, cz)), built === 0);
   }
 
   /** Marks every loaded chunk reaching downhill of `z` for rebuilding (its colours and trees changed). */

@@ -64,11 +64,25 @@ export class TreeLayout {
 
   /** The tree in grid cell (cellX, cellZ), if there is one; `grid`, a chunk's, saves sampling its environment. */
   inCell(cellX: number, cellZ: number, grid?: EnvGrid): Tree | null {
-    // Cantor-free key: cells stay well inside ±2^20 for any reachable distance.
-    const key = (cellX + 1048576) * 2097152 + (cellZ + 1048576);
+    const key = cellKey(cellX, cellZ);
     const cached = this.cache.get(key);
     if (cached !== undefined) return cached;
+    const tree = this.place(cellX, cellZ, grid);
+    if (this.cache.size >= CACHE_LIMIT) this.cache.clear();
+    this.cache.set(key, tree);
+    return tree;
+  }
 
+  /**
+   * The same as inCell, but leaves the cache alone when the cell isn't in it: for the far view,
+   * whose thousands of cells would otherwise push out the ones chunks and the AI keep asking for.
+   */
+  peek(cellX: number, cellZ: number): Tree | null {
+    const cached = this.cache.get(cellKey(cellX, cellZ));
+    return cached !== undefined ? cached : this.place(cellX, cellZ);
+  }
+
+  private place(cellX: number, cellZ: number, grid?: EnvGrid): Tree | null {
     const seed = this.field.seed;
     let tree: Tree | null = null;
     const x = (cellX + hash2(cellX, cellZ, seed + 11)) * TREE_CELL;
@@ -77,7 +91,7 @@ export class TreeLayout {
     const landmark = this.field.landmarks.near(x, z);
     if (landmark) {
       const own = landmark.kind === 'oak' && Math.floor(landmark.x / TREE_CELL) === cellX && Math.floor(landmark.z / TREE_CELL) === cellZ;
-      return this.remember(key, own ? landmark.tree : null);
+      return own ? landmark.tree : null;
     }
     const env = this.field.environment.atNode(x, z, grid, _env);
     const stand = this.field.treeStand(x, z, env, _stand);
@@ -102,12 +116,6 @@ export class TreeLayout {
         oak: false,
       };
     }
-    return this.remember(key, tree);
-  }
-
-  private remember(key: number, tree: Tree | null): Tree | null {
-    if (this.cache.size >= CACHE_LIMIT) this.cache.clear();
-    this.cache.set(key, tree);
     return tree;
   }
 
@@ -134,4 +142,9 @@ export class TreeLayout {
     }
     return best;
   }
+}
+
+/** Cantor-free key: cells stay well inside ±2^20 for any reachable distance. */
+function cellKey(cellX: number, cellZ: number): number {
+  return (cellX + 1048576) * 2097152 + (cellZ + 1048576);
 }
