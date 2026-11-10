@@ -9,6 +9,11 @@ const FLUIDS = {
   fadeTime: 4,
   /** Height above the snow (m), plus polygon offset in the material, so stains don't z-fight it. */
   lift: 0.015,
+  /**
+   * How opaque a stain is: where oil and coolant overlap they blend, the colours mixing and the
+   * spot darkening, instead of one cutting through the other.
+   */
+  opacity: 0.8,
   /** Growth rate (1/s) toward a stain's full size: drops splat out quickly, puddles spread slowly. */
   spread: 6,
 };
@@ -65,6 +70,12 @@ export class Fluids {
       polygonOffset: true,
       polygonOffsetFactor: -2,
       polygonOffsetUnits: -2,
+      // Stains lie at the same height over the snow: depth-tested against everything else, but not
+      // against each other (they don't write depth), or overlapping ones z-fight in flickering
+      // stripes. They're drawn oldest first, so a newer one lies over an older one, blending.
+      transparent: true,
+      opacity: FLUIDS.opacity,
+      depthWrite: false,
     });
     this.mesh = new THREE.InstancedMesh(geometry, material, FLUIDS.capacity);
     this.mesh.setColorAt(0, COLOR.oil); // allocates instanceColor
