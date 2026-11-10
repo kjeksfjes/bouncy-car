@@ -454,6 +454,7 @@ export class DetailScatter {
         elevation: env.elevation[o],
         cliff: env.cliff[o],
         knoll: env.knoll[o],
+        floor: env.floor[o],
       });
     };
     this.scatter(x0, z0, size, SHRUBS.cell, 51, (x, z, r) => {

@@ -22,6 +22,8 @@ export interface EnvSample {
   cliff: number;
   /** How far up a rocky knoll (0 off one .. 1 on its crown). */
   knoll: number;
+  /** 1 on a deep valley's floor and the foot of its flanks .. 0 from ENV.floorTo up the flank, and out on open slope. */
+  floor: number;
 }
 
 /** The terrain mesh's grid spacing (m): chunks sample their environment at these nodes (see grid). */
@@ -46,6 +48,8 @@ const ENV = {
   /** Valleys shallower than this (m) don't count: open slope. */
   valleyFrom: 8,
   valleyTo: 25,
+  /** Where (share of the way up a valley's flank) its floor and flank foot give way to the flank proper. */
+  floorTo: 0.15,
   moisture: {
     base: 0.4,
     /** Valley floors and the low flanks, fading out by `lowTo` up the flank. */
@@ -80,6 +84,7 @@ export interface EnvGrid {
   elevation: Float32Array;
   cliff: Float32Array;
   knoll: Float32Array;
+  floor: Float32Array;
 }
 
 export class Environment {
@@ -126,6 +131,7 @@ export class Environment {
         out.elevation = grid.elevation[o];
         out.cliff = grid.cliff[o];
         out.knoll = grid.knoll[o];
+        out.floor = grid.floor[o];
         return out;
       }
     }
@@ -137,6 +143,7 @@ export class Environment {
     out.elevation = Math.fround(out.elevation);
     out.cliff = Math.fround(out.cliff);
     out.knoll = Math.fround(out.knoll);
+    out.floor = Math.fround(out.floor);
     return out;
   }
 
@@ -181,6 +188,7 @@ export class Environment {
       elevation: new Float32Array(size),
       cliff: new Float32Array(size),
       knoll: new Float32Array(size),
+      floor: new Float32Array(size),
     };
     const s = emptySample();
     for (let j = 0; j < n; j++) {
@@ -197,6 +205,7 @@ export class Environment {
         grid.elevation[o] = s.elevation;
         grid.cliff[o] = this.cliff(x0 + i * step, z0 + j * step);
         grid.knoll[o] = s.knoll;
+        grid.floor[o] = s.floor;
       }
     }
     return grid;
@@ -225,6 +234,7 @@ export class Environment {
     const valley = smoothstep(ENV.valleyFrom, ENV.valleyTo, spot.depth);
     const flank = Math.max(0, Math.min(1, spot.flank));
     out.elevation = 0.5 + (flank - 0.5) * valley;
+    out.floor = valley * (1 - smoothstep(0, ENV.floorTo, spot.flank));
     const moisture =
       M.base +
       M.floor * valley * (1 - smoothstep(0, M.lowTo, spot.flank)) +
@@ -239,5 +249,5 @@ export class Environment {
 }
 
 export function emptySample(): EnvSample {
-  return { slope: 0, curvature: 0, moisture: 0, exposure: 0, elevation: 0, cliff: 0, knoll: 0 };
+  return { slope: 0, curvature: 0, moisture: 0, exposure: 0, elevation: 0, cliff: 0, knoll: 0, floor: 0 };
 }

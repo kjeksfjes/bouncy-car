@@ -357,6 +357,7 @@ function faceEnvironment(env: EnvGrid, a: number, b: number, c: number, out: Env
   out.elevation = (env.elevation[a] + env.elevation[b] + env.elevation[c]) / 3;
   out.cliff = (env.cliff[a] + env.cliff[b] + env.cliff[c]) / 3;
   out.knoll = (env.knoll[a] + env.knoll[b] + env.knoll[c]) / 3;
+  out.floor = (env.floor[a] + env.floor[b] + env.floor[c]) / 3;
   return out;
 }
 

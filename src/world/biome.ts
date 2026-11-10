@@ -85,6 +85,17 @@ const BIOME = {
   fringeDensity: 0.3,
   /** Inside a wood, trees grow old and big over this much noise past `copseTo`. */
   matureSpan: 0.12,
+  /**
+   * Old trees stand wider apart (they crowd the young ones out): a wood's old core holds this much
+   * fewer trees than its young edge, so there are gaps to thread between the big trunks.
+   */
+  oldThinning: 0.45,
+  /**
+   * Valley floors stay open meadow, framed by the woods on the flanks: the wood and forest
+   * thresholds rise by this much on a floor (EnvSample.floor), so the level lane down a valley is
+   * clear to drive. Groups and lone trees may still stand there.
+   */
+  floorClear: 1,
   /** Groups out in the open are middle-aged; lone trees are old. */
   groupMaturity: 0.4,
   /** Bare ground is dry and brown just after the snow, lush green from `greenAt` m further down. */
@@ -249,6 +260,25 @@ const SUITABILITY = {
 };
 
 /**
+ * Open and wooded stretches along the descent, so the drive alternates between open runs and
+ * forest: noise at `scale` m down the slope (stretched `across` times wider across it, so a stretch
+ * spans the slope, with wobbling edges) moves the woods' noise thresholds from `open` (a few small
+ * woods, groups and lone trees) to `wooded` (woods merging into forest round clearings). Most of the
+ * way it's one or the other: the change takes `edge` of the noise's range either side of `woodedAbove`. Laid out
+ * by position, not by the biome progression, like the woods themselves. Feel values.
+ */
+const RHYTHM = {
+  scale: 900,
+  across: 4,
+  /** Wooded where the noise passes this (≈ −1..1): ≈30 % of the way wooded, the rest open. */
+  woodedAbove: 0.3,
+  edge: 0.2,
+  /** Added to the woods' thresholds (noise ≈ −1..1): the grassland's woods cover ≈4 % in the open, ≈50 % wooded. */
+  open: 0.3,
+  wooded: -0.5,
+};
+
+/**
  * How well a kind of tree takes to the ground here (see PREFERS): roughly −1 (ground it shuns) ..
  * 0.5 (ground it likes). Its woods and forest patches spread or shrink by it.
  */
@@ -278,6 +308,7 @@ export class Biome {
   private readonly rockLine: NoiseFunction2D;
   private readonly outcrop: NoiseFunction2D;
   private readonly rockTone: NoiseFunction2D;
+  private readonly rhythm: NoiseFunction2D;
   private readonly shifts: Shift[] = [];
 
   constructor(
@@ -291,6 +322,18 @@ export class Biome {
     this.rockLine = makeNoise(seed + 31);
     this.outcrop = makeNoise(seed + 32);
     this.rockTone = makeNoise(seed + 33);
+    this.rhythm = makeNoise(seed + 34);
+  }
+
+  /**
+   * How far the woods' noise thresholds move at (x, z) on this ground: up in open stretches (fewer,
+   * smaller woods, see RHYTHM) and on valley floors (none, see BIOME.floorClear), down in wooded
+   * stretches. For the grassland's woods and the snow forest's patches.
+   */
+  woodsShift(x: number, z: number, env: EnvSample): number {
+    const R = RHYTHM;
+    const wooded = smoothstep(R.woodedAbove - R.edge, R.woodedAbove + R.edge, this.rhythm(x / (R.scale * R.across), z / R.scale));
+    return R.open + (R.wooded - R.open) * wooded + BIOME.floorClear * env.floor;
   }
 
   /**
@@ -335,10 +378,12 @@ export class Biome {
     const kind = this.areaKind(x, z, env);
     const shift = SUITABILITY.shift * treeSuitability(env, kind);
     const density = PREFERS[kind].density;
-    const from = B.copseFrom - shift;
-    const to = B.copseTo - shift;
+    const woods = this.woodsShift(x, z, env);
+    const from = B.copseFrom + woods - shift;
+    const to = B.copseTo + woods - shift;
     const n = this.copse(x / B.copseScale, z / B.copseScale);
-    const wood = density * B.copseDensity * smoothstep(from, to, n);
+    const mature = smoothstep(to, to + B.matureSpan, n);
+    const wood = density * B.copseDensity * smoothstep(from, to, n) * (1 - B.oldThinning * mature);
     const fringe = n > from - B.fringe && n <= from ? density * B.fringeDensity : 0;
     // Groups at full density whatever the kind: thinned out, they'd mostly come out as single trees.
     const groupMask = smoothstep(B.groupMaskFrom, B.groupMaskFrom + 0.05, this.copse(x / B.groupMaskScale - 41.9, z / B.groupMaskScale + 88.1));
@@ -348,7 +393,7 @@ export class Biome {
     out.maturity = 1;
     if (fringe > out.chance) Object.assign(out, { chance: fringe, maturity: 0 });
     if (group > out.chance) Object.assign(out, { chance: group, maturity: B.groupMaturity });
-    if (wood > out.chance) Object.assign(out, { chance: wood, maturity: smoothstep(to, to + B.matureSpan, n) });
+    if (wood > out.chance) Object.assign(out, { chance: wood, maturity: mature });
     return out;
   }
 
@@ -359,7 +404,7 @@ export class Biome {
   woodEdge(x: number, z: number, env: EnvSample, band: number): number {
     if (this.grassland(z) < 0.5) return 0;
     const B = BIOME;
-    const from = B.copseFrom - SUITABILITY.shift * treeSuitability(env, this.areaKind(x, z, env));
+    const from = B.copseFrom + this.woodsShift(x, z, env) - SUITABILITY.shift * treeSuitability(env, this.areaKind(x, z, env));
     const n = this.copse(x / B.copseScale, z / B.copseScale);
     return n > from - band && n <= from ? 1 : 0;
   }

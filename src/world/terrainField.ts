@@ -228,7 +228,7 @@ export class TerrainField {
   treeStand(x: number, z: number, env: EnvSample, out: Stand = { chance: 0, maturity: 0 }): Stand {
     const T = TREES;
     // The snow forest is spruce.
-    const shift = T.suitabilityShift * treeSuitability(env, 'spruce');
+    const shift = T.suitabilityShift * treeSuitability(env, 'spruce') - this.biome.woodsShift(x, z, env);
     const patches = smoothstep(-0.25 - shift, 0.45 - shift, this.forest(x / T.patchScale, z / T.patchScale));
     const open = smoothstep(T.meadowFrom, T.meadowTo, this.meadow(x / T.meadowScale, z / T.meadowScale));
     const forest = patches * (1 - open) * this.treeline(z) * T.maxChance;
