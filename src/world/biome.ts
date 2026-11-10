@@ -276,6 +276,16 @@ const RHYTHM = {
   /** Added to the woods' thresholds (noise ≈ −1..1): the grassland's woods cover ≈4 % in the open, ≈50 % wooded. */
   open: 0.3,
   wooded: -0.5,
+  /**
+   * Now and then a great forest: where slower noise at `greatScale` m down the slope (stretched as
+   * above) passes `greatAbove`, dense woods come back over a long stretch, valley floors and all,
+   * their old cores unthinned (`great` on the thresholds: ≈60 % wooded). Rare on purpose: they're
+   * beautiful, but in the way.
+   */
+  greatScale: 4000,
+  greatAbove: 0.65,
+  greatEdge: 0.08,
+  great: -0.7,
 };
 
 /**
@@ -309,6 +319,7 @@ export class Biome {
   private readonly outcrop: NoiseFunction2D;
   private readonly rockTone: NoiseFunction2D;
   private readonly rhythm: NoiseFunction2D;
+  private readonly great: NoiseFunction2D;
   private readonly shifts: Shift[] = [];
 
   constructor(
@@ -323,17 +334,25 @@ export class Biome {
     this.outcrop = makeNoise(seed + 32);
     this.rockTone = makeNoise(seed + 33);
     this.rhythm = makeNoise(seed + 34);
+    this.great = makeNoise(seed + 35);
   }
 
   /**
    * How far the woods' noise thresholds move at (x, z) on this ground: up in open stretches (fewer,
    * smaller woods, see RHYTHM) and on valley floors (none, see BIOME.floorClear), down in wooded
-   * stretches. For the grassland's woods and the snow forest's patches.
+   * stretches, and furthest down in a great forest. For the grassland's woods and the snow forest's patches.
    */
   woodsShift(x: number, z: number, env: EnvSample): number {
     const R = RHYTHM;
     const wooded = smoothstep(R.woodedAbove - R.edge, R.woodedAbove + R.edge, this.rhythm(x / (R.scale * R.across), z / R.scale));
-    return R.open + (R.wooded - R.open) * wooded + BIOME.floorClear * env.floor;
+    const usual = R.open + (R.wooded - R.open) * wooded + BIOME.floorClear * env.floor;
+    return usual + (R.great - usual) * this.greatForest(x, z);
+  }
+
+  /** 1 inside a great forest (see RHYTHM), 0 outside it. */
+  greatForest(x: number, z: number): number {
+    const R = RHYTHM;
+    return smoothstep(R.greatAbove - R.greatEdge, R.greatAbove + R.greatEdge, this.great(x / (R.greatScale * R.across), z / R.greatScale));
   }
 
   /**
@@ -383,7 +402,9 @@ export class Biome {
     const to = B.copseTo + woods - shift;
     const n = this.copse(x / B.copseScale, z / B.copseScale);
     const mature = smoothstep(to, to + B.matureSpan, n);
-    const wood = density * B.copseDensity * smoothstep(from, to, n) * (1 - B.oldThinning * mature);
+    // A great forest's old trees stand as close as its young ones: no gaps kept open there.
+    const thinning = B.oldThinning * (1 - this.greatForest(x, z));
+    const wood = density * B.copseDensity * smoothstep(from, to, n) * (1 - thinning * mature);
     const fringe = n > from - B.fringe && n <= from ? density * B.fringeDensity : 0;
     // Groups at full density whatever the kind: thinned out, they'd mostly come out as single trees.
     const groupMask = smoothstep(B.groupMaskFrom, B.groupMaskFrom + 0.05, this.copse(x / B.groupMaskScale - 41.9, z / B.groupMaskScale + 88.1));
