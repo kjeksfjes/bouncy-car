@@ -69,8 +69,8 @@ export class Debris {
     this.shards.burst(points, velocity, outward, tint);
   }
 
-  /** `object` must already be a direct child of the scene, placed in world space. */
-  spawn(object: THREE.Object3D, colliders: RAPIER.ColliderDesc[], linvel: THREE.Vector3, angvel: THREE.Vector3): void {
+  /** `object` must already be a direct child of the scene, placed in world space. Returns the new body. */
+  spawn(object: THREE.Object3D, colliders: RAPIER.ColliderDesc[], linvel: THREE.Vector3, angvel: THREE.Vector3): RAPIER.RigidBody {
     const p = object.position;
     const body = this.world.createRigidBody(
       RAPIER.RigidBodyDesc.dynamic()
@@ -82,6 +82,7 @@ export class Debris {
     );
     for (const desc of colliders) this.world.createCollider(desc, body);
     this.track(object, body);
+    return body;
   }
 
   /** Takes over an existing body (e.g. a panel torn off its hinge); `object` must be in world space. */

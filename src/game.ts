@@ -108,7 +108,7 @@ export class Game {
     this.field = new TerrainField(seed, terrain);
     this.trees = new TreeLayout(this.field);
     this.rocks = new RockLayout(this.field, this.trees);
-    const obstacles = new Obstacles(this.trees, this.rocks);
+    const obstacles = new Obstacles(this.trees, this.rocks, this.field.landmarks);
     this.terrain = new Terrain(this.field, this.stage.scene, this.world, this.trees, this.rocks);
     this.ai = new AiDriver(obstacles);
     this.aiArrow.visible = false;
@@ -129,7 +129,7 @@ export class Game {
     this.boulders = new Boulders(this.world, this.stage.scene, this.field, this.terrain, this.debris, (at, velocity, radius, ground) => {
       this.juice.uproot(at, velocity, radius, ground === 'rock');
       this.clods.burst(at, velocity, radius, ground);
-    });
+    }, this.audio);
 
     const spawn = new THREE.Vector3(0, this.field.height(0, -start) + 1.5, -start);
     this.terrain.update([{ position: spawn, radius: LOAD_RADIUS }], INITIAL_CHUNKS);
@@ -363,6 +363,7 @@ export class Game {
     const next = BIOMES.find((b) => b.from > reached + 50) ?? BIOMES[0];
     biome.shift(from, next.from - reached, BIOME_JUMP.ramp);
     this.trees.invalidate();
+    this.field.landmarks.invalidate();
     this.rocks.invalidate();
     this.terrain.refreshBeyond(-from);
     this.hud.toast(`${next.name} ahead`);

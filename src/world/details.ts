@@ -8,6 +8,7 @@ import { emptySample, type EnvGrid, type EnvSample } from './environment';
 import { hash2, makeNoise, mulberry32, smoothstep } from './noise';
 import type { ChunkProps } from './props';
 import type { TerrainField } from './terrainField';
+import type { LandmarkLayout, Varde } from './landmarks';
 import type { TreeLayout } from './trees';
 
 /**
@@ -51,6 +52,8 @@ export const ROCKS = {
    * stones, ≈ 80 km/h for a 2.4 m one, never for the biggest.
    */
   breakout: 2.5,
+  /** A varde's stones lie loose on each other: a knock that would set one moving at this speed (m/s) brings the varde down. */
+  looseBreakout: 0.3,
 };
 
 const SHRUBS = {
@@ -80,7 +83,7 @@ const GRASS = {
 };
 
 /** Rock shape variants (and their snowy twins). */
-const ROCK_SHAPES = 4;
+export const ROCK_SHAPES = 4;
 /** Cache cap; the cache is simply cleared when full (lookups are cheap to redo). */
 const CACHE_LIMIT = 20000;
 
@@ -180,6 +183,7 @@ export class RockLayout {
     const x = (cellX + hash2(cellX, cellZ, seed + 41)) * R.cell;
     const z = (cellZ + hash2(cellX, cellZ, seed + 42)) * R.cell;
     if (Math.hypot(x, z) < R.spawnClear) return null;
+    if (f.landmarks.near(x, z, R.minRadius + R.extraOnRock)) return null;
     const env = f.environment.atNode(x, z, grid, _env);
     if (env.cliff > R.cliffBelow || f.features.parts(x, z).lip > R.lipBelow) return null;
     const onRock = f.biome.isRock(x, z, env);
@@ -214,21 +218,22 @@ export class RockLayout {
   }
 }
 
-/** Trees and boulders together: what the AI and the traffic spawner keep clear of. */
+/** Trees, boulders and tors together: what the AI and the traffic spawner keep clear of. */
 export class Obstacles {
   constructor(
     private readonly trees: TreeLayout,
     private readonly rocks: RockLayout,
+    private readonly landmarks: LandmarkLayout,
   ) {}
 
-  /** Whether a tree or a boulder comes within `clearance` of (x, z). */
+  /** Whether a tree, a boulder or a tor comes within `clearance` of (x, z). */
   blocking(x: number, z: number, clearance: number): boolean {
-    return this.trees.blocking(x, z, clearance) !== null || this.rocks.blocking(x, z, clearance) !== null;
+    return this.trees.blocking(x, z, clearance) !== null || this.rocks.blocking(x, z, clearance) !== null || this.landmarks.blocking(x, z, clearance);
   }
 }
 
 /** Unit rock shapes stand about this tall (× sy), lowest point at y = 0. */
-const UNIT_HEIGHT = 1.35;
+export const UNIT_HEIGHT = 1.35;
 /** How much flatter a rock is below its middle than above (a boulder's underside is rounded but squat). */
 const UNDERSIDE = 0.65;
 
@@ -348,6 +353,10 @@ export interface BeddedRock {
   collider: RAPIER.Collider;
   /** kg, from the hull's volume (ROCKS.density). */
   mass: number;
+  /** It breaks loose from a hit that would set it moving at this speed (m/s) or more (see ROCKS.breakout). */
+  breakout: number;
+  /** The varde it's a stone of, with all its stones (bedded together: one knocked loose takes the rest). */
+  varde: { landmark: Varde; stones: BeddedRock[] } | null;
   mesh: THREE.InstancedMesh | null;
   index: number;
 }
@@ -397,7 +406,8 @@ export class DetailScatter {
       bed.mesh.setMatrixAt(bed.index, HIDDEN);
       bed.mesh.instanceMatrix.needsUpdate = true;
     }
-    this.rocks.dislodge(bed.rock);
+    if (bed.varde) this.field.landmarks.knockOver(bed.varde.landmark);
+    else this.rocks.dislodge(bed.rock);
   }
 
   /** Details for the chunk at (x0, z0), `size` m square, using its environment grid (`step` m spacing). */
@@ -412,32 +422,41 @@ export class DetailScatter {
     const p = new THREE.Vector3();
     const s = new THREE.Vector3();
 
-    // Boulders: from the layout, with a collider shaped like the rock.
+    // Boulders (and a varde's stones): bedded, with a collider shaped like the rock.
     const R = ROCKS;
     const beds: { bed: BeddedRock; list: THREE.Matrix4[] }[] = [];
+    const bedRock = (r: Rock, breakout: number, varde: BeddedRock['varde']): BeddedRock => {
+      const shape = this.rockShapes[r.shape];
+      q.setFromAxisAngle(UP, r.yaw);
+      const m = new THREE.Matrix4().compose(p.set(r.x, r.y, r.z), q, s.set(r.sx, r.sy, r.sz));
+      const list = group(r.snowy ? shape.snowy : shape.geometry, this.material, true);
+      list.push(m);
+      const points = new Float32Array(shape.hull.length);
+      const v = new THREE.Vector3();
+      for (let i = 0; i < points.length; i += 3) v.fromArray(shape.hull, i).applyMatrix4(m).toArray(points, i);
+      const desc = RAPIER.ColliderDesc.convexHull(points);
+      if (!desc) throw new Error(`Rock at (${r.x.toFixed(1)}, ${r.z.toFixed(1)}) has no convex hull`);
+      const collider = this.world.createCollider(desc.setFriction(0.8), body);
+      const mass = collider.volume() * R.density;
+      // Reports hits from its break-out force up (see Boulders), whatever the hitter reports on its own.
+      collider.setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS);
+      collider.setContactForceEventThreshold((mass * breakout) / PHYSICS_STEP);
+      const bed: BeddedRock = { rock: r, shape, collider, mass, breakout, varde, mesh: null, index: list.length - 1 };
+      this.bedded.set(collider.handle, bed);
+      beds.push({ bed, list });
+      return bed;
+    };
     for (let cz = Math.floor(z0 / R.cell); cz <= Math.floor((z0 + size) / R.cell); cz++) {
       for (let cx = Math.floor(x0 / R.cell); cx <= Math.floor((x0 + size) / R.cell); cx++) {
         const r = this.rocks.inCell(cx, cz, env);
         if (!r || r.x < x0 || r.x >= x0 + size || r.z < z0 || r.z >= z0 + size) continue;
-        const shape = this.rockShapes[r.shape];
-        q.setFromAxisAngle(UP, r.yaw);
-        const m = new THREE.Matrix4().compose(p.set(r.x, r.y, r.z), q, s.set(r.sx, r.sy, r.sz));
-        const list = group(r.snowy ? shape.snowy : shape.geometry, this.material, true);
-        list.push(m);
-        const points = new Float32Array(shape.hull.length);
-        const v = new THREE.Vector3();
-        for (let i = 0; i < points.length; i += 3) v.fromArray(shape.hull, i).applyMatrix4(m).toArray(points, i);
-        const desc = RAPIER.ColliderDesc.convexHull(points);
-        if (!desc) throw new Error(`Boulder at (${r.x.toFixed(1)}, ${r.z.toFixed(1)}) has no convex hull`);
-        const collider = this.world.createCollider(desc.setFriction(0.8), body);
-        const mass = collider.volume() * R.density;
-        // Reports hits from its break-out force up (see Boulders), whatever the hitter reports on its own.
-        collider.setActiveEvents(RAPIER.ActiveEvents.CONTACT_FORCE_EVENTS);
-        collider.setContactForceEventThreshold((mass * R.breakout) / PHYSICS_STEP);
-        const bed: BeddedRock = { rock: r, shape, collider, mass, mesh: null, index: list.length - 1 };
-        this.bedded.set(collider.handle, bed);
-        beds.push({ bed, list });
+        bedRock(r, R.breakout, null);
       }
+    }
+    // Vardes (landmarks): stones stacked loose, so any knock brings the lot down (see Boulders).
+    for (const landmark of this.field.landmarks.vardesWithin(x0, z0, size)) {
+      const varde = { landmark, stones: [] as BeddedRock[] };
+      for (const stone of landmark.stones) varde.stones.push(bedRock(stone, R.looseBreakout, varde));
     }
 
     // Shrubs and grass: looks only, from the chunk's own environment grid.

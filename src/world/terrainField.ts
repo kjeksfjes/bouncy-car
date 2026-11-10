@@ -6,6 +6,7 @@ import type { EnvSample } from './environment';
 import { Environment } from './environment';
 import { DescentFeatures, type TerrainPreset } from './features';
 import { Landform } from './landform';
+import { LandmarkLayout } from './landmarks';
 import { makeNoise, smoothstep } from './noise';
 
 /**
@@ -129,6 +130,8 @@ export class TerrainField {
   private readonly spawnHeight: number;
   /** Ground cover (snow, thaw, grassland) along the descent. */
   readonly biome: Biome;
+  /** Giant trees and tors to steer by (trees and boulders keep clear of them). */
+  readonly landmarks: LandmarkLayout;
 
   /** @param preset which terrain generator to use (see TerrainPreset) */
   constructor(
@@ -152,6 +155,7 @@ export class TerrainField {
       clear: (x, z, reach) => Math.hypot(x, z) > SHAPE.knollSpawnClear + reach && this.features.clearOf(z, SHAPE.knollFeatureClear + reach),
     });
     this.environment = new Environment(this, SUN_DIR);
+    this.landmarks = new LandmarkLayout(this);
     this.spawnHeight = this.rawHeight(0, 0);
   }
 
