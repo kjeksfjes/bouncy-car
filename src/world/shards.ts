@@ -110,6 +110,19 @@ export class Shards {
     }
   }
 
+  /**
+   * Draws one invisible shard in the next render, so the glass's shader and the transmission pass
+   * it brings (an extra render of the scene, with its own shader variants of every material in
+   * view) compile while the game starts instead of freezing the first crash that breaks a window.
+   * The next update hides it again.
+   */
+  warmUp(): void {
+    this.mesh.setMatrixAt(0, new THREE.Matrix4().makeScale(0, 0, 0));
+    this.mesh.instanceMatrix.needsUpdate = true;
+    this.mesh.count = 1;
+    this.mesh.visible = true;
+  }
+
   update(dt: number): void {
     const S = SHARDS;
     const drag = Math.exp(-S.drag * dt);

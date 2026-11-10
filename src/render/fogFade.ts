@@ -7,6 +7,13 @@ import * as THREE from 'three';
 export const fogFade = { value: 0 };
 /** Direction toward the sun (world space) and its colour, for the haze's glow on the sun's side. */
 export const fogSun = { dir: { value: new THREE.Vector3(0, 1, 0) }, color: { value: new THREE.Color(1, 1, 1) } };
+/**
+ * The sky's colours (top, below the horizon, and its curve; kept in step with the sky by Stage):
+ * the fog's last stretch blends into the sky's own colour in each direction, so far hills melt into
+ * the sky behind them, a little above or below the horizon line, instead of standing out as a
+ * band of plain horizon colour.
+ */
+export const fogSky = { top: { value: new THREE.Color(1, 1, 1) }, below: { value: new THREE.Color(1, 1, 1) }, curve: { value: 1 } };
 
 /**
  * Aerial perspective: distance lifts colours toward the pale haze gently, clear near the camera and
@@ -45,8 +52,7 @@ export const SUN_GLOW = { amount: 0.28, power: 7 };
  *   on) and three's `viewMatrix` in the fragment shader, for distance and sun direction.
  * - The uniforms reach materials through a global `THREE.Material.prototype.onBeforeCompile`. A
  *   material that sets its own `onBeforeCompile` replaces it, and then its shader never gets them:
- *   such a material must add `shader.uniforms.fogFade = fogFade` and the `fogSun*` ones itself.
- *   Nothing in the game sets one today.
+ *   such a material must call this one first (FarTerrain's does).
  * - Only linear `THREE.Fog` is supported: its near and far set where the haze starts and where
  *   everything is haze. `FogExp2` would leave fogNear/fogFar undeclared and fail to compile.
  */
@@ -62,7 +68,7 @@ export function installFogFade(): void {
   replace(
     'fog_pars_fragment',
     'uniform vec3 fogColor;',
-    'uniform vec3 fogColor;\n\tuniform float fogFade;\n\tuniform vec3 fogSunDir;\n\tuniform vec3 fogSunColor;\n\tvarying vec3 vFogPosition;',
+    'uniform vec3 fogColor;\n\tuniform float fogFade;\n\tuniform vec3 fogSunDir;\n\tuniform vec3 fogSunColor;\n\tuniform vec3 fogSkyTop;\n\tuniform vec3 fogSkyBelow;\n\tuniform float fogSkyCurve;\n\tvarying vec3 vFogPosition;',
   );
   replace(
     'fog_fragment',
@@ -71,14 +77,19 @@ export function installFogFade(): void {
 		float fogEdgeStart = fogFar * ${(1 - H.edge).toFixed(3)};
 		float fogBuilt = clamp( ( fogDistance - fogNear ) / ( fogEdgeStart - fogNear ), 0.0, 1.0 );
 		float fogFactor = ${H.reach.toFixed(3)} * pow( fogBuilt, ${H.power.toFixed(2)} );
-		fogFactor = max( fogFactor, smoothstep( fogEdgeStart, fogFar, fogDistance ) );`,
+		float fogEdge = smoothstep( fogEdgeStart, fogFar, fogDistance );
+		fogFactor = max( fogFactor, fogEdge );`,
   );
   replace(
     'fog_fragment',
     'gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor, fogFactor );',
     /* glsl */ `vec3 fogWorldDir = normalize( vFogPosition * mat3( viewMatrix ) );
 	float fogSun = max( dot( fogWorldDir, fogSunDir ), 0.0 );
-	vec3 fogHaze = fogColor + fogSunColor * pow( fogSun, ${SUN_GLOW.power.toFixed(1)} ) * ${SUN_GLOW.amount.toFixed(3)};
+	// Toward the fog's end, the sky's own colour in this direction (as Stage's sky shader mixes it).
+	float fogUp = max( fogWorldDir.y, 0.0 );
+	vec3 fogSkyColor = mix( fogColor, fogSkyTop, pow( fogUp, fogSkyCurve ) * smoothstep( 0.0, 0.06, fogUp ) );
+	fogSkyColor = mix( fogSkyColor, fogSkyBelow, smoothstep( 0.0, -0.2, fogWorldDir.y ) );
+	vec3 fogHaze = mix( fogColor, fogSkyColor, fogEdge ) + fogSunColor * pow( fogSun, ${SUN_GLOW.power.toFixed(1)} ) * ${SUN_GLOW.amount.toFixed(3)};
 	float fogLuma = dot( gl_FragColor.rgb, vec3( 0.299, 0.587, 0.114 ) );
 	vec3 fogDrained = mix( gl_FragColor.rgb, vec3( fogLuma ), fogFactor * fogFade * ${H.desaturate.toFixed(3)} );
 	gl_FragColor.rgb = mix( fogDrained, fogHaze, fogFactor );`,
@@ -88,5 +99,8 @@ export function installFogFade(): void {
     shader.uniforms.fogFade = fogFade;
     shader.uniforms.fogSunDir = fogSun.dir;
     shader.uniforms.fogSunColor = fogSun.color;
+    shader.uniforms.fogSkyTop = fogSky.top;
+    shader.uniforms.fogSkyBelow = fogSky.below;
+    shader.uniforms.fogSkyCurve = fogSky.curve;
   };
 }

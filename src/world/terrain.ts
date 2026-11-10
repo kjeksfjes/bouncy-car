@@ -1,6 +1,7 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { emptySample, GRID_STEP, type EnvGrid, type EnvSample } from './environment';
+import { emptySample, faceEnvironment, GRID_STEP } from './environment';
+import { FarTerrain } from './farTerrain';
 import { inspectColour, type InspectMode } from './inspect';
 import { hash2 } from './noise';
 import { DetailScatter, type Rock, type RockLayout, type RockShape } from './details';
@@ -11,7 +12,7 @@ import type { TreeLayout } from './trees';
 
 export const CHUNK_SIZE = 64;
 const CHUNK_RES = CHUNK_SIZE / GRID_STEP; // cells per side
-/** Chunks loaded in each direction around the car. Keep fog far below LOAD_RADIUS * CHUNK_SIZE. */
+/** Chunks loaded in each direction around the car; past them the far view (FarTerrain) carries on to the fog's end. */
 export const LOAD_RADIUS = 4;
 
 /** A point the terrain must exist around, e.g. the player (full view) or an AI car (physics only). */
@@ -43,6 +44,8 @@ export class Terrain {
   private inspectMode: InspectMode | null = null;
   /** Hollows left by boulders knocked loose, pressed into the ground of every chunk they reach. */
   private readonly imprints = new Imprints();
+  /** The coarse ground beyond the chunks, out to the fog's end. */
+  private readonly far: FarTerrain;
 
   constructor(
     private readonly field: TerrainField,
@@ -53,6 +56,7 @@ export class Terrain {
   ) {
     this.props = new PropScatter(trees, world);
     this.details = new DetailScatter(field, trees, rocks, world);
+    this.far = new FarTerrain(field, scene, CHUNK_SIZE);
   }
 
   /**
@@ -80,7 +84,11 @@ export class Terrain {
       }
     }
     const queue = [...missing.values()].sort((a, b) => a[2] - b[2]);
-    for (const [cx, cz] of queue.slice(0, budget)) this.chunks.set(key(cx, cz), this.build(cx, cz));
+    let built = 0;
+    for (const [cx, cz] of queue.slice(0, budget)) {
+      this.chunks.set(key(cx, cz), this.build(cx, cz));
+      built++;
+    }
     // Stale chunks, nearest the first center first: the new one is built before the old goes, so
     // there's never a hole in the ground.
     const near = cells[0];
@@ -94,6 +102,7 @@ export class Terrain {
       const [cx, cz] = k.split(',').map(Number);
       this.chunks.set(k, this.build(cx, cz));
       this.dispose(old);
+      built++;
     }
 
     for (const [k, chunk] of this.chunks) {
@@ -105,6 +114,8 @@ export class Terrain {
         this.stale.delete(k);
       }
     }
+    // The far view builds only in frames the chunks left alone, so the two never add up.
+    this.far.update(centers[0].position, (cx, cz) => this.chunks.has(key(cx, cz)), built > 0 ? 0 : 1);
   }
 
   /** Marks every loaded chunk reaching downhill of `z` for rebuilding (its colours and trees changed). */
@@ -113,6 +124,7 @@ export class Terrain {
       const cz = Number(k.split(',')[1]);
       if (cz * CHUNK_SIZE < z) this.stale.add(k);
     }
+    this.far.refreshBeyond(z);
   }
 
   /** Dev: colours the ground by what shapes it (see InspectMode), or by its cover again with null. */
@@ -348,18 +360,6 @@ export class Terrain {
 
 const _env = emptySample();
 
-/** A face's environment: the average of its three corners'. */
-function faceEnvironment(env: EnvGrid, a: number, b: number, c: number, out: EnvSample): EnvSample {
-  out.slope = (env.slope[a] + env.slope[b] + env.slope[c]) / 3;
-  out.curvature = (env.curvature[a] + env.curvature[b] + env.curvature[c]) / 3;
-  out.moisture = (env.moisture[a] + env.moisture[b] + env.moisture[c]) / 3;
-  out.exposure = (env.exposure[a] + env.exposure[b] + env.exposure[c]) / 3;
-  out.elevation = (env.elevation[a] + env.elevation[b] + env.elevation[c]) / 3;
-  out.cliff = (env.cliff[a] + env.cliff[b] + env.cliff[c]) / 3;
-  out.knoll = (env.knoll[a] + env.knoll[b] + env.knoll[c]) / 3;
-  out.floor = (env.floor[a] + env.floor[b] + env.floor[c]) / 3;
-  return out;
-}
 
 /** Chessboard distance (in chunks) from a chunk key to a cell, or 0 without one. */
 function chunkDistance(k: string, cell: { cx: number; cz: number } | undefined): number {

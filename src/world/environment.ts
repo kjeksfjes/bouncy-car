@@ -119,7 +119,7 @@ export class Environment {
   atNode(x: number, z: number, grid?: EnvGrid, out: EnvSample = emptySample()): EnvSample {
     const nx = Math.round(x / GRID_STEP) * GRID_STEP;
     const nz = Math.round(z / GRID_STEP) * GRID_STEP;
-    if (grid) {
+    if (grid && grid.step === GRID_STEP) {
       const i = (nx - grid.x0) / grid.step;
       const j = (nz - grid.z0) / grid.step;
       if (i >= 0 && j >= 0 && i < grid.n && j < grid.n) {
@@ -150,12 +150,15 @@ export class Environment {
   /**
    * The environment and ground heights for an n × n grid of points `step` m apart from (x0, z0):
    * one landform sample per point (plus a margin for curvature), so a chunk pays once for both.
-   * Values match `at` and `TerrainField.height` at the same points.
+   * On the mesh grid (step GRID_STEP) values match `at` and `TerrainField.height` at the same
+   * points; a coarser grid (the far terrain's) measures curvature over one step instead.
    */
   grid(x0: number, z0: number, n: number, step: number): EnvGrid {
-    if (step !== GRID_STEP || x0 % step !== 0 || z0 % step !== 0) throw new Error(`Environment grid must lie on the ${GRID_STEP} m mesh grid`);
-    const m = ENV.reach / step;
-    if (!Number.isInteger(m)) throw new Error(`Environment reach ${ENV.reach} m is not a multiple of the grid step ${step} m`);
+    if (step % GRID_STEP !== 0 || x0 % GRID_STEP !== 0 || z0 % GRID_STEP !== 0) throw new Error(`Environment grid must lie on the ${GRID_STEP} m mesh grid`);
+    // Curvature over ENV.reach, or over one step where the grid is coarser (the far terrain's).
+    const m = Math.max(1, Math.round(ENV.reach / step));
+    const reach = m * step;
+    if (step === GRID_STEP && reach !== ENV.reach) throw new Error(`Environment reach ${ENV.reach} m is not a multiple of the grid step ${step} m`);
     const w = n + 2 * m;
     const land = new Float64Array(w * w);
     const spots: LandformSpot[] = new Array(n * n);
@@ -196,7 +199,7 @@ export class Environment {
         const k = (j + m) * w + (i + m);
         const o = j * n + i;
         const h = land[k];
-        this.combine(spots[o], h, land[k - m], land[k + m], land[k - m * w], land[k + m * w], s);
+        this.combine(spots[o], h, land[k - m], land[k + m], land[k - m * w], land[k + m * w], s, reach);
         grid.heights[o] = this.field.heightOver(x0 + i * step, z0 + j * step, h);
         grid.slope[o] = s.slope;
         grid.curvature[o] = s.curvature;
@@ -218,8 +221,7 @@ export class Environment {
   }
 
   /** From the landform here (h, with its spot) and ENV.reach m to either side along x and z. */
-  private combine(spot: LandformSpot, h: number, xm: number, xp: number, zm: number, zp: number, out: EnvSample): EnvSample {
-    const r = ENV.reach;
+  private combine(spot: LandformSpot, h: number, xm: number, xp: number, zm: number, zp: number, out: EnvSample, r = ENV.reach): EnvSample {
     const M = ENV.moisture;
     const gx = (xp - xm) / (2 * r);
     const gz = (zp - zm) / (2 * r);
@@ -250,4 +252,17 @@ export class Environment {
 
 export function emptySample(): EnvSample {
   return { slope: 0, curvature: 0, moisture: 0, exposure: 0, elevation: 0, cliff: 0, knoll: 0, floor: 0 };
+}
+
+/** A face's environment: the average of its three corners'. */
+export function faceEnvironment(env: EnvGrid, a: number, b: number, c: number, out: EnvSample): EnvSample {
+  out.slope = (env.slope[a] + env.slope[b] + env.slope[c]) / 3;
+  out.curvature = (env.curvature[a] + env.curvature[b] + env.curvature[c]) / 3;
+  out.moisture = (env.moisture[a] + env.moisture[b] + env.moisture[c]) / 3;
+  out.exposure = (env.exposure[a] + env.exposure[b] + env.exposure[c]) / 3;
+  out.elevation = (env.elevation[a] + env.elevation[b] + env.elevation[c]) / 3;
+  out.cliff = (env.cliff[a] + env.cliff[b] + env.cliff[c]) / 3;
+  out.knoll = (env.knoll[a] + env.knoll[b] + env.knoll[c]) / 3;
+  out.floor = (env.floor[a] + env.floor[b] + env.floor[c]) / 3;
+  return out;
 }

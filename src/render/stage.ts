@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { fogFade, fogSun, installFogFade, SUN_GLOW } from './fogFade';
+import { fogFade, fogSky, fogSun, installFogFade, SUN_GLOW } from './fogFade';
 import { createSunFlare } from './sunFlare';
 
 const PALETTE = {
@@ -110,8 +110,8 @@ export class Stage {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
-  /** Fog end: nothing further from the camera than this is visible. */
-  readonly viewDistance = 250;
+  /** Fog end: nothing further from the camera than this is visible (the far view reaches past it: see FarTerrain). */
+  readonly viewDistance = 1000;
   private readonly sun: THREE.DirectionalLight;
   private readonly sky: THREE.Mesh;
   private readonly flare: THREE.Object3D;
@@ -133,10 +133,13 @@ export class Stage {
 
     this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1500);
 
-    // Fog far must stay inside the streamed terrain radius (see LOAD_RADIUS).
+    // Fog far must stay inside the far view's reach (see FarTerrain).
     this.scene.fog = new THREE.Fog(PALETTE.horizon, HAZE_NEAR, this.viewDistance);
     fogSun.dir.value.copy(SUN_DIR);
     fogSun.color.value.copy(SUN_GLOW_COLOR);
+    _warm.set(PALETTE.skyTop).getRGB(fogSky.top.value, THREE.SRGBColorSpace);
+    _warm.set(PALETTE.belowHorizon).getRGB(fogSky.below.value, THREE.SRGBColorSpace);
+    fogSky.curve.value = COOL_CURVE;
     this.sky = makeSky(900);
     this.scene.add(this.sky);
 
@@ -185,7 +188,12 @@ export class Stage {
       u.curve.value = THREE.MathUtils.lerp(COOL_CURVE, WARM.curve, t);
     }
     const fog = this.scene.fog as THREE.Fog;
-    fog.color.copy((this.sky.material as THREE.ShaderMaterial).uniforms.horizon.value);
+    const sky = (this.sky.material as THREE.ShaderMaterial).uniforms;
+    fog.color.copy(sky.horizon.value);
+    // In output colour space, as three hands the fog its own colour (the haze mixes after it).
+    sky.top.value.getRGB(fogSky.top.value, THREE.SRGBColorSpace);
+    sky.below.value.getRGB(fogSky.below.value, THREE.SRGBColorSpace);
+    fogSky.curve.value = sky.curve.value;
     fogFade.value = t;
     if (Math.abs(t - this.bakedWarmth) >= REBAKE_STEP || (t !== this.bakedWarmth && (t === 0 || t === 1))) {
       this.bakedWarmth = t;

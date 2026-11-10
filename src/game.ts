@@ -32,13 +32,13 @@ const SLOW_LABELS = ['½×', '¼×', '⅛×', '1/16×'];
 /** How quickly slow motion eases in and out (1/s): about 0.3 s. */
 const SLOW_RAMP = 10;
 /**
- * B starts the next biome this far ahead (m): just past the fog's end (250 m from the camera),
+ * B starts the next biome this far ahead (m): just past the fog's end (1000 m from the camera),
  * so the change can't be seen happening; and ramps it in over `ramp` m. Shift+B looks up to
  * `searchRange` m downhill for where the next biome starts.
  */
 /** How quickly the sky and fog follow the biome's warmth (1/s): a few seconds. */
 const WARMTH_EASE = 0.8;
-const BIOME_JUMP = { ahead: 260, ramp: 400, searchRange: 20_000 };
+const BIOME_JUMP = { ahead: 1010, ramp: 400, searchRange: 20_000 };
 type CameraMode = (typeof CAMERA_MODES)[number];
 
 /** No car legitimately goes this fast (m/s); beyond it the physics has blown up. */
@@ -81,6 +81,8 @@ export class Game {
   private readonly juice: Juice;
   /** Remaining hit-stop: the simulation is frozen while this is above zero. */
   private hitStop = 0;
+  /** Whether the first frame has drawn the glass shards' warm-up (see Shards.warmUp). */
+  private warmedUp = false;
   /** Last sane position of the player's car, where N respawns if the physics blew up. */
   private readonly lastSafe = new THREE.Vector3();
   private readonly bufferSize = new THREE.Vector2();
@@ -281,6 +283,11 @@ export class Game {
     this.juice.update(gt, live, this.stage.renderer.getDrawingBufferSize(this.bufferSize).y / 2);
     this.audio.update(gt, this.stage.camera, live);
     this.hud.update(gt, this.car, this.autopilot);
+    // The first frame, with the camera behind the car, compiles the glass for the first crash.
+    if (!this.warmedUp) {
+      this.debris.warmUp();
+      this.warmedUp = true;
+    }
     this.stage.render();
   }
 

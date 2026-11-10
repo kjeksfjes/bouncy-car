@@ -64,6 +64,11 @@ export class Debris {
     this.fluids = new Fluids(scene, field);
   }
 
+  /** Compiles the glass shards' shaders in the next render (see Shards.warmUp). */
+  warmUp(): void {
+    this.shards.warmUp();
+  }
+
   /** Glass shards bursting from `points` (world space), carried along with `velocity`, thrown out along `outward`. */
   shatter(points: readonly THREE.Vector3[], velocity: THREE.Vector3, outward: THREE.Vector3, tint?: THREE.Color): void {
     this.shards.burst(points, velocity, outward, tint);
