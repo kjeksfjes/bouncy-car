@@ -22,10 +22,15 @@ export const fogSky = { top: { value: new THREE.Color(1, 1, 1) }, below: { value
  * thicker over valleys, made nearby ground look foggy and distant hills flat silhouettes).
  */
 const HAZE = {
-  /** The haze builds from the fog's near distance (Stage) to the edge zone as t^power: slow at first. */
-  power: 1.6,
-  /** How hazy it gets at the edge zone's start: well short of full, so distant hills keep their colours. */
-  reach: 0.45,
+  /**
+   * The haze builds with distance past the fog's near end (Stage) as reach × (1 − e^−(d/scale)^power):
+   * slow near the car, then levelling off, in metres (not a share of the fog range), so it reads the
+   * same however far the view reaches. About 0.1 at 100 m, 0.27 at 200 m, 0.5 at 400 m, 0.68 at 800 m.
+   */
+  scale: 300,
+  power: 1.3,
+  /** How hazy the far distance gets before the edge zone: short of full, so distant hills keep their colours. */
+  reach: 0.7,
   /** Share of the fog range (from the far end) where it blends fully into the haze, hiding the streamed terrain's edge. */
   edge: 0.2,
   /** How much of the colour's saturation the haze drains at full strength, × fogFade. */
@@ -75,8 +80,8 @@ export function installFogFade(): void {
     'float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );',
     /* glsl */ `float fogDistance = length( vFogPosition );
 		float fogEdgeStart = fogFar * ${(1 - H.edge).toFixed(3)};
-		float fogBuilt = clamp( ( fogDistance - fogNear ) / ( fogEdgeStart - fogNear ), 0.0, 1.0 );
-		float fogFactor = ${H.reach.toFixed(3)} * pow( fogBuilt, ${H.power.toFixed(2)} );
+		float fogBuilt = max( fogDistance - fogNear, 0.0 ) / ${H.scale.toFixed(1)};
+		float fogFactor = ${H.reach.toFixed(3)} * ( 1.0 - exp( - pow( fogBuilt, ${H.power.toFixed(2)} ) ) );
 		float fogEdge = smoothstep( fogEdgeStart, fogFar, fogDistance );
 		fogFactor = max( fogFactor, fogEdge );`,
   );
