@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import type { Stand } from './biome';
+import { emptySample, type EnvGrid } from './environment';
 import { hash2 } from './noise';
 import type { TerrainField } from './terrainField';
 
@@ -16,6 +18,18 @@ export const SPECIES: Record<Species, { radius: number; halfHeight: number }> = 
 };
 /** The widest collider radius per unit of scale, for search reach. */
 const MAX_RADIUS = Math.max(...Object.values(SPECIES).map((s) => s.radius));
+/**
+ * Tree size by maturity: young trees (wood fringes) at `young`, old ones (wood cores, lone trees) at
+ * `old`, each varied by ±`vary`; then scaled by the treeline (TerrainField.treeScale, ≤ 1).
+ */
+const SIZE = { young: 0.6, old: 1.45, vary: 0.15 };
+/**
+ * A landmark's great oak (see LandmarkLayout), drawn with its own model at scale 1 (≈16 m tall,
+ * ≈20 m across), varied by `scale` (min..max). Its collider is the trunk (and its roots' bulk) below the limbs.
+ */
+export const OAK = { radius: 1.8, halfHeight: 2.7, scale: [0.9, 1.1] as const };
+/** The widest collider there can be (m), for search reach. */
+const MAX_REACH = Math.max(MAX_RADIUS * SIZE.old * (1 + SIZE.vary), OAK.radius * OAK.scale[1]);
 /** Cache cap; the cache is simply cleared when full (lookups are cheap to redo). */
 const CACHE_LIMIT = 20000;
 
@@ -30,9 +44,13 @@ export interface Tree {
   snowy: boolean;
   /** Collider radius (m). */
   radius: number;
+  /** A landmark's great oak (species broadleaf, its own model and collider: see OAK). */
+  oak: boolean;
 }
 
 const _n = new THREE.Vector3();
+const _env = emptySample();
+const _stand: Stand = { chance: 0, maturity: 0 };
 
 /**
  * Deterministic tree placement. The single source of truth for where trees
@@ -44,23 +62,48 @@ export class TreeLayout {
 
   constructor(private readonly field: TerrainField) {}
 
-  /** The tree in grid cell (cellX, cellZ), if there is one. */
-  inCell(cellX: number, cellZ: number): Tree | null {
-    // Cantor-free key: cells stay well inside ±2^20 for any reachable distance.
-    const key = (cellX + 1048576) * 2097152 + (cellZ + 1048576);
+  /** The tree in grid cell (cellX, cellZ), if there is one; `grid`, a chunk's, saves sampling its environment. */
+  inCell(cellX: number, cellZ: number, grid?: EnvGrid): Tree | null {
+    const key = cellKey(cellX, cellZ);
     const cached = this.cache.get(key);
     if (cached !== undefined) return cached;
+    const tree = this.place(cellX, cellZ, grid);
+    if (this.cache.size >= CACHE_LIMIT) this.cache.clear();
+    this.cache.set(key, tree);
+    return tree;
+  }
 
+  /**
+   * The same as inCell, but leaves the cache alone when the cell isn't in it: for the far view,
+   * whose thousands of cells would otherwise push out the ones chunks and the AI keep asking for.
+   */
+  peek(cellX: number, cellZ: number): Tree | null {
+    const cached = this.cache.get(cellKey(cellX, cellZ));
+    return cached !== undefined ? cached : this.place(cellX, cellZ);
+  }
+
+  private place(cellX: number, cellZ: number, grid?: EnvGrid): Tree | null {
     const seed = this.field.seed;
     let tree: Tree | null = null;
     const x = (cellX + hash2(cellX, cellZ, seed + 11)) * TREE_CELL;
     const z = (cellZ + hash2(cellX, cellZ, seed + 12)) * TREE_CELL;
+    // A landmark keeps the trees off; a great oak is the tree of the cell it stands in.
+    const landmark = this.field.landmarks.near(x, z);
+    if (landmark) {
+      const own = landmark.kind === 'oak' && Math.floor(landmark.x / TREE_CELL) === cellX && Math.floor(landmark.z / TREE_CELL) === cellZ;
+      return own ? landmark.tree : null;
+    }
+    const env = this.field.environment.atNode(x, z, grid, _env);
+    const stand = this.field.treeStand(x, z, env, _stand);
     if (
-      hash2(cellX, cellZ, seed + 13) < this.field.treeDensity(x, z) &&
-      this.field.normal(x, z, _n).y >= 0.82
+      hash2(cellX, cellZ, seed + 13) < stand.chance &&
+      this.field.normal(x, z, _n).y >= 0.82 &&
+      // No trees on bare rock (cliffs, rocky ridges).
+      !this.field.biome.isRock(x, z, env)
     ) {
-      const species = this.field.biome.treeSpecies(x, z, hash2(cellX, cellZ, seed + 16), hash2(cellX, cellZ, seed + 17));
-      const scale = (0.8 + hash2(cellX, cellZ, seed + 14) * 0.8) * this.field.treeScale(z);
+      const species = this.field.biome.treeSpecies(x, z, env, hash2(cellX, cellZ, seed + 16), hash2(cellX, cellZ, seed + 17));
+      const vary = 1 + SIZE.vary * (2 * hash2(cellX, cellZ, seed + 14) - 1);
+      const scale = (SIZE.young + (SIZE.old - SIZE.young) * stand.maturity) * vary * this.field.treeScale(z);
       tree = {
         x,
         y: this.field.height(x, z) - 0.2,
@@ -68,12 +111,11 @@ export class TreeLayout {
         scale,
         yaw: hash2(cellX, cellZ, seed + 15) * Math.PI * 2,
         species,
-        snowy: species === 'spruce' && this.field.biome.snowCover(x, z, _n) > 0.5,
+        snowy: species === 'spruce' && this.field.biome.snowCover(x, z, _n, env) > 0.5,
         radius: SPECIES[species].radius * scale,
+        oak: false,
       };
     }
-    if (this.cache.size >= CACHE_LIMIT) this.cache.clear();
-    this.cache.set(key, tree);
     return tree;
   }
 
@@ -84,7 +126,7 @@ export class TreeLayout {
 
   /** Nearest tree whose trunk comes within `clearance` of (x, z), or null. */
   blocking(x: number, z: number, clearance: number): Tree | null {
-    const reach = clearance + MAX_RADIUS * 1.6; // 1.6 = max tree scale
+    const reach = clearance + MAX_REACH;
     let best: Tree | null = null;
     let bestGap = Infinity;
     for (let cz = Math.floor((z - reach) / TREE_CELL); cz <= Math.floor((z + reach) / TREE_CELL); cz++) {
@@ -100,4 +142,9 @@ export class TreeLayout {
     }
     return best;
   }
+}
+
+/** Cantor-free key: cells stay well inside ±2^20 for any reachable distance. */
+function cellKey(cellX: number, cellZ: number): number {
+  return (cellX + 1048576) * 2097152 + (cellZ + 1048576);
 }

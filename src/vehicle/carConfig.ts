@@ -397,8 +397,13 @@ export const COUPE_70S: CarConfig = {
     crushSpreadTree: 0.3,
     crushSpreadWide: 0.9,
     crushTreeFactor: 1.5,
+    // A tree notch draws each front corner in toward it: ≈0.1 m at 0.47 m deep, ≈0.25 m at full depth.
+    crushWrap: 1.5,
     crushFold: 0.45,
-    crushBuckle: 0.2,
+    // A corner pushed back 0.15 m shortens the fender ahead of the arch ≈7 cm: it bows out ≈10 cm.
+    crushBuckle: 0.8,
+    // The hood is ≈1.5 m wide: over a tree notch it tents as a ridge across most of it.
+    crushFoldSpread: 0.6,
     crushWrinkle: 0.06,
     crushWrinkleSize: 0.2,
     // The cabin stands ≈0.4 m above the beltline; the roof can come most of the way down.
@@ -415,10 +420,13 @@ export const COUPE_70S: CarConfig = {
     lightWireHp: 120,
     lightDropAtCrush: 0.15,
     lightSnapChance: 0.4,
+    lightSnapChanceHard: 0.85,
     wireLength: 0.25,
     // Linear air drag on a dangling light: ≈3 m/s² at 15 m/s, well under gravity, so it hangs and swings.
     wireDrag: 0.25,
-    // Measured while driving: ≈10 hanging still, 100–180 on bumps (95th pct), 400–800 on jump landings.
-    wireTearAccel: 300,
+    // Measured while driving (20 s of autopilot down a bumpy slope): median 6, 95th pct 78, 99th
+    // 176, ordinary bumps and small landings up to ≈400, hard jump landings ≈800. A wire should
+    // last over bumps and snap on a hard landing.
+    wireTearAccel: 600,
   },
 };

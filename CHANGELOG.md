@@ -2,6 +2,54 @@
 
 Releases are named after game-development milestones and jargon.
 
+## v0.3.0 – "World Building" (2026-11-10)
+
+The mountain becomes a landscape: real landforms, ground and growth that
+follow them, a kilometre of view, and a sturdier, more detailed car.
+
+- **Landforms:** ridges and valleys meander down the fall line, with level
+  floors and flanks up to 60 m high; gullies fork and join down the valley
+  flanks; ledges where a flank levels off; rocky knolls with a gentle ramp
+  up and a short rock face to fly off; about one in five kicker ridges comes
+  up bigger.
+- **Shared environment:** slope, curvature, moisture, sun exposure and
+  elevation are worked out from the landforms, and ground cover, trees and
+  details all read them instead of separate noise.
+- **Ground cover across the biomes:** some country is rocky, rock on its
+  upper flanks and ridge tops; drop walls are grassy banks with rock
+  outcrops instead of a bare stone band; rock shifts slowly between greys;
+  grass leans lush in moist ground and drier on sunny slopes; snow lingers in
+  hollows and scours off crests.
+- **Trees:** woods grow where the ground suits them, old and big in their
+  cores and young at the fringe, with each species on its own ground (spruce
+  in moist, shaded hollows, pine on dry, sunny ridges, broadleaf low and
+  sheltered). Open and wooded stretches alternate down the slope in the snow
+  forest and the grassland, valley floors stay open meadow, now and then a
+  great forest closes in, and winding lanes keep a way through every wood.
+- **Details:** boulders lie about on rock and convex grass, snow-topped in
+  the snow; a hard enough hit knocks one loose to tumble off, leaving its
+  hollow and thrown clods. Shrubs gather along wood edges, grass clumps on
+  moist ground.
+- **Landmarks:** vardes of loose stones on cliff tops and knoll crowns
+  topple when knocked; rare great oaks stand alone on rises in the grassland.
+- **Far view and haze:** low-detail terrain and trees carry the view out to
+  1 km; the haze builds gently by distance, glows warmer toward the sun and
+  melts into the sky's own colour at the edge.
+- **Sound:** modal-synthesis stone sounds: the knock of a toppling varde,
+  stones clacking and thudding as they tumble.
+- **The car:** a low-poly V8 engine bay that the crush shoves back whole; a
+  tree-hit nose stays wrapped round the trunk instead of shrinking away from
+  it; end panels that crumple; dangling lights that settle and tear off in
+  crashes; closed wheel housings; overlapping fluid stains blend instead of
+  flickering; no freeze on the first broken window.
+- **Camera:** in slow motion the orbit camera stays where you leave it.
+- **AI:** the autopilot and traffic steer clear of boulders as well as trees.
+- **Faster:** chunk builds are about a third cheaper (6.0 → 4.3 ms).
+- **Dev tools:** I cycles terrain inspection views (landforms, gullies,
+  steepness, moisture, curvature, exposure); `scripts/terrain-map.mjs` draws
+  relief and tree maps; a HUD line shows where the car is, and `?x=` spawns
+  there.
+
 ## v0.2.0 – "Biome Blending" (2026-11-08)
 
 The mountain thaws into summer: three biomes along the descent.

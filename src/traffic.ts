@@ -4,7 +4,7 @@ import { AiDriver } from './vehicle/aiDriver';
 import type { Car } from './vehicle/car';
 import type { Terrain } from './world/terrain';
 import type { TerrainField } from './world/terrainField';
-import type { TreeLayout } from './world/trees';
+import type { Obstacles } from './world/details';
 
 /**
  * AI traffic that comes and goes around the player. Cars only ever appear or
@@ -56,7 +56,7 @@ export class Traffic {
 
   constructor(
     private readonly field: TerrainField,
-    private readonly trees: TreeLayout,
+    private readonly obstacles: Obstacles,
     private readonly terrain: Terrain,
     private readonly createCar: CarFactory,
   ) {}
@@ -113,7 +113,7 @@ export class Traffic {
       if (!this.terrain.isLoadedAt(x, z)) continue;
       if (view.canSee(_spot, T.carViewRadius)) continue;
       if (this.field.normal(x, z, _n).y < T.minGroundUp) continue;
-      if (this.trees.blocking(x, z, T.treeClearance)) continue;
+      if (this.obstacles.blocking(x, z, T.treeClearance)) continue;
       if (player.distanceTo(_spot) < T.carSpacing) continue;
       if (this.active.some((a) => a.car.position.distanceTo(_spot) < T.carSpacing)) continue;
       return _spot.clone();
@@ -130,6 +130,6 @@ export class Traffic {
     const car = this.createCar(at, yaw, paint);
     const speed = cruise * 0.8;
     car.body.setLinvel({ x: -Math.sin(yaw) * speed, y: 0, z: -Math.cos(yaw) * speed }, true);
-    this.active.push({ car, driver: new AiDriver(this.trees, cruise) });
+    this.active.push({ car, driver: new AiDriver(this.obstacles, cruise) });
   }
 }

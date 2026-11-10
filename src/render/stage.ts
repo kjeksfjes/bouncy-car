@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { fogFade, installFogFade } from './fogFade';
+import { fogFade, fogSky, fogSun, installFogFade, SUN_GLOW } from './fogFade';
 import { createSunFlare } from './sunFlare';
 
 const PALETTE = {
@@ -20,13 +20,12 @@ const WARM = {
   skyTop: '#3f80d0',
   horizon: '#d2e2ee',
   belowHorizon: '#c6d6df',
-  /** Distance fades (desaturates) here rather than whitening, see fogFade; it can start fairly near. */
-  fogNear: 50,
   curve: 0.4,
 };
 /** The sky gradient's curve in the snow: how quickly it turns from horizon to top colour (lower = sooner). */
 const COOL_CURVE = 0.6;
-const COOL_FOG_NEAR = 60;
+/** The haze starts this far from the camera (m), so the car and the ground around it stay clear (see fogFade's HAZE). */
+const HAZE_NEAR = 30;
 /** The ambient light (baked from the sky) is re-baked when the warmth has moved this much. */
 const REBAKE_STEP = 0.1;
 
@@ -38,6 +37,16 @@ export const pixelRatio = () => Math.min(window.devicePixelRatio, 2);
 
 /** Direction *towards* the sun: right-front, fairly low for long shadows. */
 export const SUN_DIR = new THREE.Vector3(0.6, 0.55, -0.45).normalize();
+
+/**
+ * The sun's colour encoded for output (sRGB). The haze's sun glow is added after the colour-space
+ * conversion, both in the fog (three applies fog in output space) and in the sky, so they match.
+ */
+const SUN_GLOW_COLOR = (() => {
+  const c = { r: 0, g: 0, b: 0 };
+  SUN_COLOR.getRGB(c, THREE.SRGBColorSpace);
+  return new THREE.Color().setRGB(c.r, c.g, c.b, THREE.LinearSRGBColorSpace);
+})();
 
 const SHADOW_EXTENT = 45;
 const _warm = new THREE.Color();
@@ -56,6 +65,7 @@ function makeSky(radius: number): THREE.Mesh {
       horizon: { value: new THREE.Color(PALETTE.horizon) },
       below: { value: new THREE.Color(PALETTE.belowHorizon) },
       sunColor: { value: new THREE.Color(PALETTE.sun) },
+      glowColor: { value: SUN_GLOW_COLOR },
       sunDir: { value: SUN_DIR },
       curve: { value: COOL_CURVE },
     },
@@ -70,6 +80,7 @@ function makeSky(radius: number): THREE.Mesh {
       uniform vec3 horizon;
       uniform vec3 below;
       uniform vec3 sunColor;
+      uniform vec3 glowColor;
       uniform vec3 sunDir;
       uniform float curve;
       varying vec3 vDir;
@@ -81,9 +92,11 @@ function makeSky(radius: number): THREE.Mesh {
         vec3 col = mix(horizon, top, pow(h, curve) * smoothstep(0.0, 0.06, h));
         col = mix(col, below, smoothstep(0.0, -0.2, d.y));
         float s = max(dot(d, sunDir), 0.0);
-        col += sunColor * (pow(s, 900.0) * 3.0 + pow(s, 10.0) * 0.18);
+        col += sunColor * pow(s, 900.0) * 3.0;
         gl_FragColor = vec4(col, 1.0);
         #include <colorspace_fragment>
+        // The glow around the sun, in output space like the haze's (see SUN_GLOW_COLOR).
+        gl_FragColor.rgb += glowColor * pow(s, ${SUN_GLOW.power.toFixed(1)}) * ${SUN_GLOW.amount.toFixed(3)};
       }`,
   });
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(radius, 32, 16), material);
@@ -97,8 +110,8 @@ export class Stage {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
-  /** Fog end: nothing further from the camera than this is visible. */
-  readonly viewDistance = 250;
+  /** Fog end: nothing further from the camera than this is visible (the far view reaches past it: see FarTerrain). */
+  readonly viewDistance = 1000;
   private readonly sun: THREE.DirectionalLight;
   private readonly sky: THREE.Mesh;
   private readonly flare: THREE.Object3D;
@@ -120,8 +133,13 @@ export class Stage {
 
     this.camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1500);
 
-    // Fog far must stay inside the streamed terrain radius (see LOAD_RADIUS).
-    this.scene.fog = new THREE.Fog(PALETTE.horizon, COOL_FOG_NEAR, this.viewDistance);
+    // Fog far must stay inside the far view's reach (see FarTerrain).
+    this.scene.fog = new THREE.Fog(PALETTE.horizon, HAZE_NEAR, this.viewDistance);
+    fogSun.dir.value.copy(SUN_DIR);
+    fogSun.color.value.copy(SUN_GLOW_COLOR);
+    _warm.set(PALETTE.skyTop).getRGB(fogSky.top.value, THREE.SRGBColorSpace);
+    _warm.set(PALETTE.belowHorizon).getRGB(fogSky.below.value, THREE.SRGBColorSpace);
+    fogSky.curve.value = COOL_CURVE;
     this.sky = makeSky(900);
     this.scene.add(this.sky);
 
@@ -157,7 +175,7 @@ export class Stage {
 
   /**
    * Shifts the sky, horizon and fog from wintry (0) toward summer (1), keeping the fog matched to
-   * the horizon; in summer the fog fades distant colours instead of whitening them (see fogFade).
+   * the horizon; in summer the haze also drains distant colours a little (see fogFade).
    * Re-bakes the ambient light now and then (it costs a few ms).
    */
   setWarmth(warmth: number): void {
@@ -170,8 +188,12 @@ export class Stage {
       u.curve.value = THREE.MathUtils.lerp(COOL_CURVE, WARM.curve, t);
     }
     const fog = this.scene.fog as THREE.Fog;
-    fog.color.copy((this.sky.material as THREE.ShaderMaterial).uniforms.horizon.value);
-    fog.near = THREE.MathUtils.lerp(COOL_FOG_NEAR, WARM.fogNear, t);
+    const sky = (this.sky.material as THREE.ShaderMaterial).uniforms;
+    fog.color.copy(sky.horizon.value);
+    // In output colour space, as three hands the fog its own colour (the haze mixes after it).
+    sky.top.value.getRGB(fogSky.top.value, THREE.SRGBColorSpace);
+    sky.below.value.getRGB(fogSky.below.value, THREE.SRGBColorSpace);
+    fogSky.curve.value = sky.curve.value;
     fogFade.value = t;
     if (Math.abs(t - this.bakedWarmth) >= REBAKE_STEP || (t !== this.bakedWarmth && (t === 0 || t === 1))) {
       this.bakedWarmth = t;

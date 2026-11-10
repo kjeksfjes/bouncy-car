@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { TreeLayout } from '../world/trees';
+import type { Obstacles } from '../world/details';
 import type { Car, CarInput } from './car';
 
 /**
@@ -79,7 +79,7 @@ export class AiDriver {
 
   /** @param cruiseSpeed preferred speed in m/s; varies per car so traffic spreads out */
   constructor(
-    private readonly trees: TreeLayout,
+    private readonly obstacles: Obstacles,
     private readonly cruiseSpeed = AI.cruiseSpeed,
   ) {}
 
@@ -192,12 +192,12 @@ export class AiDriver {
     return cost;
   }
 
-  /** Distance along heading `yaw` to the first blocking tree, or Infinity. */
+  /** Distance along heading `yaw` to the first blocking tree or boulder, or Infinity. */
   private firstTree(from: THREE.Vector3, yaw: number, look: number): number {
     const dx = -Math.sin(yaw);
     const dz = -Math.cos(yaw);
     for (let d = AI.sampleStep; d <= look; d += AI.sampleStep) {
-      if (this.trees.blocking(from.x + dx * d, from.z + dz * d, AI.clearance)) return d;
+      if (this.obstacles.blocking(from.x + dx * d, from.z + dz * d, AI.clearance)) return d;
     }
     return Infinity;
   }

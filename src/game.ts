@@ -17,8 +17,12 @@ import { COUPE_70S } from './vehicle/carConfig';
 import { Debris } from './world/debris';
 import { BIOMES } from './world/biome';
 import type { TerrainPreset } from './world/features';
+import { INSPECT_LEGENDS, INSPECT_MODES, type InspectMode } from './world/inspect';
 import { LOAD_RADIUS, Terrain, type StreamCenter } from './world/terrain';
 import { TerrainField } from './world/terrainField';
+import { Boulders } from './world/boulders';
+import { Clods } from './world/clods';
+import { Obstacles, RockLayout } from './world/details';
 import { TreeLayout } from './world/trees';
 
 const CAMERA_MODES = ['orbit', 'heli'] as const;
@@ -28,13 +32,13 @@ const SLOW_LABELS = ['½×', '¼×', '⅛×', '1/16×'];
 /** How quickly slow motion eases in and out (1/s): about 0.3 s. */
 const SLOW_RAMP = 10;
 /**
- * B starts the next biome this far ahead (m): just past the fog's end (250 m from the camera),
+ * B starts the next biome this far ahead (m): just past the fog's end (1000 m from the camera),
  * so the change can't be seen happening; and ramps it in over `ramp` m. Shift+B looks up to
  * `searchRange` m downhill for where the next biome starts.
  */
 /** How quickly the sky and fog follow the biome's warmth (1/s): a few seconds. */
 const WARMTH_EASE = 0.8;
-const BIOME_JUMP = { ahead: 260, ramp: 400, searchRange: 20_000 };
+const BIOME_JUMP = { ahead: 1010, ramp: 400, searchRange: 20_000 };
 type CameraMode = (typeof CAMERA_MODES)[number];
 
 /** No car legitimately goes this fast (m/s); beyond it the physics has blown up. */
@@ -66,6 +70,8 @@ export class Game {
   /** T toggles slow motion; ' picks its speed from SLOW_SPEEDS. timeScale eases toward it. */
   private slowMotion = false;
   private slowLevel = 1;
+  /** Dev: the terrain inspection view shown (I cycles), or null for the normal ground. */
+  private inspectMode: InspectMode | null = null;
   private timeScale = 1;
   /** The atmosphere's warmth (see Stage.setWarmth), eased toward the biome's. */
   private warmth = 0;
@@ -75,10 +81,15 @@ export class Game {
   private readonly juice: Juice;
   /** Remaining hit-stop: the simulation is frozen while this is above zero. */
   private hitStop = 0;
+  /** Whether the first frame has drawn the glass shards' warm-up (see Shards.warmUp). */
+  private warmedUp = false;
   /** Last sane position of the player's car, where N respawns if the physics blew up. */
   private readonly lastSafe = new THREE.Vector3();
   private readonly bufferSize = new THREE.Vector2();
   private readonly trees: TreeLayout;
+  private readonly rocks: RockLayout;
+  private readonly boulders: Boulders;
+  private readonly clods: Clods;
   /** Drives the player's car while the autopilot is on. */
   private readonly ai: AiDriver;
   /** Shows the AI's chosen heading while the autopilot drives. */
@@ -91,19 +102,22 @@ export class Game {
   /**
    * @param start metres downhill to spawn at (dev: to test the lower biomes)
    * @param terrain which terrain generator to use
+   * @param startX metres across the slope to spawn at (dev: to get back to a spot)
    */
-  constructor(container: HTMLElement, seed: number, start = 0, terrain: TerrainPreset = 'classic') {
+  constructor(container: HTMLElement, seed: number, start = 0, terrain: TerrainPreset = 'classic', startX = 0) {
     this.stage = new Stage(container);
     this.world = new RAPIER.World({ x: 0, y: -GRAVITY, z: 0 });
     this.world.timestep = PHYSICS_STEP;
     this.field = new TerrainField(seed, terrain);
     this.trees = new TreeLayout(this.field);
-    this.terrain = new Terrain(this.field, this.stage.scene, this.world, this.trees);
-    this.ai = new AiDriver(this.trees);
+    this.rocks = new RockLayout(this.field, this.trees);
+    const obstacles = new Obstacles(this.trees, this.rocks, this.field.landmarks);
+    this.terrain = new Terrain(this.field, this.stage.scene, this.world, this.trees, this.rocks);
+    this.ai = new AiDriver(obstacles);
     this.aiArrow.visible = false;
     this.stage.scene.add(this.aiArrow);
     this.debris = new Debris(this.stage.scene, this.world, this.field);
-    this.traffic = new Traffic(this.field, this.trees, this.terrain, (at, yaw, paint) => this.newCar(at, yaw, paint));
+    this.traffic = new Traffic(this.field, obstacles, this.terrain, (at, yaw, paint) => this.newCar(at, yaw, paint));
     // Both cameras orbit with the mouse; only the active one takes the input.
     const pointer = new PointerOrbit();
     pointer.attach(this.stage.renderer.domElement);
@@ -114,8 +128,13 @@ export class Game {
       (car) => car === this.car,
       (seconds) => (this.hitStop = Math.max(this.hitStop, seconds)),
     );
+    this.clods = new Clods(this.stage.scene, (x, z) => this.terrain.surfaceHeight(x, z));
+    this.boulders = new Boulders(this.world, this.stage.scene, this.field, this.terrain, this.debris, (at, velocity, radius, ground) => {
+      this.juice.uproot(at, velocity, radius, ground === 'rock');
+      this.clods.burst(at, velocity, radius, ground);
+    }, this.audio);
 
-    const spawn = new THREE.Vector3(0, this.field.height(0, -start) + 1.5, -start);
+    const spawn = new THREE.Vector3(startX, this.field.height(startX, -start) + 1.5, -start);
     this.terrain.update([{ position: spawn, radius: LOAD_RADIUS }], INITIAL_CHUNKS);
     this.car = this.newCar(spawn, 0);
   }
@@ -185,6 +204,7 @@ export class Game {
     if (this.input.consume('KeyM')) this.audio.toggleMute();
     if (this.input.consume('KeyC')) this.cycleCamera();
     if (this.input.consume('KeyT')) this.slowMotion = !this.slowMotion;
+    if (import.meta.env.DEV && this.input.consume('KeyI')) this.cycleInspect();
     if (this.input.consume("char:'")) {
       // Cycles the slow-motion speed; from normal speed it first switches to the current one.
       if (this.slowMotion) this.slowLevel = (this.slowLevel + 1) % SLOW_SPEEDS.length;
@@ -224,9 +244,12 @@ export class Game {
       for (const car of cars) car.step(PHYSICS_STEP, controls.get(car)!);
       this.world.step(this.events);
       this.events.drainContactForceEvents((e) => {
-        for (const car of cars) car.handleContactForce(e.collider1(), e.collider2(), e.totalForceMagnitude());
+        // A boulder knocked loose takes its share of the hit (see Boulders).
+        const force = this.boulders.contact(e);
+        for (const car of cars) car.handleContactForce(e.collider1(), e.collider2(), force);
       });
       for (const car of cars) car.afterStep();
+      this.boulders.afterStep();
       this.debris.afterStep();
       this.accumulator -= PHYSICS_STEP;
     }
@@ -247,6 +270,7 @@ export class Game {
     camera.update(dt, this.car.model.root, this.car.velocity, false, this.timeScale);
     this.view.update(this.stage.camera, this.stage.viewDistance);
     this.debris.update(gt, pos, this.view, alpha);
+    this.clods.update(gt);
     this.traffic.update(gt, pos, this.view);
     this.stage.follow(pos);
     this.updateWarmth(dt);
@@ -260,7 +284,25 @@ export class Game {
     this.juice.update(gt, live, this.stage.renderer.getDrawingBufferSize(this.bufferSize).y / 2);
     this.audio.update(gt, this.stage.camera, live);
     this.hud.update(gt, this.car, this.autopilot);
+    if (import.meta.env.DEV) this.hud.setWhere(this.describeWhere());
+    // The first frame, with the camera behind the car, compiles the glass for the first crash.
+    if (!this.warmedUp) {
+      this.debris.warmUp();
+      this.warmedUp = true;
+    }
     this.stage.render();
+  }
+
+  /**
+   * Dev: where the car is, as the URL params that spawn there (?start= metres downhill, ?x= across),
+   * with the biome and whether it's an open or wooded stretch or a great forest.
+   */
+  private describeWhere(): string {
+    const { x, z } = this.car.position;
+    const biome = this.field.biome;
+    const name = [...BIOMES].reverse().find((b) => b.from <= biome.distance(z))?.name ?? BIOMES[0].name;
+    const woods = biome.greatForest(x, z) > 0.5 ? 'great forest' : biome.woodedStretch(x, z) > 0.5 ? 'wooded' : 'open';
+    return `start=${Math.round(-z)} x=${Math.round(x)} · ${name} · ${woods}`;
   }
 
   /** Eases the sky and fog toward the warmth of the biome the car is in (so Shift+B doesn't jump it). */
@@ -275,6 +317,14 @@ export class Game {
     this.paused = !this.paused;
     this.hud.setPaused(this.paused);
     this.audio.setPaused(this.paused);
+  }
+
+  /** Dev: off → each inspection view in turn → off. */
+  private cycleInspect(): void {
+    const i = this.inspectMode === null ? 0 : INSPECT_MODES.indexOf(this.inspectMode) + 1;
+    this.inspectMode = INSPECT_MODES[i] ?? null;
+    this.terrain.inspect = this.inspectMode;
+    this.hud.setInspect(this.inspectMode && INSPECT_LEGENDS[this.inspectMode]);
   }
 
   private cycleCamera(): void {
@@ -334,6 +384,8 @@ export class Game {
     const next = BIOMES.find((b) => b.from > reached + 50) ?? BIOMES[0];
     biome.shift(from, next.from - reached, BIOME_JUMP.ramp);
     this.trees.invalidate();
+    this.field.landmarks.invalidate();
+    this.rocks.invalidate();
     this.terrain.refreshBeyond(-from);
     this.hud.toast(`${next.name} ahead`);
   }

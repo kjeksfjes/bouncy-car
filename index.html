@@ -36,6 +36,7 @@
       #integrity[data-level='warn'] { background: var(--warn); }
       #integrity[data-level='bad'] { background: var(--bad); }
       #status { margin-top: 6px; font-size: 12px; min-height: 1em; }
+      #where { margin-top: 4px; font-size: 11px; opacity: 0.7; font-variant-numeric: tabular-nums; user-select: text; }
       #air {
         position: absolute; top: 18%; left: 50%; transform: translateX(-50%) scale(0.9);
         font-size: 40px; font-weight: 900; letter-spacing: 0.04em; color: #fff;
@@ -65,6 +66,14 @@
       #paused strong { display: block; font-size: 20px; letter-spacing: 0.12em; }
       #paused small { opacity: 0.8; }
       #paused.visible { display: block; }
+      #inspect {
+        position: absolute; left: 16px; bottom: 16px; padding: 10px 12px; border-radius: 10px;
+        background: var(--panel); font-size: 12px; display: none;
+      }
+      #inspect.visible { display: block; }
+      #inspect strong { display: block; margin-bottom: 6px; font-size: 13px; }
+      #inspect .row { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
+      #inspect .swatch { width: 14px; height: 10px; border-radius: 2px; }
       #error {
         position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: min(640px, calc(100% - 32px));
         padding: 10px 14px; border-radius: 8px; background: #b3261e; color: #fff; font-weight: 600;
@@ -84,12 +93,14 @@
       <div id="autopilot">AUTOPILOT</div>
       <div id="slow"></div>
       <div id="toast"></div>
+      <div id="inspect"></div>
       <div id="paused"><strong>PAUSED</strong><small>Esc to resume · drag to orbit, scroll to zoom · C camera</small></div>
       <div id="error" hidden></div>
       <div class="panel">
         <div class="speed"><span id="speed">0</span> <small>km/h</small></div>
         <div class="bar"><div id="integrity"></div></div>
         <div id="status"></div>
+        <div id="where" hidden></div>
       </div>
     </div>
     <script type="module" src="/src/main.ts"></script>

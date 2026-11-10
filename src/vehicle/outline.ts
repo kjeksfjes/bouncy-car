@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { sample, type CarBlueprint } from './blueprint';
+import { endShift, sample, type CarBlueprint } from './blueprint';
 import type { CarPiece } from './carModel';
 import type { Crush } from './crush';
 
@@ -11,7 +11,10 @@ const _box = new THREE.Box3();
 /**
  * The car's visible outline in car-local space, for things that must stay outside the
  * body without physics colliders (dangling lights): the lower body from the blueprint
- * profiles (width, rocker and deck along Z, tips moved in by crush) plus the bumpers.
+ * profiles (width, rocker and deck along Z, ends shaped like the nose and tail and moved in by
+ * crush) plus the bumpers. The ends aren't flat: the shark nose and the tail recede toward the
+ * corners (endShift), so a flat face at the tip would stand in front of the real body at the
+ * sides, with the headlight sockets inside it, and a lamp hanging there pushed out every frame.
  * Dents and the greenhouse are ignored; dangling lights hang well below the beltline.
  */
 export class BodyOutline {
@@ -32,19 +35,23 @@ export class BodyOutline {
    */
   pushOut(p: THREE.Vector3, radius: number, anchor?: THREE.Vector3, reach = Infinity): void {
     const bp = this.bp;
+    const h = p.y - bp.groundY;
     for (const bumper of this.bumpers) {
       if (bumper.state !== 'closed') continue;
-      // Build-time bounds, shifted along Z with the crush at this x (the bumper is crushed rigidly enough).
+      // Build-time bounds (spanning its middle, which stands furthest out), moved along Z by how
+      // far the end recedes at this x and by the crush there (the bumper is crushed rigidly enough).
       _box.copy(bumper.bounds);
       const end = bumper.name === 'bumper-front' ? 'front' : 'rear';
-      const shift = this.crush.tipDepth(end, p.x) * (end === 'front' ? 1 : -1);
+      const tip = end === 'front' ? bp.front : bp.rear;
+      const recede = endShift(bp, p.x, h, tip) - endShift(bp, 0, h, tip);
+      const shift = recede + this.crush.tipDepth(end, p.x) * (end === 'front' ? 1 : -1);
       _box.min.z += shift;
       _box.max.z += shift;
       pushOutOfBox(p, _box, radius, anchor, reach);
     }
 
-    const front = bp.front + this.crush.tipDepth('front', p.x);
-    const rear = bp.rear - this.crush.tipDepth('rear', p.x);
+    const front = bp.front + endShift(bp, p.x, h, bp.front) + this.crush.tipDepth('front', p.x);
+    const rear = bp.rear + endShift(bp, p.x, h, bp.rear) - this.crush.tipDepth('rear', p.x);
     if (p.z <= front - radius || p.z >= rear + radius) return;
     const z = THREE.MathUtils.clamp(p.z, bp.front, bp.rear);
     const half = sample(bp.halfWidth, z) + radius;

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Car, CarEvents, ContactSurface } from '../vehicle/car';
 import type { GroundMix } from '../world/biome';
+import { emptySample } from '../world/environment';
 import type { TerrainField } from '../world/terrainField';
 import type { TreeLayout } from '../world/trees';
 import type { OrbitCamera } from './orbitCamera';
@@ -56,6 +57,7 @@ const _v = new THREE.Vector3();
 const _p = new THREE.Vector3();
 const _n = new THREE.Vector3();
 const _mix: GroundMix = { snow: 0, grass: 0, dirt: 0, stone: 0 };
+const _env = emptySample();
 type Ground = keyof GroundMix;
 
 /**
@@ -104,9 +106,9 @@ export class Juice implements CarEvents {
   impact(car: Car, at: THREE.Vector3, severity: number, surface: ContactSurface): void {
     if (this.near(at)) {
       const k = Math.min(1, severity / 12);
-      if (surface === 'metal' || (surface === 'ground' && this.isHard(at))) {
+      if (surface === 'metal' || surface === 'rock' || (surface === 'ground' && this.isHard(at))) {
         this.burstSparks(at, car.velocity, 10 + Math.round(30 * k));
-        if (surface === 'ground') this.burstDust(at, car.velocity, 6, 1.5, COLOR.rockDust);
+        if (surface !== 'metal') this.burstDust(at, car.velocity, 6, 1.5, COLOR.rockDust);
       } else {
         this.burstGround(at, car.velocity, 8 + Math.round(40 * k), 2 + 4 * k);
       }
@@ -120,6 +122,19 @@ export class Juice implements CarEvents {
     } else {
       const d = at.distanceTo(this.camera.position);
       if (d < J.nearbyShakeRange) this.orbit.addTrauma((1 - d / J.nearbyShakeRange) * severity * J.shakePerSeverity * 0.5);
+    }
+  }
+
+  /** A boulder tearing out of its bed: soil clods and a brown cloud (stone chips and grey dust from rock), more for a bigger one. */
+  uproot(at: THREE.Vector3, velocity: THREE.Vector3, radius: number, rock: boolean): void {
+    const count = Math.round(6 + 10 * radius);
+    for (let i = 0; i < count; i++) {
+      _v.copy(velocity).multiplyScalar(0.5);
+      _v.x += (Math.random() - 0.5) * 3;
+      _v.y += 1 + Math.random() * 2.5;
+      _v.z += (Math.random() - 0.5) * 3;
+      _p.set(at.x + (Math.random() - 0.5) * radius, at.y + 0.1, at.z + (Math.random() - 0.5) * radius);
+      this.emitGround(rock ? 'stone' : 'dirt', _p, _v, 0.3 + 0.2 * radius);
     }
   }
 
@@ -167,7 +182,7 @@ export class Juice implements CarEvents {
     const speed = car.velocity.length();
     if (!car.scraping || speed < 3) return;
     const at = car.scrapePoint;
-    const metal = car.scrapeSurface === 'metal' || (car.scrapeSurface === 'ground' && this.isHard(at));
+    const metal = car.scrapeSurface === 'metal' || car.scrapeSurface === 'rock' || (car.scrapeSurface === 'ground' && this.isHard(at));
     const n = this.take(car, speed * (metal ? 3 : 2) * dt);
     if (metal) this.burstSparks(at, car.velocity, n);
     else if (n > 0) this.burstGround(at, car.velocity, n, 1.5);
@@ -274,7 +289,7 @@ export class Juice implements CarEvents {
 
   /** What the ground at `at` is made of; also leaves it in the shared mix that pickGround reads. */
   private groundAt(at: THREE.Vector3): GroundMix {
-    return this.field.biome.mix(at.x, at.z, this.field.normal(at.x, at.z, _n), _mix);
+    return this.field.biome.mix(at.x, at.z, this.field.normal(at.x, at.z, _n), this.field.environment.at(at.x, at.z, _env), _mix);
   }
 
   private near(at: THREE.Vector3): boolean {

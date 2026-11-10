@@ -1,7 +1,9 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { SPECIES, TREE_CELL, type Tree, type TreeLayout } from './trees';
+import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { mulberry32 } from './noise';
+import { OAK, SPECIES, TREE_CELL, type Tree, type TreeLayout } from './trees';
+import type { EnvGrid } from './environment';
 
 const COLORS = {
   trunk: new THREE.Color('#5b4636'),
@@ -16,6 +18,13 @@ const COLORS = {
   broadTrunk: new THREE.Color('#6a5a4a'),
   leaves: new THREE.Color('#5d8f37'),
   leavesDark: new THREE.Color('#467429'),
+  /** Oak: warm brown bark, lit faces lighter, and a crown of fresh greens. */
+  oakBark: new THREE.Color('#6b4e3a'),
+  oakBarkLight: new THREE.Color('#8a6a4c'),
+  oakLeaves: new THREE.Color('#4f8a3a'),
+  oakLeavesLight: new THREE.Color('#6fa543'),
+  oakLeavesDeep: new THREE.Color('#3f7a3c'),
+  oakLeavesDark: new THREE.Color('#2f5a2c'),
 };
 
 
@@ -131,9 +140,127 @@ function buildBroadleaf(): THREE.BufferGeometry {
   return mergeTree(parts);
 }
 
-/** The tree meshes: one geometry per kind of tree (spruce with and without snow). */
-type TreeKind = 'spruceSnowy' | 'spruce' | 'pine' | 'broadleaf';
-const kindOf = (t: Tree): TreeKind => (t.species === 'spruce' ? (t.snowy ? 'spruceSnowy' : 'spruce') : t.species);
+/** A tapering branch (or trunk) from `from` to `to`, `r0` thick at its base and `r1` at its tip. */
+function limb(from: THREE.Vector3, to: THREE.Vector3, r0: number, r1: number, color: THREE.Color): THREE.BufferGeometry {
+  const dir = to.clone().sub(from);
+  const g = new THREE.CylinderGeometry(r1, r0, dir.length(), 6).toNonIndexed();
+  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize()));
+  g.translate((from.x + to.x) / 2, (from.y + to.y) / 2, (from.z + to.z) / 2);
+  paintFaces(g, () => color);
+  return g;
+}
+
+/** A faceted lump of foliage: an icosahedron with its corners pushed in and out, squashed a little. */
+function leafClump(r: number, random: () => number): THREE.BufferGeometry {
+  const merged = mergeVertices(new THREE.IcosahedronGeometry(r, 0).deleteAttribute('normal').deleteAttribute('uv'));
+  const pos = merged.getAttribute('position');
+  for (let v = 0; v < pos.count; v++) {
+    const k = 0.8 + random() * 0.4;
+    pos.setXYZ(v, pos.getX(v) * k, pos.getY(v) * k * 0.8, pos.getZ(v) * k);
+  }
+  return merged.toNonIndexed();
+}
+
+/**
+ * A great old oak, a landmark (after ref/old-oak/): a massive, twisting trunk on
+ * buttress roots, forking about halfway up into thick crooked limbs that show between the leaves,
+ * under a broad, lumpy dome of faceted clumps. ≈16 m tall, ≈20 m across; the lowest leaves hang
+ * ≈6 m up, so a car fits under them.
+ */
+function buildOak(): THREE.BufferGeometry {
+  const random = mulberry32(4711);
+  const bark = (_: THREE.Vector3, n: THREE.Vector3) => (n.y > 0.35 || n.x + n.z > 0.9 ? COLORS.oakBarkLight : COLORS.oakBark);
+  const parts: THREE.BufferGeometry[] = [];
+  const branch = (from: THREE.Vector3, to: THREE.Vector3, r0: number, r1: number) => {
+    const g = limb(from, to, r0, r1, COLORS.oakBark);
+    paintFaces(g, bark);
+    parts.push(g);
+  };
+  // The trunk twists up in a few lengths, thinning.
+  const spine = [new THREE.Vector3(0, -0.3, 0), new THREE.Vector3(0.35, 2, 0.2), new THREE.Vector3(-0.15, 3.8, 0.45), new THREE.Vector3(0.25, 5.4, 0.1)];
+  const girth = [1.75, 1.5, 1.3, 1.1];
+  for (let i = 0; i < spine.length - 1; i++) branch(spine[i], spine[i + 1], girth[i], girth[i + 1] * 1.04);
+  // Buttress roots flaring out into the ground.
+  for (let k = 0; k < 6; k++) {
+    const a = ((k + random() * 0.5) / 6) * Math.PI * 2;
+    const out = 2.8 + random() * 0.8;
+    branch(new THREE.Vector3(Math.cos(a) * 0.7, 1.7, Math.sin(a) * 0.7), new THREE.Vector3(Math.cos(a) * out, -0.25, Math.sin(a) * out), 0.75, 0.18);
+  }
+
+  const clumps: { at: THREE.Vector3; r: number }[] = [];
+  const around = (at: THREE.Vector3, n: number, r: number, spread: number) => {
+    for (let k = 0; k < n; k++) {
+      clumps.push({ at: at.clone().add(new THREE.Vector3((random() - 0.5) * spread, (random() - 0.3) * spread * 0.6, (random() - 0.5) * spread)), r: r * (0.8 + random() * 0.4) });
+    }
+  };
+  const top = spine[spine.length - 1];
+  const limbs = 6;
+  for (let i = 0; i < limbs; i++) {
+    const a = ((i + random() * 0.6) / limbs) * Math.PI * 2;
+    const out = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+    const side = new THREE.Vector3(-out.z, 0, out.x);
+    // Each limb leaves the trunk's top, reaches out and up to an elbow, then bends up to its tip;
+    // a side branch forks off at the elbow.
+    const base = top.clone().addScaledVector(out, 0.5).add(new THREE.Vector3(0, -0.8 + random() * 0.9, 0));
+    const elbow = base.clone().addScaledVector(out, 3.8 + random() * 1.6).add(new THREE.Vector3(0, 1.8 + random() * 1.2, 0));
+    const tip = elbow.clone().addScaledVector(out, 2.2 + random() * 1.4).add(new THREE.Vector3(0, 2.4 + random() * 1.4, 0));
+    const fork = elbow.clone().addScaledVector(side, (random() < 0.5 ? -1 : 1) * (2 + random())).add(new THREE.Vector3(0, 2.2 + random(), 0));
+    branch(base, elbow, 0.78, 0.5);
+    branch(elbow, tip, 0.5, 0.22);
+    branch(elbow, fork, 0.36, 0.16);
+    around(tip, 3, 2.5, 2.6);
+    around(fork, 2, 2.1, 2);
+    around(elbow.clone().add(new THREE.Vector3(0, 1.4, 0)), 1, 1.9, 1);
+  }
+  // The dome's crown closes over the middle.
+  around(new THREE.Vector3(0, 12.5, 0), 5, 3.1, 4.5);
+  around(new THREE.Vector3(0, 14.2, 0), 2, 2.6, 2.5);
+
+  const shades = [COLORS.oakLeaves, COLORS.oakLeavesLight, COLORS.oakLeavesDeep];
+  for (const c of clumps) {
+    const blob = leafClump(c.r, random);
+    blob.rotateY(random() * Math.PI).translate(c.at.x, c.at.y, c.at.z);
+    const shade = shades[Math.floor(random() * shades.length)];
+    // Faces turned down sit in the crown's shade.
+    paintFaces(blob, (_, n) => (n.y < -0.3 ? COLORS.oakLeavesDark : shade));
+    parts.push(blob);
+  }
+  return mergeTree(parts);
+}
+
+/** The tree meshes: one geometry per kind of tree (spruce with and without snow), and the landmark oak. */
+export type TreeKind = 'spruceSnowy' | 'spruce' | 'pine' | 'broadleaf' | 'oak';
+export const kindOf = (t: Tree): TreeKind => (t.oak ? 'oak' : t.species === 'spruce' ? (t.snowy ? 'spruceSnowy' : 'spruce') : t.species);
+
+/**
+ * Far-view stand-ins for the trees (FarTerrain), the same size at scale 1 and in the same colours
+ * but a handful of faces each: seen from past the streamed chunks, only the outline and colour tell.
+ */
+export function buildFarTrees(): Record<TreeKind, THREE.BufferGeometry> {
+  const blob = (r: number, y: number, squash: number, color: THREE.Color, x = 0, z = 0) => {
+    const g = new THREE.IcosahedronGeometry(r, 0);
+    g.scale(1, squash, 1).translate(x, y, z);
+    paintFaces(g, () => color);
+    return g;
+  };
+  const spruce = (snowy: boolean) => {
+    const cone = new THREE.ConeGeometry(2, 5.4, 6, 1).toNonIndexed();
+    cone.translate(0, 0.7 + 2.7, 0);
+    paintFaces(cone, (c, n) => (snowy && c.y > 3.6 && n.y > 0 ? COLORS.snow : COLORS.needles));
+    return mergeTree([cone]);
+  };
+  return {
+    spruceSnowy: spruce(true),
+    spruce: spruce(false),
+    pine: mergeTree([limb(new THREE.Vector3(), new THREE.Vector3(0, 5, 0), 0.25, 0.13, COLORS.pineBark), blob(1.7, 5, 0.55, COLORS.pineNeedles)]),
+    broadleaf: mergeTree([limb(new THREE.Vector3(), new THREE.Vector3(0, 2.6, 0), 0.26, 0.16, COLORS.broadTrunk), blob(2, 3.5, 0.85, COLORS.leaves)]),
+    oak: mergeTree([
+      limb(new THREE.Vector3(0, -0.3, 0), new THREE.Vector3(0, 6, 0), 1.6, 1.1, COLORS.oakBark),
+      blob(4.2, 11.5, 0.7, COLORS.oakLeaves),
+      ...[0, 1, 2, 3, 4].map((i) => blob(3.4, 9.5, 0.7, i % 2 ? COLORS.oakLeavesLight : COLORS.oakLeavesDeep, Math.cos(i * 1.26) * 5.5, Math.sin(i * 1.26) * 5.5)),
+    ]),
+  };
+}
 
 export interface ChunkProps {
   objects: THREE.Object3D[];
@@ -147,6 +274,7 @@ export class PropScatter {
     spruce: buildSpruce(false),
     pine: buildPine(),
     broadleaf: buildBroadleaf(),
+    oak: buildOak(),
   };
   private readonly material = new THREE.MeshStandardMaterial({
     vertexColors: true,
@@ -159,7 +287,7 @@ export class PropScatter {
     private readonly world: RAPIER.World,
   ) {}
 
-  populate(x0: number, z0: number, size: number, body: RAPIER.RigidBody): ChunkProps {
+  populate(x0: number, z0: number, size: number, env: EnvGrid, body: RAPIER.RigidBody): ChunkProps {
     const q = new THREE.Quaternion();
     const s = new THREE.Vector3();
     const p = new THREE.Vector3();
@@ -169,14 +297,14 @@ export class PropScatter {
     // Cells don't align with chunk edges (64 / 9), so scan one extra and keep what falls inside.
     for (let gz = 0; gz <= size / TREE_CELL; gz++) {
       for (let gx = 0; gx <= size / TREE_CELL; gx++) {
-        const t = this.trees.inCell(Math.floor(x0 / TREE_CELL) + gx, Math.floor(z0 / TREE_CELL) + gz);
+        const t = this.trees.inCell(Math.floor(x0 / TREE_CELL) + gx, Math.floor(z0 / TREE_CELL) + gz, env);
         if (!t || t.x < x0 || t.x >= x0 + size || t.z < z0 || t.z >= z0 + size) continue;
 
         q.setFromAxisAngle(up, t.yaw);
         const kind = kindOf(t);
         if (!matrices.has(kind)) matrices.set(kind, []);
         matrices.get(kind)!.push(new THREE.Matrix4().compose(p.set(t.x, t.y, t.z), q, s.setScalar(t.scale)));
-        const halfHeight = SPECIES[t.species].halfHeight * t.scale;
+        const halfHeight = (t.oak ? OAK.halfHeight : SPECIES[t.species].halfHeight) * t.scale;
         this.world.createCollider(
           RAPIER.ColliderDesc.cylinder(halfHeight, t.radius).setTranslation(t.x, t.y + halfHeight, t.z),
           body,

@@ -117,6 +117,15 @@ interface Feature {
   halfWidth: number;
 }
 
+/** A spot's height offsets from the descent features, by kind (see DescentFeatures.parts). */
+export interface FeatureParts {
+  drop: number;
+  lip: number;
+  bell: number;
+}
+
+const _parts: FeatureParts = { drop: 0, lip: 0, bell: 0 };
+
 /** Height offsets from descent features. Deterministic per seed. */
 export class DescentFeatures {
   private readonly features = new Map<number, Feature | null>();
@@ -134,33 +143,56 @@ export class DescentFeatures {
   }
 
   height(x: number, z: number): number {
-    if (z >= 0) return 0;
+    const p = this.parts(x, z, _parts);
+    return p.drop + p.lip + p.bell;
+  }
+
+  /** The height offsets by kind: drops so far (including the one under way), lip or ramp, valley or hill. */
+  parts(x: number, z: number, out: FeatureParts = { drop: 0, lip: 0, bell: 0 }): FeatureParts {
+    out.drop = out.lip = out.bell = 0;
+    if (z >= 0) return out;
     const F = FEATURES;
     const k = Math.floor(-z / this.slot);
     // The drop sum walks every slot up to k: refuse absurd positions (a body that blew
     // up) loudly instead of looping for ever.
     if (!(k <= MAX_SLOT)) throw new Error(`Terrain height requested at z=${z}, outside the playable range`);
-    let h = -this.cumulativeDrop(k);
+    out.drop = -this.cumulativeDrop(k);
     const f = this.feature(k);
-    if (!f) return h;
+    if (!f) return out;
 
     const zs = f.z + F.waveAmp * this.wave(x / F.waveScale, k * 7.31);
-    if (f.drop > 0) h -= f.drop * smoothstep(0, 1, (zs - z) / f.length);
+    if (f.drop > 0) out.drop -= f.drop * smoothstep(0, 1, (zs - z) / f.length);
     if (f.lip > 0 && f.hump) {
       // Smooth hump around the drop's top; its back side runs into the drop.
       const u = (z - (zs + f.lipUp * 0.35)) / (f.lipUp / 2);
-      if (Math.abs(u) < 1) h += f.lip * (1 - u * u) ** 2;
+      if (Math.abs(u) < 1) out.lip = f.lip * (1 - u * u) ** 2;
     } else if (f.lip > 0) {
       // Peak just uphill of the drop's top: a run-up rising as t^power, then a short steep back.
       const peak = zs + f.lipDown;
-      if (z >= peak && z < peak + f.lipUp) h += f.lip * ((peak + f.lipUp - z) / f.lipUp) ** f.lipPower;
-      else if (z < peak && z > zs) h += f.lip * smoothstep(0, 1, (z - zs) / f.lipDown);
+      if (z >= peak && z < peak + f.lipUp) out.lip = f.lip * ((peak + f.lipUp - z) / f.lipUp) ** f.lipPower;
+      else if (z < peak && z > zs) out.lip = f.lip * smoothstep(0, 1, (z - zs) / f.lipDown);
     }
     if (f.bell !== 0) {
       const u = (z - zs) / f.halfWidth;
-      if (Math.abs(u) < 1) h += f.bell * Math.cos((u * Math.PI) / 2) ** 2;
+      if (Math.abs(u) < 1) out.bell = f.bell * Math.cos((u * Math.PI) / 2) ** 2;
     }
-    return h;
+    return out;
+  }
+
+  /**
+   * Whether descent z lies at least `margin` m clear of every set piece (its hump or ramp, its drop
+   * or its bell, with the line's wiggle), for landforms that mustn't run into one.
+   */
+  clearOf(z: number, margin: number): boolean {
+    const k = Math.floor(-z / this.slot);
+    for (let j = Math.max(0, k - 1); j <= k + 1; j++) {
+      const f = this.feature(j);
+      if (!f) continue;
+      const up = f.bell !== 0 ? f.halfWidth : f.lipUp + f.lipDown;
+      const down = f.bell !== 0 ? f.halfWidth : f.length;
+      if (z < f.z + up + FEATURES.waveAmp + margin && z > f.z - down - FEATURES.waveAmp - margin) return false;
+    }
+    return true;
   }
 
   private feature(k: number): Feature | null {

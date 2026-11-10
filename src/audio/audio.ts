@@ -21,7 +21,34 @@ const MIX = {
   glass: 0.6,
   clank: 0.5,
   thud: 0.8,
+  /** Rocks: knocked loose, clacking on each other, landing. */
+  rock: 0.7,
 };
+
+/** At most this many rock clacks and thuds start within ROCK_WINDOW s: a collapsing heap would otherwise pile up voices. */
+const ROCK_VOICES = 6;
+/**
+ * Stone strikes (see modalStrike): the lowest mode at `stoneFrom` Hz for a mid-sized stone (higher
+ * for smaller ones), modes at irregular ratios like an irregular stone's, filter Q (1 / tan φ: the
+ * stone's internal friction) and the strike's length (s; stone on stone is a hard, instant contact).
+ * Feel values, after modal synthesis of impact sounds: material is heard mostly in how fast each
+ * frequency dies out.
+ */
+const ROCK = {
+  stoneFrom: 1100,
+  q: 40,
+  strike: 0.003,
+  /** Make-up gain: a 3 ms burst through narrow filters comes out quiet; this brings its peak up to the other one-shots'. */
+  gain: 3.5,
+  modes: [
+    { ratio: 1, level: 1 },
+    { ratio: 1.47, level: 0.8 },
+    { ratio: 2.09, level: 0.65 },
+    { ratio: 2.83, level: 0.5 },
+    { ratio: 3.9, level: 0.35 },
+    { ratio: 5.2, level: 0.25 },
+  ],
+};const ROCK_WINDOW = 0.1;
 
 /** Simulated gearbox for engine pitch: upper speed (m/s) of each gear. */
 const GEAR_TOPS = [9, 17, 27, 40, 70];
@@ -191,6 +218,16 @@ export class GameAudio implements CarEvents {
   land(car: Car, at: THREE.Vector3, strength: number): void {
     this.engine?.land(car, at, strength);
   }
+
+  /** A rock knocked loose (a boulder, a varde's stones) at `at`, `size` m across its radius. */
+  rockKnock(at: THREE.Vector3, size: number): void {
+    this.engine?.rockKnock(at, size);
+  }
+
+  /** Loose rocks striking each other (`stone`) or the ground, `k` 0..1 how hard, the smaller rock `size` m in radius. */
+  rockHit(at: THREE.Vector3, k: number, size: number, stone: boolean): void {
+    this.engine?.rockHit(at, k, size, stone);
+  }
 }
 
 class AudioEngine {
@@ -213,6 +250,8 @@ class AudioEngine {
   private pitch = 1;
   /** Closes down in slow motion for a muffled, underwater feel. */
   private readonly slowFilter: BiquadFilterNode;
+  /** When the latest rock clacks and thuds started (see ROCK_VOICES). */
+  private rockTimes: number[] = [];
 
   constructor() {
     loadEngineWorklet(this.ctx).then(
@@ -325,6 +364,63 @@ class AudioEngine {
     this.noiseBurst(out, 'bandpass', 320, 1, 0.7, 0.09);
     this.tone(out, 'triangle', 210 + Math.random() * 40, 0.35, 0.08);
     this.duck(car, k * k * 0.4);
+  }
+
+  rockKnock(at: THREE.Vector3, size: number): void {
+    const s = THREE.MathUtils.clamp(size / 1.5, 0, 1);
+    const out = this.oneShotOut(at, MIX.rock, true);
+    // A solid stony knock (noise only: a pitched thump reads as rubber), deeper for a bigger rock,
+    // with grit over it and the stones' clack.
+    this.noiseBurst(out, 'lowpass', 450 - 200 * s, 0.7, 0.9, 0.08 + 0.06 * s);
+    this.noiseBurst(out, 'bandpass', 1000 - 400 * s, 1.2, 0.7, 0.07);
+    this.noiseBurst(out, 'highpass', 3000, 0.8, 0.35, 0.05);
+    this.rockHit(at, 1, size * 0.6, true);
+  }
+
+  rockHit(at: THREE.Vector3, k: number, size: number, stone: boolean): void {
+    const now = this.ctx.currentTime;
+    this.rockTimes = this.rockTimes.filter((t) => now - t < ROCK_WINDOW);
+    if (this.rockTimes.length >= ROCK_VOICES) return;
+    this.rockTimes.push(now);
+    // Smaller stones ring higher; each strike lands a little differently.
+    const pitch = THREE.MathUtils.clamp(0.4 / Math.max(0.15, size), 0.5, 2) * (0.85 + Math.random() * 0.3);
+    if (stone) {
+      // Stone on stone: a near-instant, bright strike rings the stones' modes briefly (see ROCK).
+      const out = this.oneShotOut(at, MIX.rock * (0.25 + 0.75 * k));
+      this.modalStrike(out, ROCK.stoneFrom * pitch, ROCK.q, ROCK.strike, 1);
+      return;
+    }
+    // On the ground: the earth takes the hit, so the strike is soft and long, a dull thump with no ring.
+    const out = this.oneShotOut(at, MIX.rock * (0.2 + 0.6 * k), true);
+    this.noiseBurst(out, 'lowpass', 380 * pitch, 0.7, 1, 0.05);
+    this.noiseBurst(out, 'bandpass', 160 * pitch, 1.2, 0.7, 0.035);
+  }
+
+  /**
+   * Filter-based modal synthesis: a burst of noise `strike` s long rings a bank of resonant
+   * bandpass filters at irregular ratios (ROCK.modes) from `from` Hz. One Q for all of them is one
+   * internal friction (tan φ = 1 / Q), so higher modes die out faster, as in a real material.
+   */
+  private modalStrike(out: AudioNode, from: number, q: number, strike: number, peak: number): void {
+    from *= this.pitch;
+    strike /= this.pitch;
+    const t = this.ctx.currentTime;
+    // Long enough for the lowest mode to ring out (its decay time is Q / (π f)).
+    const ring = (q / (Math.PI * from)) * 8;
+    const src = new AudioBufferSourceNode(this.ctx, { buffer: this.noise, playbackRate: this.pitch });
+    // An instant strike (envelope's 5 ms attack is longer than a hard contact).
+    const hit = new GainNode(this.ctx, { gain: 0 });
+    hit.gain.setValueAtTime(peak, t);
+    hit.gain.exponentialRampToValueAtTime(0.0001, t + strike);
+    src.connect(hit);
+    for (const m of ROCK.modes) {
+      const filter = new BiquadFilterNode(this.ctx, { type: 'bandpass', frequency: from * m.ratio * (0.92 + Math.random() * 0.16), Q: q });
+      // A narrow band passes little of a noise burst: make up for it (∝ √Q).
+      hit.connect(filter).connect(new GainNode(this.ctx, { gain: ROCK.gain * m.level * Math.sqrt(q) })).connect(out);
+    }
+    // A little of the strike itself, unfiltered, for the click of contact.
+    hit.connect(new BiquadFilterNode(this.ctx, { type: 'highpass', frequency: 1500 })).connect(new GainNode(this.ctx, { gain: ROCK.gain * 0.25 })).connect(out);
+    src.start(t, Math.random() * (this.noise.duration - 1), strike + ring);
   }
 
   // --- Impact layers.

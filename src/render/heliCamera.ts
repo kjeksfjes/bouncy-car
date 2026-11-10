@@ -11,8 +11,8 @@ import { SightLiftFilter, sightLift } from './sightLine';
 const HELI = {
   /**
    * Distance from the car (m): close passes to wide shots. The drift is skewed by
-   * `distanceSkew` so it mostly stays near, and only now and then pulls far out. Kept well
-   * inside the fog (ends 250 m from the camera), or the car fades.
+   * `distanceSkew` so it mostly stays near, and only now and then pulls far out. Kept near
+   * enough that the car still reads on screen.
    */
   distanceMin: 18,
   distanceMax: 120,
@@ -58,8 +58,8 @@ const MANUAL = {
   zoomMin: 0.3,
   zoomMax: 8,
   /**
-   * Hard cap on distance (m): the fog ends 250 m from the camera, and the car is already half
-   * fogged at this distance. Zooming out further widens the lens instead, up to `wideFov` (degrees).
+   * Hard cap on distance (m): further out the car shrinks to a speck. Zooming out further widens
+   * the lens instead, up to `wideFov` (degrees).
    */
   maxDistance: 160,
   wideFov: 75,

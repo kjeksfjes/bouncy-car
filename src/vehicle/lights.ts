@@ -16,8 +16,14 @@ export interface LightTuning {
   lightWireHp: number;
   /** A fixture pushed this far (m) by crush and dents together is squeezed out of its socket. */
   lightDropAtCrush: number;
-  /** Chance a fixture that comes out of its socket snaps off at once instead of dangling. */
+  /**
+   * Chance a fixture that comes out of its socket snaps off at once instead of dangling: when it
+   * only just comes out, rising to `lightSnapChanceHard` for one knocked out hard (pushed in three
+   * times `lightDropAtCrush`, or a single hit dealing its whole `lightMountHp`). The crash that
+   * knocks it out can't snap the wire later (see WIRE_GRACE), so this is where a crash tears it off.
+   */
   lightSnapChance: number;
+  lightSnapChanceHard: number;
   /** Wire length (m) and air drag on a dangling fixture (1/s). */
   wireLength: number;
   wireDrag: number;
@@ -76,6 +82,8 @@ interface Fixture extends LightFixtureDef {
   wireDamage: number;
   /** Smoothed pull on the wire (m/s²). */
   tension: number;
+  /** World direction from the socket to the lamp at the last update (unit), for turning it with the swing. */
+  wireDir: THREE.Vector3;
   /** Collision box for when it is ripped off (group-local). */
   half: THREE.Vector3;
   /** Size of the sphere kept outside the body while dangling (m). */
@@ -93,6 +101,13 @@ const SHARD_TINT: Record<LightKind, THREE.Color> = {
 const MAX_DT = 1 / 30;
 /** Seconds after dropping out before a yank can snap the wire: the pop out of the socket isn't a yank. */
 const WIRE_GRACE = 0.25;
+/**
+ * A dangling lamp turns with its wire only once it hangs this far out (× wire length): fully from
+ * SLACK_TO, not at all inside SLACK_FROM.
+ */
+const SLACK_FROM = 0.25;
+const SLACK_TO = 0.5;
+const IDENTITY = new THREE.Quaternion();
 /** Time constant (s) the wire's pull is smoothed over, so one uneven frame isn't a yank. */
 const TENSION_SMOOTHING = 0.05;
 
@@ -104,6 +119,8 @@ const SOCKET_LIFT = 0.004;
 const wireMaterial = new THREE.LineBasicMaterial({ color: '#141416' });
 const raycaster = new THREE.Raycaster();
 const _w = new THREE.Vector3();
+const _turn = new THREE.Quaternion();
+const _w2 = new THREE.Vector3();
 const _local = new THREE.Vector3();
 const _n = new THREE.Vector3();
 const _seg = new THREE.Line3();
@@ -159,6 +176,7 @@ export class CarLights {
         hangTime: 0,
         wireDamage: 0,
         tension: 0,
+        wireDir: new THREE.Vector3(0, -1, 0),
         half,
         // Vertical half size: the lamp hangs face-down, so this is roughly its footprint.
         radius: half.y,
@@ -203,7 +221,8 @@ export class CarLights {
       f.group.quaternion.setFromUnitVectors(_v, _d);
       // Pushed far at either end, a light would sink into (or stick out of) the crumpled panel
       // around it: it pops out of its socket instead.
-      if (pushed > this.tuning.lightDropAtCrush) this.dropOut(f, velocityAt);
+      const D = this.tuning.lightDropAtCrush;
+      if (pushed > D) this.dropOut(f, velocityAt, THREE.MathUtils.clamp((pushed - D) / (2 * D), 0, 1));
     }
   }
 
@@ -223,7 +242,7 @@ export class CarLights {
       }
       f.damage += dealt;
       if (f.state === 'intact' && f.damage >= T.lightLensHp) this.smash(f, velocityAt);
-      if (this.mounted(f) && f.damage >= T.lightMountHp) this.dropOut(f, velocityAt);
+      if (this.mounted(f) && f.damage >= T.lightMountHp) this.dropOut(f, velocityAt, Math.min(1, dealt / T.lightMountHp));
     }
   }
 
@@ -265,24 +284,59 @@ export class CarLights {
         f.pos.copy(socket).addScaledVector(_d, T.wireLength / len);
       }
       f.tension += (pull - f.tension) * (1 - Math.exp(-dt / TENSION_SMOOTHING));
-      // Pushing it out of the body is a position fix, not a kick: it keeps its velocity.
+      // Pushed out of the body (or the snow), it rests against it like a contact: a position fix,
+      // and its velocity heading into the surface (relative to the body there, which the socket's
+      // move this step stands for) is dropped. Otherwise the moving car ran into it again every
+      // frame, pushing it out near the box's edges through a different face each time, and the
+      // lamp jumped about its socket.
       _v.copy(f.pos);
       this.keepOutside(f);
-      f.prev.add(_d.subVectors(f.pos, _v));
+      _d.subVectors(f.pos, _v);
+      if (_d.lengthSq() > 1e-12) {
+        f.prev.add(_d);
+        _d.normalize();
+        const v = _w2.subVectors(f.pos, f.prev);
+        const into = (v.x - (socket.x - f.socketPrev.x)) * _d.x + (v.y - (socket.y - f.socketPrev.y)) * _d.y + (v.z - (socket.z - f.socketPrev.z)) * _d.z;
+        if (into < 0) f.prev.copy(f.pos).sub(v.addScaledVector(_d, -into));
+      }
       f.socketPrev.copy(socket);
       if (f.hangTime > WIRE_GRACE && f.tension > T.wireTearAccel) {
         this.rip(f, _v.subVectors(f.pos, f.prev).divideScalar(dt).clone());
         continue;
       }
 
-      // Hang lens-out along the wire.
+      // Turn with the swing: by how the wire's direction changed since the last update. Setting
+      // the shortest turn from the lens axis to the wire afresh each frame instead is unstable
+      // when the wire points nearly opposite the lens (a headlight trailing back behind its
+      // socket as the car drives on): its roll flips about and the lamp spins wildly.
+      // Close to its socket the wire is slack and its direction means little (a centimetre swings
+      // it round): the turn fades out there, from half the wire's length in.
       _d.subVectors(f.pos, socket);
-      if (_d.lengthSq() > 1e-8) f.group.quaternion.setFromUnitVectors(f.normal, _d.normalize());
+      const reach = _d.length();
+      if (reach > 1e-4) {
+        _d.divideScalar(reach);
+        const follow = THREE.MathUtils.smoothstep(reach, SLACK_FROM * T.wireLength, SLACK_TO * T.wireLength);
+        f.group.quaternion.premultiply(_turn.setFromUnitVectors(f.wireDir, _d).slerp(IDENTITY, 1 - follow));
+        f.wireDir.copy(_d);
+      }
       f.group.position.copy(f.pos);
       const wire = f.wire!.geometry.getAttribute('position') as THREE.BufferAttribute;
       wire.setXYZ(0, socket.x, socket.y, socket.z);
       wire.setXYZ(1, f.pos.x, f.pos.y, f.pos.z);
       wire.needsUpdate = true;
+    }
+  }
+
+  /**
+   * Moves dangling fixtures by a world-space offset along with the car (see Car.advanceIntoCrush),
+   * keeping their swing, so the move isn't a yank on the wire.
+   */
+  shift(delta: THREE.Vector3): void {
+    for (const f of this.fixtures) {
+      if (f.state !== 'dangling') continue;
+      f.pos.add(delta);
+      f.prev.add(delta);
+      f.socketPrev.add(delta);
     }
   }
 
@@ -321,7 +375,8 @@ export class CarLights {
     this.debris.shatter(points, velocityAt(at), outward, SHARD_TINT[f.kind]);
   }
 
-  private dropOut(f: Fixture, velocityAt: (world: THREE.Vector3) => THREE.Vector3): void {
+  /** @param violence how hard it was knocked out, 0 (only just) .. 1 (see lightSnapChanceHard) */
+  private dropOut(f: Fixture, velocityAt: (world: THREE.Vector3) => THREE.Vector3, violence: number): void {
     if (f.state === 'intact') this.smash(f, velocityAt);
     f.state = 'dangling';
     this.snapSocket(f);
@@ -333,7 +388,8 @@ export class CarLights {
     f.pos.copy(socket).addScaledVector(out, f.radius + 0.01);
     this.keepOutside(f);
     const v = velocityAt(f.pos).addScaledVector(out, 1.5);
-    if (Math.random() < this.tuning.lightSnapChance) {
+    const T = this.tuning;
+    if (Math.random() < T.lightSnapChance + (T.lightSnapChanceHard - T.lightSnapChance) * violence) {
       // Not every light hangs on: some snap clean off.
       f.group.position.copy(f.pos);
       this.rip(f, v);
@@ -341,6 +397,9 @@ export class CarLights {
     }
     f.prev.copy(f.pos).addScaledVector(v, -PHYSICS_STEP);
     f.socketPrev.copy(socket);
+    // Hangs lens-out along the wire to start with; from here on it turns with the swing.
+    f.wireDir.subVectors(f.pos, socket).normalize();
+    f.group.quaternion.setFromUnitVectors(f.normal, f.wireDir);
     f.fresh = true;
     f.hangTime = 0;
     f.wireDamage = 0;
