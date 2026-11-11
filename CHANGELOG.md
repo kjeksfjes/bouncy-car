@@ -3,6 +3,19 @@
 Releases are named plainly after what they bring (the first three after
 game-development milestones).
 
+## v0.5.0 – "Old Oak, Smooth Crashes" (2026-11-12)
+
+The great oak is rebuilt to look its age, and big crashes no longer
+freeze the game.
+
+- **Great oak:** a twisting trunk with roots that grow smoothly out of
+  it and run down into the ground, following the slope it stands on;
+  crooked limbs carry the crown as separate rounded masses of chunky,
+  faceted leaves in fresh yellow-greens.
+- **No hit-stop:** big crashes used to freeze the simulation for
+  50–120 ms; it read as a hitch, so the game now runs straight through.
+  The camera shake on impact stays.
+
 ## v0.4.0 – "Sights and Sounds" (2026-11-11)
 
 The car wears its crashes and sounds like what it touches: paint that
