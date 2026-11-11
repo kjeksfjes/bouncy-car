@@ -194,12 +194,14 @@ export class Game {
     const nextBiome = this.input.consume('KeyB');
     const jumpBiome = this.input.consume('shift:KeyB');
     const autopilot = this.input.consume('KeyP');
+    const tip = this.input.consume('KeyF');
     if (!this.paused) {
       if (reset) this.car.resetUpright(this.field);
       if (replace) this.replaceCar();
       if (jumpBiome) this.jumpToNextBiome();
       else if (nextBiome) this.startNextBiome();
       if (autopilot) this.toggleAutopilot(this.input.shift);
+      if (tip) this.car.tipOver(135);
     }
     if (this.input.consume('KeyM')) this.audio.toggleMute();
     if (this.input.consume('KeyC')) this.cycleCamera();

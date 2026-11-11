@@ -2,6 +2,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import { PHYSICS_STEP } from '../constants';
 import type { Debris } from '../world/debris';
+import type { GroundMix } from '../world/biome';
 import type { FluidStain } from '../world/fluids';
 import type { TerrainField } from '../world/terrainField';
 import type { CarConfig } from './carConfig';
@@ -512,6 +513,7 @@ export class Car {
     }
     this.bodyTouching = false;
     this.grindCount = 0;
+    this.scrapeSpeed = 0;
     let scrapeFound = false;
     for (const own of this.colliders.values()) {
       this.world.contactPairsWith(own, (other) => {
@@ -519,14 +521,24 @@ export class Car {
         this.forEachContact(own, other, (local, normal) => {
           this.bodyTouching = true;
           // One scratch per touching pair and step is plenty (and keeps it cheap).
-          if (!scratched) this.scratchPaint(local, normal, other);
+          if (scratched) return;
           scratched = true;
-          if (scrapeFound) return;
+          const speed = this.scratchPaint(local, normal, other);
+          // The scrape heard and seen is the fastest-sliding contact.
+          if (scrapeFound && speed <= this.scrapeSpeed) return;
           scrapeFound = true;
+          this.scrapeSpeed = speed;
           this.scrapePoint.copy(this.localToWorld(local));
           this.scrapeSurface = surfaceOf(other);
         });
       });
+    }
+    if (scrapeFound && this.scrapeSurface === 'ground') {
+      const at = this.scrapePoint;
+      const field = this.debris.field;
+      Object.assign(this.scrapeGround, field.groundMix(at.x, at.z));
+      // Near-vertical rock counts as stone whatever its cover.
+      if (field.isHard(at.x, at.z)) this.scrapeGround.stone = 1;
     }
     const d = this.cfg.damage;
     for (const impact of this.pending.values()) {
@@ -582,16 +594,17 @@ export class Car {
    * another car; snow and grass don't): by how far the contact point slid this step, along the slide.
    * @param local contact point, car-local
    * @param normal contact normal pointing out of the car (car-local)
+   * @returns how fast the contact slides (m/s), scratched or not
    */
-  private scratchPaint(local: THREE.Vector3, normal: THREE.Vector3, other: RAPIER.Collider): void {
+  private scratchPaint(local: THREE.Vector3, normal: THREE.Vector3, other: RAPIER.Collider): number {
     const d = this.cfg.damage;
     const slide = this.slideAt(local, normal, other);
     const speed = slide.length();
-    if (speed < d.scratchFrom) return;
+    if (speed < d.scratchFrom) return speed;
     const surface = surfaceOf(other);
     if (surface === 'ground') {
       const at = this.localToWorld(local);
-      if (!this.debris.field.isHard(at.x, at.z)) return;
+      if (!this.debris.field.isHard(at.x, at.z)) return speed;
     }
     if (this.grindCount < MAX_GRINDS) {
       const grind = this.grindPool[this.grindCount++];
@@ -602,6 +615,7 @@ export class Car {
     }
     const share = surface === 'tree' ? d.slideScratches.tree : surface === 'metal' ? d.slideScratches.metal : 1;
     wearPaint(this.model.pieces, local, normal, d.scratchReach, 0, speed * PHYSICS_STEP * d.scratchPerMetre * share, 0, slide.divideScalar(speed));
+    return speed;
   }
 
   /**
@@ -955,6 +969,18 @@ export class Car {
     this.model.root.updateMatrixWorld(true);
   }
 
+  /** Rolls the car onto its side (dev key F, for testing scrapes), keeping its speed. */
+  tipOver(degrees: number): void {
+    // Roll about the car's own forward axis, keeping its speed, lifted clear of the ground.
+    const before = new THREE.Matrix4().compose(this.currPos, this.currQuat, _tmp.set(1, 1, 1));
+    _q.setFromAxisAngle(_fwd.set(0, 0, -1), THREE.MathUtils.degToRad(degrees)).premultiply(this.currQuat);
+    _p.copy(this.currPos).setY(this.currPos.y + 1);
+    this.body.setTranslation(_p, true);
+    this.body.setRotation(_q, true);
+    this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+    this.panels.teleport(before, new THREE.Matrix4().compose(_p, _q, _tmp.set(1, 1, 1)));
+  }
+
   /**
    * Puts the car back on its wheels, keeping its damage: where it is and as it's facing, or at
    * `to` with heading `to.yaw` (0 = downhill).
@@ -1077,9 +1103,13 @@ export class Car {
     return this.bodyTouching;
   }
 
-  /** World-space point and surface of the body's current contact, while scraping. */
+  /** World-space point and surface of the body's fastest-sliding contact, while scraping. */
   readonly scrapePoint = new THREE.Vector3();
   scrapeSurface: ContactSurface = 'ground';
+  /** How fast that contact slides (m/s), relative to what it touches. */
+  scrapeSpeed = 0;
+  /** What the ground is made of there, when scraping the ground (stone 1 on near-vertical rock). */
+  readonly scrapeGround: GroundMix = { snow: 0, grass: 0, dirt: 0, stone: 0 };
 
   private readonly grindPool: Grind[] = Array.from({ length: MAX_GRINDS }, () => ({
     at: new THREE.Vector3(),

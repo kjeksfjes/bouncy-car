@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Car, CarEvents, ContactSurface } from '../vehicle/car';
 import { ENGINE_PROCESSOR, loadEngineWorklet } from './engineWorklet';
+import { DragChain, GrindChain, SCRAPE, blendDrag, scrapeGrains, surfaceProfile, type GrindSound } from './scrape';
 
 /** Mix levels. Everything is synthesised; these are by-ear starting points. */
 /** The slow-motion low-pass: wide open at normal speed, and the lowest it closes down to (Hz). */
@@ -81,12 +82,20 @@ class CarVoice {
   private readonly muffler: BiquadFilterNode;
   private readonly engineGain: GainNode;
   private readonly tyreGain: GainNode;
-  private readonly scrapeGain: GainNode;
+  /** Body scraping: hard surfaces (rock, trees, cars) and soft ground (grass, snow, dirt). */
+  private readonly grind: GrindChain;
+  private readonly drag: DragChain;
   private readonly sources: AudioBufferSourceNode[] = [];
   private rpm = IDLE_RPM;
   lastCrunch = 0;
 
-  constructor(private readonly ctx: AudioContext, out: AudioNode, noise: AudioBuffer, private readonly level: number) {
+  constructor(
+    private readonly ctx: AudioContext,
+    out: AudioNode,
+    private readonly noise: AudioBuffer,
+    profile: AudioBuffer,
+    private readonly level: number,
+  ) {
     this.panner = new PannerNode(ctx, PANNER);
     this.panner.connect(out);
 
@@ -106,11 +115,11 @@ class CarVoice {
       .connect(this.engineGain)
       .connect(this.panner);
 
-    // Tyres on snow: a low, crunchy band of noise. Scrape: a harsh, higher band.
+    // Tyres on snow: a low, crunchy band of noise.
     this.tyreGain = new GainNode(ctx, { gain: 0 });
     this.loop(noise, new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 650, Q: 0.9 }), this.tyreGain);
-    this.scrapeGain = new GainNode(ctx, { gain: 0 });
-    this.loop(noise, new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 2600, Q: 2.5 }), this.scrapeGain);
+    this.grind = new GrindChain(ctx, profile, this.panner);
+    this.drag = new DragChain(ctx, noise, this.panner);
   }
 
   private loop(noise: AudioBuffer, filter: BiquadFilterNode, gain: GainNode): void {
@@ -148,8 +157,36 @@ class CarVoice {
     const rolling = Math.min(1, speed / 20) * 0.15;
     const sliding = Math.min(1, car.slip / 6);
     this.tyreGain.gain.setTargetAtTime(MIX.tyres * this.level * grounded * (rolling + sliding), now, 0.05);
-    const scrape = car.scraping ? Math.min(1, speed / 15) : 0;
-    this.scrapeGain.gain.setTargetAtTime(MIX.scrape * this.level * scrape, now, 0.04);
+    this.scrape(dt, car, pitch);
+  }
+
+  /**
+   * The body's fastest-sliding contact, as a hard grind and a soft drag: on the ground, its
+   * stony share grinds like rock and the rest drags by what it's made of.
+   */
+  private scrape(dt: number, car: Car, pitch: number): void {
+    const now = this.ctx.currentTime;
+    const slide = car.scraping ? car.scrapeSpeed : 0;
+    const surface = car.scrapeSurface;
+    const ground = car.scrapeGround;
+    const hard: GrindSound = surface === 'metal' ? SCRAPE.metal : surface === 'tree' ? SCRAPE.tree : SCRAPE.rock;
+    const hardShare = surface === 'ground' ? THREE.MathUtils.smoothstep(ground.stone, 0.25, 0.5) : 1;
+    // Not scraping: fade both out (the sound only matters for its zero level).
+    if (slide < SCRAPE.from) {
+      this.grind.set(hard, 0, 0, pitch, now);
+      this.drag.set(SCRAPE.snow, 0, 0, pitch, now);
+      return;
+    }
+    const soft = blendDrag([
+      [SCRAPE.grass, ground.grass],
+      [SCRAPE.snow, ground.snow],
+      [SCRAPE.dirt, ground.dirt],
+    ]);
+    const level = MIX.scrape * this.level;
+    this.grind.set(hard, slide, level * hardShare, pitch, now);
+    this.drag.set(soft, slide, level * (1 - hardShare), pitch, now);
+    if (hardShare > 0.02) scrapeGrains(this.ctx, this.noise, this.panner, hard.grains, slide, level * hardShare, pitch, dt, now);
+    if (hardShare < 0.98) scrapeGrains(this.ctx, this.noise, this.panner, soft.grains, slide, level * (1 - hardShare), pitch, dt, now);
   }
 
   dispose(): void {
@@ -158,6 +195,8 @@ class CarVoice {
     this.engine.port.postMessage('stop');
     this.engine.disconnect();
     this.sources.forEach((s) => s.stop(now + 0.05));
+    this.grind.stop(now + 0.05);
+    this.drag.stop(now + 0.05);
   }
 }
 
@@ -234,6 +273,8 @@ class AudioEngine {
   private readonly ctx = new AudioContext();
   private readonly master: GainNode;
   private readonly noise: AudioBuffer;
+  /** A rough surface for grinding scrapes (see surfaceProfile). */
+  private readonly profile: AudioBuffer;
   private readonly voices = new Map<Car, CarVoice>();
   private readonly windGain: GainNode;
   private readonly windFilter: BiquadFilterNode;
@@ -266,6 +307,7 @@ class AudioEngine {
     this.loops = new GainNode(this.ctx, { gain: 1 });
     this.loops.connect(this.master);
     this.noise = whiteNoise(this.ctx, 2);
+    this.profile = surfaceProfile(this.ctx);
 
     this.windGain = new GainNode(this.ctx, { gain: 0 });
     this.windFilter = new BiquadFilterNode(this.ctx, { type: 'lowpass', frequency: 500, Q: 0.5 });
@@ -298,7 +340,7 @@ class AudioEngine {
     }
     cars.forEach((car, i) => {
       let voice = this.voices.get(car);
-      if (!voice) this.voices.set(car, (voice = new CarVoice(this.ctx, this.loops, this.noise, i === 0 ? 1 : MIX.aiEngine)));
+      if (!voice) this.voices.set(car, (voice = new CarVoice(this.ctx, this.loops, this.noise, this.profile, i === 0 ? 1 : MIX.aiEngine)));
       voice.update(dt, car, this.pitch);
     });
 
