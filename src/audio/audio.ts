@@ -118,7 +118,7 @@ class CarVoice {
     // Tyres on snow: a low, crunchy band of noise.
     this.tyreGain = new GainNode(ctx, { gain: 0 });
     this.loop(noise, new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 650, Q: 0.9 }), this.tyreGain);
-    this.grind = new GrindChain(ctx, profile, this.panner);
+    this.grind = new GrindChain(ctx, profile, noise, this.panner);
     this.drag = new DragChain(ctx, noise, this.panner);
   }
 

@@ -28,6 +28,11 @@ export interface ScrapeGrain {
 export interface GrindSound {
   /** Profile playback rate at full speed: how fast the asperities go by (pitch and density). */
   rate: number;
+  /**
+   * 1: the spiky, juddering rough profile (rock, bark); 0: smooth noise, as when two smooth metal
+   * surfaces rub (other cars).
+   */
+  rough: number;
   /** Low-pass on the contact (Hz): rock is hard and sharp, bark softer. */
   sharp: number;
   /** How hard the contact rings the body's metal modes. */
@@ -82,6 +87,9 @@ const BODY = {
   q: 140,
 } as const;
 
+/** White noise level that matches the rough profile's loudness, so `rough` only changes the character. */
+const SMOOTH_LEVEL = 0.22;
+
 /** Feel values; tune by ear. */
 export const SCRAPE = {
   /**
@@ -95,6 +103,7 @@ export const SCRAPE = {
    * panel touches needs the contact's piece.
    */
   fenderRock: {
+    rough: 1,
     rate: 0.9,
     sharp: 12000,
     ring: 1.2,
@@ -110,6 +119,7 @@ export const SCRAPE = {
   },
   /** The body on stone: the car's weight grinding, the pressed panels ringing less than a free edge. */
   rock: {
+    rough: 1,
     rate: 0.9,
     sharp: 5000,
     ring: 0.6,
@@ -125,14 +135,15 @@ export const SCRAPE = {
   },
   /** Metal on metal: both ring, smoother contact, more screech than rumble. */
   metal: {
-    rate: 1,
-    sharp: 9000,
-    ring: 1.6,
-    damping: 1,
-    rasp: 0.3,
-    rumble: 0.15,
+    rough: 0,
+    rate: 0.8,
+    sharp: 5000,
+    ring: 0.8,
+    damping: 0.55,
+    rasp: 0.15,
+    rumble: 2.5,
     drive: 2.6,
-    level: 0.9,
+    level: 0.5,
     grains: [
       // Panels snagging and catching on each other.
       { rate: 9, band: [400, 1800], q: 3, length: [0.02, 0.06], level: 0.6 },
@@ -140,6 +151,7 @@ export const SCRAPE = {
   },
   /** Bark: soft, fibrous contact that barely rings the metal; more tearing than grinding. */
   tree: {
+    rough: 1,
     rate: 0.7,
     sharp: 2500,
     ring: 0.35,
@@ -234,6 +246,9 @@ export function surfaceProfile(ctx: BaseAudioContext, seconds = 3): AudioBuffer 
 export class GrindChain {
   private readonly src: AudioBufferSourceNode;
   private readonly sharp: BiquadFilterNode;
+  private readonly smooth: AudioBufferSourceNode;
+  private readonly roughGain: GainNode;
+  private readonly smoothGain: GainNode;
   private readonly ring: GainNode;
   /** The body modes and their own Q at full ring. */
   private readonly modes: [BiquadFilterNode, number][] = [];
@@ -242,11 +257,18 @@ export class GrindChain {
   private readonly drive: GainNode;
   private readonly gain: GainNode;
 
-  constructor(ctx: BaseAudioContext, profile: AudioBuffer, out: AudioNode) {
+  constructor(ctx: BaseAudioContext, profile: AudioBuffer, noise: AudioBuffer, out: AudioNode) {
     this.src = new AudioBufferSourceNode(ctx, { buffer: profile, loop: true });
+    this.smooth = new AudioBufferSourceNode(ctx, { buffer: noise, loop: true });
+    // The contact: rough profile and smooth noise, mixed by GrindSound.rough.
+    const contact = new GainNode(ctx, { gain: 1 });
+    this.roughGain = new GainNode(ctx, { gain: 1 });
+    this.smoothGain = new GainNode(ctx, { gain: 0 });
+    this.src.connect(this.roughGain).connect(contact);
+    this.smooth.connect(this.smoothGain).connect(contact);
     // Lowpass Q is in dB: −3 is flat, no resonant bump.
     this.sharp = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 12000, Q: -3 });
-    this.src.connect(this.sharp);
+    contact.connect(this.sharp);
     this.drive = new GainNode(ctx, { gain: 1 });
 
     this.ring = new GainNode(ctx, { gain: 0 });
@@ -261,7 +283,7 @@ export class GrindChain {
     this.rasp = new GainNode(ctx, { gain: 0 });
     this.sharp.connect(new BiquadFilterNode(ctx, { type: 'highpass', frequency: 1200, Q: -3 })).connect(this.rasp).connect(this.drive);
     this.rumble = new GainNode(ctx, { gain: 0 });
-    this.src.connect(new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 420, Q: -3 }))
+    contact.connect(new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 420, Q: -3 }))
       // Weight lives at 100–400 Hz; below that small speakers can't play it and it turns to mud.
       .connect(new BiquadFilterNode(ctx, { type: 'highpass', frequency: 100, Q: -3 }))
       .connect(this.rumble).connect(this.drive);
@@ -269,6 +291,7 @@ export class GrindChain {
     this.gain = new GainNode(ctx, { gain: 0 });
     this.drive.connect(new WaveShaperNode(ctx, { curve: saturation(), oversample: '2x' })).connect(this.gain).connect(out);
     this.src.start(ctx.currentTime, Math.random() * profile.duration);
+    this.smooth.start(ctx.currentTime, Math.random() * noise.duration);
   }
 
   /**
@@ -280,6 +303,9 @@ export class GrindChain {
     const share = Math.min(1.5, speed / SCRAPE.full);
     this.src.playbackRate.setTargetAtTime(Math.max(0.1, share * sound.rate) * pitch, at, 0.03);
     this.sharp.frequency.setTargetAtTime(sound.sharp * pitch, at, 0.03);
+    this.roughGain.gain.setTargetAtTime(sound.rough, at, 0.03);
+    this.smoothGain.gain.setTargetAtTime((1 - sound.rough) * SMOOTH_LEVEL, at, 0.03);
+    this.smooth.playbackRate.setTargetAtTime(pitch, at, 0.03);
     this.ring.gain.setTargetAtTime(sound.ring, at, 0.03);
     for (const [mode, q] of this.modes) mode.Q.setTargetAtTime(q * sound.damping, at, 0.03);
     this.rasp.gain.setTargetAtTime(sound.rasp, at, 0.03);
@@ -290,6 +316,7 @@ export class GrindChain {
 
   stop(at: number): void {
     this.src.stop(at);
+    this.smooth.stop(at);
   }
 }
 
