@@ -365,13 +365,18 @@ export const COUPE_70S: CarConfig = {
     // Tuned against probed bumper hits: severity ≈12.6 shatters the windshield, ≈9 cracks it, ≈6 leaves it.
     glassReachGrowth: 0.08,
     glassReachCap: 15,
-    // A hit just over toughness speckles the paint; ≈8 m/s over chips it right through.
-    chipPerDv: 0.2,
-    chipReach: 0.7,
-    // Fully scratched after ≈2.5 m of sliding on the same spot.
-    scratchPerMetre: 0.4,
+    // A head-on hit 3 m/s over toughness chips its spot fully and starts flaking it; ≈6 m/s over
+    // flakes it right through. A glancing hit keeps a third of the chips (drawn out as gouges).
+    chipPerDv: 0.35,
+    chipReach: 0.9,
+    glancingChips: 0.35,
+    flakePerDv: 0.18,
+    flakeReach: 0.6,
+    // Rock grinds the paint: fully scratched after ≈0.3 m of sliding on the same spot.
+    scratchPerMetre: 3,
     scratchReach: 0.35,
     scratchFrom: 0.8,
+    slideScratches: { tree: 0.15, metal: 0.25 },
     // Round a hit: a 5 m/s hit over toughness scratches its spot about halfway.
     scratchPerDv: 0.1,
     scratchHitReach: 0.3,

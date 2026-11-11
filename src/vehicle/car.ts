@@ -533,7 +533,7 @@ export class Car {
       // under the chassis's toughness, so hits from above on the cabin use a lower threshold.
       const threshold = impact.own === this.cabinCollider && normal.y > 0.5 ? d.roofToughness : d.toughness;
       if (impact.dv < threshold) continue;
-      this.applyImpact(sum.divideScalar(count), normal, impact.dv - threshold, surfaceOf(impact.other));
+      this.applyImpact(sum.divideScalar(count), normal, impact.dv - threshold, impact.dv, surfaceOf(impact.other));
     }
     this.pending.clear();
   }
@@ -573,11 +573,13 @@ export class Car {
     const slide = this.slideAt(local, normal, other);
     const speed = slide.length();
     if (speed < d.scratchFrom) return;
-    if (surfaceOf(other) === 'ground') {
+    const surface = surfaceOf(other);
+    if (surface === 'ground') {
       const at = this.localToWorld(local);
       if (!this.debris.field.isHard(at.x, at.z)) return;
     }
-    wearPaint(this.model.pieces, local, d.scratchReach, 0, speed * PHYSICS_STEP * d.scratchPerMetre, slide.divideScalar(speed));
+    const share = surface === 'tree' ? d.slideScratches.tree : surface === 'metal' ? d.slideScratches.metal : 1;
+    wearPaint(this.model.pieces, local, normal, d.scratchReach, 0, speed * PHYSICS_STEP * d.scratchPerMetre * share, 0, slide.divideScalar(speed));
   }
 
   /**
@@ -617,8 +619,11 @@ export class Car {
     return slide.addScaledVector(normal, -slide.dot(normal));
   }
 
-  /** @param normal contact normal pointing out of the car (car-local) */
-  private applyImpact(local: THREE.Vector3, normal: THREE.Vector3, severity: number, surface: ContactSurface): void {
+  /**
+   * @param normal contact normal pointing out of the car (car-local)
+   * @param severity Δv over the toughness threshold; `dv` is the whole Δv
+   */
+  private applyImpact(local: THREE.Vector3, normal: THREE.Vector3, severity: number, dv: number, surface: ContactSurface): void {
     const d = this.cfg.damage;
     this.events?.impact(this, this.localToWorld(local), severity, surface);
 
@@ -658,13 +663,20 @@ export class Car {
 
     const dir = inwardDirection(local, this.hullCenter, this.hullHalf);
     const radius = d.dentRadius * (1 + Math.min(severity, 10) * 0.05);
+    // Paint: a head-on hit flakes it off in big pieces; a glancing one (still sliding fast after
+    // the hit, against the Δv it took) mostly scratches, with a few chips drawn out into gouges.
     const wear = this.hitWear(local, surface);
-    wearPaint(this.model.pieces, local, radius * d.chipReach, severity * wear.chips * d.chipPerDv, 0);
-    // A few scratches close round the hit, along the way the car was going there (or the car's
-    // length, for a hit straight on).
     const slide = this.slideAt(local, normal);
+    const headOn = dv * dv / (dv * dv + slide.lengthSq());
+    const chips = severity * wear.chips;
+    wearPaint(this.model.pieces, local, normal, radius * d.chipReach, chips * d.chipPerDv * (d.glancingChips + (1 - d.glancingChips) * headOn), 0, 0);
+    wearPaint(this.model.pieces, local, normal, radius * d.flakeReach, 0, 0, chips * d.flakePerDv * headOn * headOn);
+    // Scratches close round the hit, along the way the car was going there (or the car's length,
+    // for a hit straight on).
     if (slide.lengthSq() < 1) slide.set(0, 0, 1).addScaledVector(normal, -normal.z);
-    if (slide.lengthSq() > 1e-6) wearPaint(this.model.pieces, local, d.scratchHitReach, 0, severity * wear.scratches * d.scratchPerDv, slide.normalize());
+    if (slide.lengthSq() > 1e-6) {
+      wearPaint(this.model.pieces, local, normal, d.scratchHitReach, 0, severity * wear.scratches * d.scratchPerDv, 0, slide.normalize());
+    }
     const dent = Math.min(d.maxDent, severity * d.dentPerDv) * (1 - square);
     if (dent > 0) {
       applyDent(this.model.pieces, local, dir, dent, radius, d.maxDent);

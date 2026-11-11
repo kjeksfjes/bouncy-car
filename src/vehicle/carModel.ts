@@ -88,6 +88,8 @@ export interface CarModel {
 
 interface CarMaterials {
   paint: THREE.Material;
+  /** The inside of painted panels: the same paint, never worn. */
+  lining: THREE.Material;
   glass: THREE.Material;
   chrome: THREE.Material;
   steel: THREE.Material;
@@ -190,11 +192,13 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
     const std = (color: string, extra: THREE.MeshStandardMaterialParameters = {}) =>
       new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.55, metalness: 0.1, ...extra });
     // Panels are solid (see solidify), so ordinary front-face rendering is enough.
-    const paintMaterial = std(paint, { roughness: 0.4, metalness: 0.25 });
+    const paintLook = { roughness: 0.4, metalness: 0.25 };
+    const paintMaterial = std(paint, paintLook);
     // Chips and scratches (see paintWear).
     paintWithWear(paintMaterial);
     m = {
       paint: paintMaterial,
+      lining: std(paint, paintLook),
       glass: std(GLASS_TINT, { roughness: 0.05, metalness: 0.5, transparent: true, opacity: GLASS_OPACITY }),
       chrome: std('#d9dde2', { roughness: 0.2, metalness: 0.9 }),
       steel: std('#4b5056', { roughness: 0.5, metalness: 0.6 }),

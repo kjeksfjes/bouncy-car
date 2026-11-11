@@ -6,11 +6,18 @@ export interface WearTuning {
   /** Chips laid round a hit, per m/s of Δv over toughness (1 = as chipped as it gets), and their reach (× dentRadius). */
   chipPerDv: number;
   chipReach: number;
+  /** Share of those chips a glancing hit lays (a head-on hit lays them all). */
+  glancingChips: number;
+  /** Big flakes laid round a head-on hit, per m/s of Δv over toughness (fewer the more glancing), and their reach (× dentRadius). */
+  flakePerDv: number;
+  flakeReach: number;
   /** Scratches from the body dragging along something: per metre slid, and their reach (m, round each contact). */
   scratchPerMetre: number;
   scratchReach: number;
   /** Slower than this (m/s) a contact doesn't scratch. */
   scratchFrom: number;
+  /** Sliding scratches on bark and on another car, as a share of those on rock (rock faces, stony ground, boulders). */
+  slideScratches: { tree: number; metal: number };
   /** Scratches close round a hit, per m/s of Δv over toughness, and their reach (m). */
   scratchPerDv: number;
   scratchHitReach: number;
@@ -34,18 +41,42 @@ const LOOK = {
    * the small end), growing by up to `chipGrow` with wear. Specks only go down to the primer; a
    * big chip shows bare metal inside a primer border `chipRing` (of a cell) wide.
    */
-  flakeScale: 9,
-  flakeDensity: 0.75,
-  flakePower: 1.6,
+  chipScale: 9,
+  chipDensity: 0.75,
+  chipPower: 1.6,
   speckScale: 30,
   speckDensity: 0.9,
   speckPower: 0.8,
   chipMin: 0.06,
-  chipMax: 0.34,
-  chipGrow: 0.6,
+  chipMax: 0.45,
+  chipGrow: 1.2,
   chipRing: 0.1,
   /** Chip edges fray by this share of their radius (noise at 2.7 per cell). */
   chipFray: 0.3,
+  /**
+   * Flakes, from head-on hits and folds: the same on a coarser grid, sized `flakeMin`..`flakeMax`
+   * of a cell (evenly, not mostly small), with a thin primer border and ragged edges: the grid is
+   * warped by `flakeWarp` of a cell (noise at 0.8 per cell) and the edges fray (two octaves, at
+   * 1.6 and 5 per cell). Flaking also scatters `flakeSpecks` of chips round itself.
+   */
+  flakeScale: 1.6,
+  flakeDensity: 0.9,
+  flakePower: 0.7,
+  flakeMin: 0.25,
+  flakeMax: 0.42,
+  flakeWarp: 0.3,
+  flakeRing: 0.04,
+  flakeFray: 0.35,
+  flakeSpecks: 0.5,
+  /**
+   * Patches: light wear shows only in patches, heavy wear everywhere, so worn spots fray out
+   * unevenly from the hit. Slow noise (features per metre, plus a finer octave) gives each spot a
+   * hold of 0..`patchHold`; wear shows from there, fully `patchEdge` above it.
+   */
+  patchScale: 2.2,
+  patchDetail: 6,
+  patchHold: 0.7,
+  patchEdge: 0.25,
   /**
    * Gouges: where the paint is scratched (fully by `gougeFrom` of scratch wear), chips are drawn
    * out `gougeStretch` times along the scratches, their tails tapering by up to `gougeTaper`.
@@ -57,10 +88,11 @@ const LOOK = {
    * Creases: a face turned from its rest direction by more than acos(1 − creaseFrom) (≈16°) starts
    * chipping, up to `creaseWear` by acos(1 − creaseTo) (≈46°): folds crack the paint even where nothing touched it.
    */
-  creaseFrom: 0.04,
+  creaseFrom: 0.015,
   creaseTo: 0.3,
-  /** How chipped a crease gets at most on its own (a hit there adds to it). */
-  creaseWear: 0.55,
+  /** How chipped, and how flaked, a crease gets at most on its own (a hit there adds to it). */
+  creaseWear: 0.9,
+  creaseFlake: 0.5,
   /** Scratch lines: noise stretched along the slide (features per metre across the lines and along them). */
   scratchAcross: 60,
   scratchAlong: 3,
@@ -84,30 +116,42 @@ const METAL = new THREE.Color('#878c91');
 
 /**
  * Gives a body piece's geometry the wear attributes the paint shader reads: its rest shape (for
- * creases and to pin the patterns), wear (chips, scratches; 0..1 each) and the scratches'
+ * creases and to pin the patterns), wear (chips, scratches, flakes; 0..1 each) and the scratches'
  * direction (geometry-local, unnormalised, sign-free). `rest` is shared, not copied: keep it unchanged.
  */
 export function addWearAttributes(geometry: THREE.BufferGeometry, rest: Float32Array): void {
   const n = rest.length / 3;
   geometry.setAttribute('aRest', new THREE.BufferAttribute(rest, 3));
-  geometry.setAttribute('aWear', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
+  geometry.setAttribute('aWear', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
   geometry.setAttribute('aScrape', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
 }
 
 const _v = new THREE.Vector3();
 const _s = new THREE.Vector3();
+const _n = new THREE.Vector3();
 
 /**
- * Wears the paint of every closed piece near `point` (car-local), falling off smoothly over
- * `radius`: `chip` and `scratch` are added (each capped at 1); scratches run along `dir`
+ * Only faces turned toward what touched them wear: none at `FACING_FROM` (cos of the angle between
+ * the face's rest normal and the contact's), fully from `FACING_TO`. A floor hit doesn't reach up
+ * the sides, nor any hit through to the panel's underside. Feel values.
+ */
+const FACING_FROM = 0.2;
+const FACING_TO = 0.6;
+
+/**
+ * Wears the paint of every closed piece near `point` (car-local), on faces turned toward `normal`
+ * (car-local, unit, out of the car: see FACING_FROM), falling off smoothly over `radius`:
+ * `chip`, `scratch` and `flake` are added (each capped at 1); scratches run along `dir`
  * (car-local, unit). Pieces are unrotated children of the car root, like for applyDent.
  */
 export function wearPaint(
   pieces: CarPiece[],
   point: THREE.Vector3,
+  normal: THREE.Vector3,
   radius: number,
   chip: number,
   scratch: number,
+  flake: number,
   dir?: THREE.Vector3,
 ): void {
   for (const piece of pieces) {
@@ -117,13 +161,22 @@ export function wearPaint(
     if (!wear) continue;
     const scrape = geometry.getAttribute('aScrape') as THREE.BufferAttribute;
     const pos = geometry.getAttribute('position') as THREE.BufferAttribute;
+    // Rest normals: the mesh's normals are never recomputed as it deforms (flat shading doesn't need them).
+    const normals = geometry.getAttribute('normal') as THREE.BufferAttribute;
     const offset = piece.mesh.position;
     let changed = false;
     for (let i = 0; i < pos.count; i++) {
       const d = _v.fromBufferAttribute(pos, i).add(offset).distanceTo(point);
       if (d >= radius) continue;
-      const f = (1 - d / radius) ** 2;
-      wear.setXY(i, Math.min(1, wear.getX(i) + chip * f), Math.min(1, wear.getY(i) + scratch * f));
+      const facing = THREE.MathUtils.smoothstep(_n.fromBufferAttribute(normals, i).dot(normal), FACING_FROM, FACING_TO);
+      if (facing <= 0) continue;
+      const f = (1 - d / radius) ** 2 * facing;
+      wear.setXYZ(
+        i,
+        Math.min(1, wear.getX(i) + chip * f),
+        Math.min(1, wear.getY(i) + scratch * f),
+        Math.min(1, wear.getZ(i) + flake * f),
+      );
       if (dir && scratch > 0) {
         // Lines have no sign: add the direction the way that agrees with what's there.
         _s.fromBufferAttribute(scrape, i);
@@ -158,11 +211,11 @@ export function paintWithWear(material: THREE.MeshStandardMaterial): void {
         '#include <common>',
         `#include <common>
 attribute vec3 aRest;
-attribute vec2 aWear;
+attribute vec3 aWear;
 attribute vec3 aScrape;
 varying vec3 vWearRest;
 varying vec3 vWearNow;
-varying vec2 vWear;
+varying vec3 vWear;
 varying vec3 vWearScrape;`,
       )
       .replace(
@@ -181,10 +234,8 @@ uniform vec3 wearPrimer;
 uniform vec3 wearMetal;
 varying vec3 vWearRest;
 varying vec3 vWearNow;
-varying vec2 vWear;
+varying vec3 vWear;
 varying vec3 vWearScrape;
-#define CHIP_MIN ${f(L.chipMin)}
-#define CHIP_MAX ${f(L.chipMax)}
 ${WEAR_GLSL}`,
       )
       .replace(
@@ -199,8 +250,16 @@ float wearScratchAmt = 0.0;
   vec3 nowFace = cross( dFdx( vWearNow ), dFdy( vWearNow ) );
   // How far this face has turned from its rest direction (1 - cos of the angle; 0 = not at all), for creases.
   float turned = length( restFace ) > 1e-12 && length( nowFace ) > 1e-12 ? 1.0 - abs( dot( normalize( restFace ), normalize( nowFace ) ) ) : 0.0;
-  float chips = clamp( vWear.x + ${f(L.creaseWear)} * smoothstep( ${f(L.creaseFrom)}, ${f(L.creaseTo)}, turned ), 0.0, 1.0 );
-  if ( chips > 0.001 ) {
+  float crease = smoothstep( ${f(L.creaseFrom)}, ${f(L.creaseTo)}, turned );
+  float flakes = vWear.z + ${f(L.creaseFlake)} * crease;
+  float chips = vWear.x + ${f(L.creaseWear)} * crease + ${f(L.flakeSpecks)} * vWear.z;
+  if ( chips > 0.001 || flakes > 0.001 ) {
+    // Light wear only in patches: it frays out unevenly from where it's heavy.
+    float hold = ${f(L.patchHold)} * clamp( 0.5 + 0.5 * ( 0.7 * wearNoise( vWearRest * ${f(L.patchScale)} ) + 0.3 * wearNoise( vWearRest * ${f(L.patchDetail)} + 41.0 ) ), 0.0, 1.0 );
+    chips = min( chips, 1.0 );
+    flakes = min( flakes, 1.0 );
+    chips *= smoothstep( hold, hold + ${f(L.patchEdge)}, chips );
+    flakes *= smoothstep( hold, hold + ${f(L.patchEdge)}, flakes );
     float grow = 1.0 + ${f(L.chipGrow)} * chips;
     // Where the paint was scratched, chips are gouges: drawn out along the scratches (the grid
     // squashed along them, so its round chips come out long) with a tapering tail.
@@ -209,16 +268,26 @@ float wearScratchAmt = 0.0;
     float squash = 1.0 / ( 1.0 + ( ${f(L.gougeStretch)} - 1.0 ) * scraped ) - 1.0;
     vec3 gougeAt = vWearRest + along * dot( vWearRest, along ) * squash;
     float taper = ${f(L.gougeTaper)} * scraped;
-    vec3 flakeAt = gougeAt * ${f(L.flakeScale)};
+    vec3 chipAt = gougeAt * ${f(L.chipScale)};
     vec3 speckAt = gougeAt * ${f(L.speckScale)} + 5.3;
-    vec2 flake = wearChipField( flakeAt, ${f(L.flakeDensity)} * pow( chips, ${f(L.flakePower)} ), grow, ${f(L.chipRing)}, along, taper );
-    vec2 speck = wearChipField( speckAt, ${f(L.speckDensity)} * pow( chips, ${f(L.speckPower)} ), grow, 1.0, along, taper );
-    flake *= 1.0 + ${f(L.chipFray)} * wearNoise( flakeAt * 2.7 );
+    vec3 chipSize = vec3( ${f(L.chipMin)}, ${f(L.chipMax)}, 3.0 );
+    vec2 chip = wearChipField( chipAt, ${f(L.chipDensity)} * pow( chips, ${f(L.chipPower)} ), chipSize, grow, ${f(L.chipRing)}, along, taper );
+    vec2 speck = wearChipField( speckAt, ${f(L.speckDensity)} * pow( chips, ${f(L.speckPower)} ), chipSize, grow, 1.0, along, taper );
+    chip *= 1.0 + ${f(L.chipFray)} * wearNoise( chipAt * 2.7 );
     speck.x *= 1.0 + ${f(L.chipFray)} * wearNoise( speckAt * 2.7 );
-    float inPrimer = min( flake.x, speck.x );
+    vec2 flake = vec2( 9.0 );
+    if ( flakes > 0.001 ) {
+      vec3 flakeAt = gougeAt * ${f(L.flakeScale)} + 9.7;
+      vec3 w = flakeAt * 0.8;
+      flakeAt += ${f(L.flakeWarp)} * vec3( wearNoise( w ), wearNoise( w + 31.0 ), wearNoise( w + 57.0 ) );
+      flake = wearChipField( flakeAt, ${f(L.flakeDensity)} * pow( flakes, ${f(L.flakePower)} ), vec3( ${f(L.flakeMin)}, ${f(L.flakeMax)}, 1.0 ), 1.0, ${f(L.flakeRing)}, along, taper * 0.5 );
+      flake *= 1.0 + ${f(L.flakeFray)} * ( 0.65 * wearNoise( flakeAt * 1.6 ) + 0.35 * wearNoise( flakeAt * 5.0 + 17.0 ) );
+    }
+    float inPrimer = min( min( chip.x, speck.x ), flake.x );
+    float inMetal = min( chip.y, flake.y );
     float aa = fwidth( inPrimer ) + 1e-4;
-    float aaMetal = fwidth( flake.y ) + 1e-4;
-    wearMetalAmt = 1.0 - smoothstep( 1.0 - aaMetal, 1.0 + aaMetal, flake.y );
+    float aaMetal = fwidth( inMetal ) + 1e-4;
+    wearMetalAmt = 1.0 - smoothstep( 1.0 - aaMetal, 1.0 + aaMetal, inMetal );
     wearPrimerAmt = max( 0.0, 1.0 - smoothstep( 1.0 - aa, 1.0 + aa, inPrimer ) - wearMetalAmt );
   }
   float scratch = vWear.y;
@@ -276,10 +345,11 @@ float wearHash( vec3 p ) {
   return fract( ( p.x + p.y ) * p.z );
 }
 // The nearest chips round p (in cells): x = distance over radius (< 1 inside a chip), y = the same for
-// its bare-metal middle (radius less ring). Each chip's tail reaches further along 'along', by
+// its bare-metal middle (radius less ring). Radii run size.x..size.y of a cell, the random pick
+// raised to size.z (higher: mostly small). Each chip's tail reaches further along 'along', by
 // up to 1 / (1 - taper) of its radius. A chip sits 0.15..0.85 into its cell and reaches at most
-// 0.45 of a cell (0.65 frayed), so only the eight cells on p's side can touch it.
-vec2 wearChipField( vec3 p, float density, float grow, float ring, vec3 along, float taper ) {
+// 0.45 of a cell (0.65 frayed by up to 0.35), so only the eight cells on p's side can touch it.
+vec2 wearChipField( vec3 p, float density, vec3 size, float grow, float ring, vec3 along, float taper ) {
   vec3 cell = floor( p );
   vec3 f = p - cell;
   vec3 side = step( 0.5, f ) * 2.0 - 1.0;
@@ -288,9 +358,9 @@ vec2 wearChipField( vec3 p, float density, float grow, float ring, vec3 along, f
     vec3 o = vec3( mod( float( i ), 2.0 ), mod( floor( float( i ) / 2.0 ), 2.0 ), floor( float( i ) / 4.0 ) ) * side;
     vec3 c = cell + o;
     if ( wearHash( c ) > density ) continue;
-    float size = wearHash( c + 19.19 );
+    float pick = pow( wearHash( c + 19.19 ), size.z );
     float tail = taper * ( 0.4 + 0.6 * wearHash( c + 29.3 ) );
-    float radius = min( ( CHIP_MIN + ( CHIP_MAX - CHIP_MIN ) * size * size * size ) * grow, 0.45 * ( 1.0 - tail ) );
+    float radius = min( ( size.x + ( size.y - size.x ) * pick ) * grow, 0.45 * ( 1.0 - tail ) );
     vec3 centre = o + 0.15 + 0.7 * vec3( wearHash( c + 3.1 ), wearHash( c + 7.7 ), wearHash( c + 11.3 ) );
     vec3 v = f - centre;
     v -= along * max( dot( v, along ), 0.0 ) * tail;
