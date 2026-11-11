@@ -43,10 +43,11 @@ const LOOK = {
    */
   chipScale: 9,
   chipDensity: 0.75,
-  chipPower: 1.6,
+  chipPower: 2.2,
   speckScale: 30,
-  speckDensity: 0.9,
-  speckPower: 0.8,
+  /** Specks only where the wear is heavy: low power scatters them over the whole hit like stars. */
+  speckDensity: 0.7,
+  speckPower: 2.2,
   chipMin: 0.06,
   chipMax: 0.45,
   chipGrow: 1.2,
@@ -68,6 +69,9 @@ const LOOK = {
   flakeRing: 0.04,
   flakeFray: 0.35,
   flakeSpecks: 0.5,
+  /** Heavy chipping turns to flaking: flakes added from `chipFlakeFrom` of chip wear, `chipFlake` at full. */
+  chipFlakeFrom: 0.55,
+  chipFlake: 0.7,
   /**
    * Patches: light wear shows only in patches, heavy wear everywhere, so worn spots fray out
    * unevenly from the hit. Slow noise (features per metre, plus a finer octave) gives each spot a
@@ -138,6 +142,9 @@ const _n = new THREE.Vector3();
 const FACING_FROM = 0.2;
 const FACING_TO = 0.6;
 
+/** How sharply wear falls off from a hit: (1 − d / radius)^WEAR_FALLOFF. Higher keeps it at the point of impact. */
+const WEAR_FALLOFF = 3;
+
 /**
  * Wears the paint of every closed piece near `point` (car-local), on faces turned toward `normal`
  * (car-local, unit, out of the car: see FACING_FROM), falling off smoothly over `radius`:
@@ -170,7 +177,7 @@ export function wearPaint(
       if (d >= radius) continue;
       const facing = THREE.MathUtils.smoothstep(_n.fromBufferAttribute(normals, i).dot(normal), FACING_FROM, FACING_TO);
       if (facing <= 0) continue;
-      const f = (1 - d / radius) ** 2 * facing;
+      const f = (1 - d / radius) ** WEAR_FALLOFF * facing;
       wear.setXYZ(
         i,
         Math.min(1, wear.getX(i) + chip * f),
@@ -251,7 +258,7 @@ float wearScratchAmt = 0.0;
   // How far this face has turned from its rest direction (1 - cos of the angle; 0 = not at all), for creases.
   float turned = length( restFace ) > 1e-12 && length( nowFace ) > 1e-12 ? 1.0 - abs( dot( normalize( restFace ), normalize( nowFace ) ) ) : 0.0;
   float crease = smoothstep( ${f(L.creaseFrom)}, ${f(L.creaseTo)}, turned );
-  float flakes = vWear.z + ${f(L.creaseFlake)} * crease;
+  float flakes = vWear.z + ${f(L.creaseFlake)} * crease + ${f(L.chipFlake)} * smoothstep( ${f(L.chipFlakeFrom)}, 1.0, vWear.x );
   float chips = vWear.x + ${f(L.creaseWear)} * crease + ${f(L.flakeSpecks)} * vWear.z;
   if ( chips > 0.001 || flakes > 0.001 ) {
     // Light wear only in patches: it frays out unevenly from where it's heavy.
