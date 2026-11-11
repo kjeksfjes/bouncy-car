@@ -24,10 +24,6 @@ const JUICE = {
   maxLandingShake: 0.5,
   /** Camera dip per m/s of landing speed. */
   kickPerLanding: 0.09,
-  /** Hit-stop: freeze the simulation briefly on big crashes (s). */
-  hitStopFrom: 8,
-  hitStopBase: 0.05,
-  hitStopMax: 0.12,
   /** Crashes of other cars this close still rattle the camera a little (m). */
   nearbyShakeRange: 40,
   /**
@@ -74,7 +70,7 @@ type Ground = keyof GroundMix;
  * "Juice": feedback that makes driving and crashing feel physical. Spray from
  * tyres and puffs on landings and impacts that match the ground (snow powder,
  * torn turf, dirt, stone dust), sparks from metal on rock or metal, snow,
- * leaves or needles shaken off trees, screen shake, a landing dip and hit-stop.
+ * leaves or needles shaken off trees, screen shake and a landing dip.
  */
 export class Juice implements CarEvents {
   /** Light stuff that hangs in the air: snow powder, dust, leaves. */
@@ -94,7 +90,6 @@ export class Juice implements CarEvents {
     private readonly orbit: OrbitCamera,
     private readonly camera: THREE.Camera,
     private readonly isPlayer: (car: Car) => boolean,
-    private readonly hitStop: (seconds: number) => void,
   ) {
     this.snow = new Particles(scene, field, { capacity: 2500, blending: THREE.NormalBlending, gravity: 0.25, drag: 2.5 });
     this.clods = new Particles(scene, field, { capacity: 1500, blending: THREE.NormalBlending, gravity: 1, drag: 0.6 });
@@ -129,7 +124,6 @@ export class Juice implements CarEvents {
     const J = JUICE;
     if (this.isPlayer(car)) {
       this.orbit.addTrauma(Math.min(J.maxImpactShake, severity * J.shakePerSeverity));
-      if (severity > J.hitStopFrom) this.hitStop(Math.min(J.hitStopMax, J.hitStopBase + (severity - J.hitStopFrom) * 0.01));
     } else {
       const d = at.distanceTo(this.camera.position);
       if (d < J.nearbyShakeRange) this.orbit.addTrauma((1 - d / J.nearbyShakeRange) * severity * J.shakePerSeverity * 0.5);
