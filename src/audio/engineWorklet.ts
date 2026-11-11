@@ -32,6 +32,8 @@ class V8Engine extends AudioWorkletProcessor {
     this.crank = 0;
     this.lope = 0;
     this.pop = 0;
+    // Seconds since the throttle was lifted (overrun pops only come just after).
+    this.lifted = 99;
     // Per-cylinder pulse strength and timing (share of a firing interval): a cross-plane V8 fires
     // its two banks unevenly, and that unevenness is the burble instead of a buzz.
     this.strength = [1.0, 0.74, 0.95, 0.68, 1.06, 0.8, 0.9, 0.71];
@@ -59,6 +61,9 @@ class V8Engine extends AudioWorkletProcessor {
     const noisy = 0.2 + 0.4 * load;
     const misfire = sick * sick * 0.45;
     const jitter = 0.04 + 0.25 * sick;
+    this.lifted = load < 0.05 ? this.lifted + exhaust.length / sampleRate : 0;
+    // Overrun: lifting off from high revs pops for a moment, then it settles (not for as long as you coast).
+    const overrun = rpm > 3500 && this.lifted < 1.2 ? 0.03 * (1 - this.lifted / 1.2) : 0;
     for (let i = 0; i < exhaust.length; i++) {
       this.phase += step * (1 + (Math.random() - 0.5) * jitter);
       if (this.phase >= this.next) {
@@ -71,8 +76,7 @@ class V8Engine extends AudioWorkletProcessor {
           // Unburnt fuel sometimes goes off in the hot exhaust a moment later: a backfire.
           if (Math.random() < 0.25) this.pop = Math.round(sampleRate * (0.01 + Math.random() * 0.03));
         }
-        // Overrun: lifting off at high revs pops now and then.
-        if (load < 0.05 && rpm > 2800 && Math.random() < 0.035) amp = 2.4;
+        if (Math.random() < overrun) amp = 2.4;
         this.env += amp;
         // A worn rod bearing knocks once per crank revolution (every 4 firings).
         if (++this.crank % 4 === 0 && sick > 0.3) this.knockEnv += (sick - 0.3) * (0.7 + Math.random() * 0.6);
