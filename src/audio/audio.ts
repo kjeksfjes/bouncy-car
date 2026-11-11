@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import type { Car, CarEvents, ContactSurface } from '../vehicle/car';
 import { ENGINE_PROCESSOR, loadEngineWorklet } from './engineWorklet';
+import { DragChain, GrindChain, SCRAPE, blendDrag, blendGrind, scrapeGrains, surfaceProfile, type GrindSound } from './scrape';
+import { Squeal, TYRE_ROLL, TYRE_SLIDE, loadLoudness, slideWildness, wilder } from './tyres';
 
 /** Mix levels. Everything is synthesised; these are by-ear starting points. */
 /** The slow-motion low-pass: wide open at normal speed, and the lowest it closes down to (Hz). */
@@ -52,7 +54,9 @@ const ROCK = {
 
 /** Simulated gearbox for engine pitch: upper speed (m/s) of each gear. */
 const GEAR_TOPS = [9, 17, 27, 40, 70];
-const IDLE_RPM = 800;
+const IDLE_RPM = 750;
+/** How long (s) a dying engine sputters and winds down before it's silent. */
+const STALL = 1.6;
 const SHIFT_RPM = 5800;
 
 /** Panners: full volume within `ref` metres, fading with distance. */
@@ -80,44 +84,58 @@ class CarVoice {
   private readonly rasp: BiquadFilterNode;
   private readonly muffler: BiquadFilterNode;
   private readonly engineGain: GainNode;
-  private readonly tyreGain: GainNode;
-  private readonly scrapeGain: GainNode;
-  private readonly sources: AudioBufferSourceNode[] = [];
+  /** Tyres rolling and sliding, by the ground under them (see tyres.ts). */
+  private readonly tyreRoll: GrindChain;
+  private readonly tyreSlide: DragChain;
+  private readonly squeal: Squeal;
+  /** Body scraping: hard surfaces (rock, trees, cars) and soft ground (grass, snow, dirt). */
+  private readonly grind: GrindChain;
+  private readonly drag: DragChain;
   private rpm = IDLE_RPM;
+  /** When a dying engine stops sputtering (context time); 0 while it runs or once it's stopped. */
+  private stallUntil = 0;
+  private wasAlive = true;
   lastCrunch = 0;
 
-  constructor(private readonly ctx: AudioContext, out: AudioNode, noise: AudioBuffer, private readonly level: number) {
+  constructor(
+    private readonly ctx: AudioContext,
+    out: AudioNode,
+    private readonly noise: AudioBuffer,
+    profile: AudioBuffer,
+    private readonly level: number,
+  ) {
     this.panner = new PannerNode(ctx, PANNER);
     this.panner.connect(out);
 
     // Engine: combustion pulses (worklet) → exhaust resonances → soft saturation → muffler.
-    this.engine = new AudioWorkletNode(ctx, ENGINE_PROCESSOR, { numberOfInputs: 0, outputChannelCount: [1] });
+    this.engine = new AudioWorkletNode(ctx, ENGINE_PROCESSOR, { numberOfInputs: 0, outputChannelCount: [2] });
+    const split = new ChannelSplitterNode(ctx, { numberOfOutputs: 2 });
+    this.engine.connect(split);
     this.rasp = new BiquadFilterNode(ctx, { type: 'peaking', frequency: 750, Q: 1.2, gain: 0 });
     this.muffler = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 600, Q: 0.8 });
     this.engineGain = new GainNode(ctx, { gain: 0 });
-    this.engine
-      .connect(new BiquadFilterNode(ctx, { type: 'highpass', frequency: 30 }))
-      // Chest: the big, low exhaust resonance that makes a V8 rumble.
-      .connect(new BiquadFilterNode(ctx, { type: 'peaking', frequency: 130, Q: 1.1, gain: 8 }))
+    split
+      .connect(new BiquadFilterNode(ctx, { type: 'highpass', frequency: 30 }), 0)
+      // Chest: the big, low exhaust resonance that makes a V8 rumble, and weight below it.
+      .connect(new BiquadFilterNode(ctx, { type: 'peaking', frequency: 95, Q: 1, gain: 10 }))
+      .connect(new BiquadFilterNode(ctx, { type: 'lowshelf', frequency: 180, gain: 4 }))
       .connect(this.rasp)
       .connect(new GainNode(ctx, { gain: 0.6 }))
       .connect(new WaveShaperNode(ctx, { curve: softClip(), oversample: '2x' }))
       .connect(this.muffler)
       .connect(this.engineGain)
       .connect(this.panner);
+    // A failing engine's rod knock: mechanical, heard through the block rather than the exhaust.
+    split
+      .connect(new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 1800, Q: 2 }), 1)
+      .connect(new GainNode(ctx, { gain: 3 }))
+      .connect(this.engineGain);
 
-    // Tyres on snow: a low, crunchy band of noise. Scrape: a harsh, higher band.
-    this.tyreGain = new GainNode(ctx, { gain: 0 });
-    this.loop(noise, new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 650, Q: 0.9 }), this.tyreGain);
-    this.scrapeGain = new GainNode(ctx, { gain: 0 });
-    this.loop(noise, new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 2600, Q: 2.5 }), this.scrapeGain);
-  }
-
-  private loop(noise: AudioBuffer, filter: BiquadFilterNode, gain: GainNode): void {
-    const src = new AudioBufferSourceNode(this.ctx, { buffer: noise, loop: true });
-    src.start(0, Math.random() * noise.duration);
-    src.connect(filter).connect(gain).connect(this.panner);
-    this.sources.push(src);
+    this.tyreRoll = new GrindChain(ctx, profile, noise, this.panner);
+    this.tyreSlide = new DragChain(ctx, noise, this.panner);
+    this.squeal = new Squeal(ctx, noise, this.panner);
+    this.grind = new GrindChain(ctx, profile, noise, this.panner);
+    this.drag = new DragChain(ctx, noise, this.panner);
   }
 
   /** @param pitch slow motion lowers the engine (see AudioEngine.setTimeScale) */
@@ -131,25 +149,88 @@ class CarVoice {
     const speed = Math.abs(car.forwardSpeed);
     const throttle = Math.max(car.lastInput.throttle, car.forwardSpeed < 1 ? car.lastInput.brake : 0);
     const airborne = car.groundedWheels === 0;
+    // A dying engine sputters down to a stop over STALL seconds instead of cutting out.
+    if (this.wasAlive && !car.engineAlive) this.stallUntil = now + STALL;
+    this.wasAlive = car.engineAlive;
+    const stalling = !car.engineAlive && now < this.stallUntil;
     // Free-revving in the air, otherwise RPM follows road speed through the gears.
     const target = !car.engineAlive ? 0 : airborne && throttle > 0 ? SHIFT_RPM : gearRpm(speed, throttle);
-    this.rpm += (target - this.rpm) * Math.min(1, dt * (target > this.rpm ? 6 : 3));
-    const alive = car.engineAlive ? 1 : 0;
-    const load = throttle * alive;
+    this.rpm += (target - this.rpm) * Math.min(1, dt * (stalling ? 1.5 : target > this.rpm ? 6 : 3));
+    const alive = car.engineAlive || stalling ? 1 : 0;
+    const load = car.engineAlive ? throttle : 0;
     const revs = this.rpm / SHIFT_RPM;
     this.engine.parameters.get('rpm')!.setTargetAtTime(this.rpm * pitch, now, 0.03);
     this.engine.parameters.get('load')!.setTargetAtTime(load, now, 0.05);
+    // Runs clean while alive; dying, it misfires, backfires and knocks as it stalls.
+    this.engine.parameters.get('health')!.setTargetAtTime(car.engineAlive ? 1 : 0, now, 0.1);
     // Open throttle brings out the rasp; revs and throttle open the muffler up.
     this.rasp.gain.setTargetAtTime(-4 + load * 10, now, 0.06);
     this.muffler.frequency.setTargetAtTime((350 + revs * 1800 + load * 1400) * pitch, now, 0.05);
     this.engineGain.gain.setTargetAtTime(MIX.engine * this.level * alive * (0.7 + 0.3 * load), now, 0.08);
 
-    const grounded = car.groundedWheels / 4;
-    const rolling = Math.min(1, speed / 20) * 0.15;
-    const sliding = Math.min(1, car.slip / 6);
-    this.tyreGain.gain.setTargetAtTime(MIX.tyres * this.level * grounded * (rolling + sliding), now, 0.05);
-    const scrape = car.scraping ? Math.min(1, speed / 15) : 0;
-    this.scrapeGain.gain.setTargetAtTime(MIX.scrape * this.level * scrape, now, 0.04);
+    this.tyres(dt, car, speed, pitch);
+    this.scrape(dt, car, pitch);
+  }
+
+  private tyres(dt: number, car: Car, speed: number, pitch: number): void {
+    const now = this.ctx.currentTime;
+    // The squeal weighs the load itself (it also sets its pitch); the rest gets louder with it.
+    const base = MIX.tyres * this.level * (car.groundedWheels / 4);
+    const level = base * loadLoudness(car.tyreLoad);
+    if (level <= 0) {
+      this.tyreRoll.set(TYRE_ROLL.snow, 0, 0, pitch, now);
+      this.tyreSlide.set(TYRE_SLIDE.snow, 0, 0, pitch, now);
+      this.squeal.set(0, 0, 0, 0, pitch, now);
+      return;
+    }
+    const g = car.tyreGround;
+    const roll = blendGrind([
+      [TYRE_ROLL.snow, g.snow],
+      [TYRE_ROLL.grass, g.grass],
+      [TYRE_ROLL.dirt, g.dirt],
+      [TYRE_ROLL.stone, g.stone],
+    ]);
+    const blended = blendDrag([
+      [TYRE_SLIDE.snow, g.snow],
+      [TYRE_SLIDE.grass, g.grass],
+      [TYRE_SLIDE.dirt, g.dirt],
+      [TYRE_SLIDE.stone, g.stone],
+    ]);
+    const slide = wilder(blended, slideWildness(car.slip, speed));
+    this.tyreRoll.set(roll, speed, level, pitch, now);
+    this.tyreSlide.set(slide, car.slip, level, pitch, now);
+    this.squeal.set(car.slip, speed, car.tyreLoad, base * g.stone, pitch, now);
+    scrapeGrains(this.ctx, this.noise, this.panner, roll.grains, speed, level, pitch, dt, now);
+    scrapeGrains(this.ctx, this.noise, this.panner, slide.grains, car.slip, level, pitch, dt, now, slide.full);
+  }
+
+  /**
+   * The body's fastest-sliding contact, as a hard grind and a soft drag: on the ground, its
+   * stony share grinds like rock and the rest drags by what it's made of.
+   */
+  private scrape(dt: number, car: Car, pitch: number): void {
+    const now = this.ctx.currentTime;
+    const slide = car.scraping ? car.scrapeSpeed : 0;
+    const surface = car.scrapeSurface;
+    const ground = car.scrapeGround;
+    const hard: GrindSound = surface === 'metal' ? SCRAPE.metal : surface === 'tree' ? SCRAPE.tree : SCRAPE.rock;
+    const hardShare = surface === 'ground' ? THREE.MathUtils.smoothstep(ground.stone, 0.25, 0.5) : 1;
+    // Not scraping: fade both out (the sound only matters for its zero level).
+    if (slide < SCRAPE.from) {
+      this.grind.set(hard, 0, 0, pitch, now);
+      this.drag.set(SCRAPE.snow, 0, 0, pitch, now);
+      return;
+    }
+    const soft = blendDrag([
+      [SCRAPE.grass, ground.grass],
+      [SCRAPE.snow, ground.snow],
+      [SCRAPE.dirt, ground.dirt],
+    ]);
+    const level = MIX.scrape * this.level;
+    this.grind.set(hard, slide, level * hardShare, pitch, now);
+    this.drag.set(soft, slide, level * (1 - hardShare), pitch, now);
+    if (hardShare > 0.02) scrapeGrains(this.ctx, this.noise, this.panner, hard.grains, slide, level * hardShare, pitch, dt, now);
+    if (hardShare < 0.98) scrapeGrains(this.ctx, this.noise, this.panner, soft.grains, slide, level * (1 - hardShare), pitch, dt, now);
   }
 
   dispose(): void {
@@ -157,7 +238,11 @@ class CarVoice {
     this.panner.disconnect();
     this.engine.port.postMessage('stop');
     this.engine.disconnect();
-    this.sources.forEach((s) => s.stop(now + 0.05));
+    this.grind.stop(now + 0.05);
+    this.tyreRoll.stop(now + 0.05);
+    this.tyreSlide.stop(now + 0.05);
+    this.squeal.stop(now + 0.05);
+    this.drag.stop(now + 0.05);
   }
 }
 
@@ -234,6 +319,8 @@ class AudioEngine {
   private readonly ctx = new AudioContext();
   private readonly master: GainNode;
   private readonly noise: AudioBuffer;
+  /** A rough surface for grinding scrapes (see surfaceProfile). */
+  private readonly profile: AudioBuffer;
   private readonly voices = new Map<Car, CarVoice>();
   private readonly windGain: GainNode;
   private readonly windFilter: BiquadFilterNode;
@@ -266,6 +353,7 @@ class AudioEngine {
     this.loops = new GainNode(this.ctx, { gain: 1 });
     this.loops.connect(this.master);
     this.noise = whiteNoise(this.ctx, 2);
+    this.profile = surfaceProfile(this.ctx);
 
     this.windGain = new GainNode(this.ctx, { gain: 0 });
     this.windFilter = new BiquadFilterNode(this.ctx, { type: 'lowpass', frequency: 500, Q: 0.5 });
@@ -298,7 +386,7 @@ class AudioEngine {
     }
     cars.forEach((car, i) => {
       let voice = this.voices.get(car);
-      if (!voice) this.voices.set(car, (voice = new CarVoice(this.ctx, this.loops, this.noise, i === 0 ? 1 : MIX.aiEngine)));
+      if (!voice) this.voices.set(car, (voice = new CarVoice(this.ctx, this.loops, this.noise, this.profile, i === 0 ? 1 : MIX.aiEngine)));
       voice.update(dt, car, this.pitch);
     });
 

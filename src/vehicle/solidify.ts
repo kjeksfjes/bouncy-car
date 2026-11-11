@@ -11,9 +11,10 @@ const _m = new THREE.Vector3();
  * the outer surface, an inner copy offset inward along the vertex normals
  * (winding reversed), and rim quads along every open edge.
  *
- * Expects outward-wound triangles as a flat position array; returns the same format.
+ * Expects outward-wound triangles as a flat position array; returns the same format, split into
+ * the outer surface with its rims, and the inner copy (the panel's underside).
  */
-export function solidify(triangles: readonly number[], thickness: number): number[] {
+export function solidify(triangles: readonly number[], thickness: number): { outer: number[]; inner: number[] } {
   // Weld coincident corners so neighbouring triangles share normals and edges.
   const ids = new Map<string, number>();
   const verts: number[] = [];
@@ -68,14 +69,15 @@ export function solidify(triangles: readonly number[], thickness: number): numbe
   }
 
   const out: number[] = [];
-  const push = (src: ArrayLike<number>, id: number) => out.push(src[id * 3], src[id * 3 + 1], src[id * 3 + 2]);
+  const under: number[] = [];
+  const push = (src: ArrayLike<number>, id: number, into = out) => into.push(src[id * 3], src[id * 3 + 1], src[id * 3 + 2]);
   for (let f = 0; f < faces.length; f += 3) {
     push(verts, faces[f]);
     push(verts, faces[f + 1]);
     push(verts, faces[f + 2]);
-    push(inner, faces[f]);
-    push(inner, faces[f + 2]);
-    push(inner, faces[f + 1]);
+    push(inner, faces[f], under);
+    push(inner, faces[f + 2], under);
+    push(inner, faces[f + 1], under);
   }
   for (const { a, b, c, count } of edges.values()) {
     if (count !== 1) continue;
@@ -90,5 +92,5 @@ export function solidify(triangles: readonly number[], thickness: number): numbe
     const order = flip ? [0, 3, 2, 0, 2, 1] : [0, 1, 2, 0, 2, 3];
     for (const i of order) push(quad[i][0], quad[i][1]);
   }
-  return out;
+  return { outer: out, inner: under };
 }

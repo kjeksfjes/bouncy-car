@@ -181,12 +181,13 @@ export function sideHalfWidth(bp: CarBlueprint, z: number, h: number): number {
 }
 
 /** `recess` is drawn like `dark` but thin-walled: lamp recesses sit right behind the panel edges. */
-export type PanelMaterial = 'paint' | 'dark' | 'glass' | 'recess';
+/** `lining`: the inside of painted panels, painted too but never worn (see paintWear). */
+export type PanelMaterial = 'paint' | 'lining' | 'dark' | 'glass' | 'recess';
 /** Body triangles (flat position arrays, car-local) grouped by part, then material. */
 export type Panels = Map<string, Map<PanelMaterial, number[]>>;
 
 /** Wall thickness per surface type (m): sheet metal reads as a visible edge, glass is thin. */
-const THICKNESS: Record<PanelMaterial, number> = { paint: 0.03, dark: 0.03, glass: 0.01, recess: 0.005 };
+const THICKNESS: Record<PanelMaterial, number> = { paint: 0.03, lining: 0.03, dark: 0.03, glass: 0.01, recess: 0.005 };
 /** Firewall and rear bulkhead are scaled down by this much to sit inside the skin. */
 const INNER_WALL_SCALE = 0.93;
 
@@ -407,7 +408,11 @@ export function buildPanels(bp: CarBlueprint): Panels {
   }
 
   for (const [part, byMaterial] of loft) {
-    for (const [mat, triangles] of byMaterial) target(panels, part, mat).push(...solidify(triangles, THICKNESS[mat]));
+    for (const [mat, triangles] of byMaterial) {
+      const { outer, inner } = solidify(triangles, THICKNESS[mat]);
+      target(panels, part, mat).push(...outer);
+      target(panels, part, mat === 'paint' ? 'lining' : mat).push(...inner);
+    }
   }
 
   // Body-coloured mirrors are their own parts (they ride on the doors and can be knocked off);

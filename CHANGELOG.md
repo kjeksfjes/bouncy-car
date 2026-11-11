@@ -1,6 +1,32 @@
 # Changelog
 
-Releases are named after game-development milestones and jargon.
+Releases are named plainly after what they bring (the first three after
+game-development milestones).
+
+## v0.4.0 – "Sights and Sounds" (2026-11-11)
+
+The car wears its crashes and sounds like what it touches: paint that
+chips, flakes and scratches, sparks off grinding metal, and new sounds
+for scraping, tyres and the engine.
+
+- **Paint wear:** hits chip the paint down to primer and bare metal,
+  concentrated where the hit landed and flaking off in big ragged flakes
+  on hard and head-on hits; glancing hits mostly scratch. Dragging along
+  rock scratches hard, bark and other cars far less, snow never chips.
+  Folds crack the paint too, and only faces turned toward the contact wear.
+- **Sparks:** streaks that cool from white-hot to dull red, fall and
+  bounce off the ground, thrown along the slide wherever metal grinds on
+  rock or another car, and fanned out by hard hits.
+- **Scraping sounds by surface:** a heavy, damped metal grind on rock, a
+  smoother rub against other cars, a duller grind on bark, and soft drags
+  over grass, snow and dirt.
+- **Tyres by ground:** rolling and sliding sound like snow, grass, dirt
+  or stone; on stone the rubber squeals. The load on the tyres sets their
+  loudness and the squeal's pitch, and wild slides turn rougher.
+- **Engine:** deeper, with a cross-plane V8 burble and a loping idle;
+  overrun pops only just after lifting off; a dying engine sputters,
+  backfires and knocks to a stop.
+- **Testing:** F tips the car onto its side.
 
 ## v0.3.0 – "World Building" (2026-11-10)
 
