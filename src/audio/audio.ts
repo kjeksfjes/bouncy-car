@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Car, CarEvents, ContactSurface } from '../vehicle/car';
 import { ENGINE_PROCESSOR, loadEngineWorklet } from './engineWorklet';
 import { DragChain, GrindChain, SCRAPE, blendDrag, blendGrind, scrapeGrains, surfaceProfile, type GrindSound } from './scrape';
-import { Squeal, TYRE_ROLL, TYRE_SLIDE } from './tyres';
+import { Squeal, TYRE_ROLL, TYRE_SLIDE, loadLoudness, slideWildness, wilder } from './tyres';
 
 /** Mix levels. Everything is synthesised; these are by-ear starting points. */
 /** The slow-motion low-pass: wide open at normal speed, and the lowest it closes down to (Hz). */
@@ -155,11 +155,13 @@ class CarVoice {
 
   private tyres(dt: number, car: Car, speed: number, pitch: number): void {
     const now = this.ctx.currentTime;
-    const level = MIX.tyres * this.level * (car.groundedWheels / 4);
+    // The squeal weighs the load itself (it also sets its pitch); the rest gets louder with it.
+    const base = MIX.tyres * this.level * (car.groundedWheels / 4);
+    const level = base * loadLoudness(car.tyreLoad);
     if (level <= 0) {
       this.tyreRoll.set(TYRE_ROLL.snow, 0, 0, pitch, now);
       this.tyreSlide.set(TYRE_SLIDE.snow, 0, 0, pitch, now);
-      this.squeal.set(0, 0, 0, pitch, now);
+      this.squeal.set(0, 0, 0, 0, pitch, now);
       return;
     }
     const g = car.tyreGround;
@@ -169,15 +171,16 @@ class CarVoice {
       [TYRE_ROLL.dirt, g.dirt],
       [TYRE_ROLL.stone, g.stone],
     ]);
-    const slide = blendDrag([
+    const blended = blendDrag([
       [TYRE_SLIDE.snow, g.snow],
       [TYRE_SLIDE.grass, g.grass],
       [TYRE_SLIDE.dirt, g.dirt],
       [TYRE_SLIDE.stone, g.stone],
     ]);
+    const slide = wilder(blended, slideWildness(car.slip, speed));
     this.tyreRoll.set(roll, speed, level, pitch, now);
     this.tyreSlide.set(slide, car.slip, level, pitch, now);
-    this.squeal.set(car.slip, speed, level * g.stone, pitch, now);
+    this.squeal.set(car.slip, speed, car.tyreLoad, base * g.stone, pitch, now);
     scrapeGrains(this.ctx, this.noise, this.panner, roll.grains, speed, level, pitch, dt, now);
     scrapeGrains(this.ctx, this.noise, this.panner, slide.grains, car.slip, level, pitch, dt, now, slide.full);
   }

@@ -1,6 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { PHYSICS_STEP } from '../constants';
+import { GRAVITY, PHYSICS_STEP } from '../constants';
 import type { Debris } from '../world/debris';
 import type { GroundMix } from '../world/biome';
 import type { FluidStain } from '../world/fluids';
@@ -178,6 +178,8 @@ export class Car {
   lastInput: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false };
   /** Average sideways slip of the grounded tyres (m/s). */
   slip = 0;
+  /** What the tyres carry together, in car weights: 1 standing still, more in compressions, less over crests. */
+  tyreLoad = 0;
   events?: CarEvents;
   /** Whether the body itself (not the wheels) touched anything in the last step. */
   private bodyTouching = false;
@@ -347,6 +349,7 @@ export class Car {
     _down.copy(_up).negate();
     let grounded = 0;
     let slipSum = 0;
+    let loadSum = 0;
 
     for (const wheel of this.wheels) {
       if (!wheel.attached) continue;
@@ -391,6 +394,7 @@ export class Car {
       let spring = Su.stiffness * compression + (compVel > 0 ? Su.dampCompression : Su.dampRebound) * compVel;
       if (compression > bumpStart) spring += Su.bumpStopStiffness * (compression - bumpStart);
       const load = Math.max(0, spring);
+      loadSum += load;
       this.body.applyImpulseAtPoint(_imp.copy(_up).multiplyScalar(load * dt), _origin, true);
 
       // --- Tyre: velocity-cancelling lateral grip + drive/brake, limited by a friction circle.
@@ -461,6 +465,7 @@ export class Car {
       this.airTime = 0;
     }
     this.slip = grounded > 0 ? slipSum / grounded : 0;
+    this.tyreLoad = loadSum / (cfg.mass * GRAVITY);
     if (grounded > 0) this.sampleTyreGround();
 
     // --- Aerodynamic drag ∝ v².
