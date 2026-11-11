@@ -67,6 +67,20 @@ export interface CarEvents {
   land(car: Car, at: THREE.Vector3, strength: number): void;
 }
 
+/**
+ * The body grinding along something hard this step (for sparks). World space: the contact point,
+ * the normal out of the car, and how fast the car slides along the surface there (m/s).
+ */
+export interface Grind {
+  at: THREE.Vector3;
+  normal: THREE.Vector3;
+  slide: THREE.Vector3;
+  surface: ContactSurface;
+}
+
+/** At most this many grinds are kept per step (one per touching collider pair). */
+const MAX_GRINDS = 6;
+
 interface PendingImpact {
   own: RAPIER.Collider;
   other: RAPIER.Collider;
@@ -497,6 +511,7 @@ export class Car {
       if (follows && piece.state !== 'gone' && this.piece(follows).state === 'gone') this.shatter(piece);
     }
     this.bodyTouching = false;
+    this.grindCount = 0;
     let scrapeFound = false;
     for (const own of this.colliders.values()) {
       this.world.contactPairsWith(own, (other) => {
@@ -577,6 +592,13 @@ export class Car {
     if (surface === 'ground') {
       const at = this.localToWorld(local);
       if (!this.debris.field.isHard(at.x, at.z)) return;
+    }
+    if (this.grindCount < MAX_GRINDS) {
+      const grind = this.grindPool[this.grindCount++];
+      grind.at.copy(local).applyQuaternion(this.currQuat).add(this.currPos);
+      grind.normal.copy(normal).applyQuaternion(this.currQuat);
+      grind.slide.copy(slide).applyQuaternion(this.currQuat);
+      grind.surface = surface;
     }
     const share = surface === 'tree' ? d.slideScratches.tree : surface === 'metal' ? d.slideScratches.metal : 1;
     wearPaint(this.model.pieces, local, normal, d.scratchReach, 0, speed * PHYSICS_STEP * d.scratchPerMetre * share, 0, slide.divideScalar(speed));
@@ -1058,6 +1080,23 @@ export class Car {
   /** World-space point and surface of the body's current contact, while scraping. */
   readonly scrapePoint = new THREE.Vector3();
   scrapeSurface: ContactSurface = 'ground';
+
+  private readonly grindPool: Grind[] = Array.from({ length: MAX_GRINDS }, () => ({
+    at: new THREE.Vector3(),
+    normal: new THREE.Vector3(),
+    slide: new THREE.Vector3(),
+    surface: 'ground' as ContactSurface,
+  }));
+  private grindCount = 0;
+
+  /**
+   * Where the body slid along something hard in the last physics step (rock faces, stony ground,
+   * boulders, trees, other cars; not snow, grass or dirt), faster than the paint's scratchFrom.
+   * Shared objects, overwritten every step.
+   */
+  get grinds(): readonly Grind[] {
+    return this.grindPool.slice(0, this.grindCount);
+  }
 
   get tyres(): readonly TyreState[] {
     return this.wheels;

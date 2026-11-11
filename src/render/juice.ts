@@ -1,11 +1,12 @@
 import * as THREE from 'three';
-import type { Car, CarEvents, ContactSurface } from '../vehicle/car';
+import type { Car, CarEvents, ContactSurface, Grind } from '../vehicle/car';
 import type { GroundMix } from '../world/biome';
 import { emptySample } from '../world/environment';
 import { HARD_GROUND, type TerrainField } from '../world/terrainField';
 import type { TreeLayout } from '../world/trees';
 import type { OrbitCamera } from './orbitCamera';
 import { Particles } from './particles';
+import { Sparks } from './sparks';
 
 /** Feel values for all the feedback effects. */
 const JUICE = {
@@ -29,6 +30,20 @@ const JUICE = {
   hitStopMax: 0.12,
   /** Crashes of other cars this close still rattle the camera a little (m). */
   nearbyShakeRange: 40,
+  /**
+   * Sparks from the body grinding along rock or another car: per second per m/s of slide over
+   * `sparkFrom`, per grinding contact. Torn off between the car and what it grinds on, they leave
+   * with `sparkCarry` (min..max) of the slide, so they trail out behind the car; spread
+   * `sparkSpread` m/s across it and up to `sparkLift` m/s off the surface.
+   */
+  sparksPerSlide: 30,
+  sparkFrom: 2,
+  sparkCarry: [0.3, 0.9],
+  sparkSpread: 2,
+  sparkLift: 2,
+  /** Sparks on a hard hit: a base count plus more per m/s of severity, flung in a wide fan. */
+  hitSparks: 15,
+  hitSparksPerSeverity: 6,
 };
 
 const COLOR = {
@@ -44,14 +59,13 @@ const COLOR = {
   leaf: new THREE.Color('#5d8f37'),
   leafDark: new THREE.Color('#467429'),
   needle: new THREE.Color('#2f5a3c'),
-  spark: new THREE.Color('#ff8a1a'),
-  sparkHot: new THREE.Color('#ffc94a'),
   rockDust: new THREE.Color('#9a9ca3'),
 };
 
 const _v = new THREE.Vector3();
 const _p = new THREE.Vector3();
 const _n = new THREE.Vector3();
+const _across = new THREE.Vector3();
 const _mix: GroundMix = { snow: 0, grass: 0, dirt: 0, stone: 0 };
 const _env = emptySample();
 type Ground = keyof GroundMix;
@@ -67,9 +81,11 @@ export class Juice implements CarEvents {
   private readonly snow: Particles;
   /** Heavy bits that fall straight back: turf, soil clods, stone chips. */
   private readonly clods: Particles;
-  private readonly sparks: Particles;
+  private readonly sparks: Sparks;
   /** Fractional particles carried between frames, per emitter. */
   private readonly carry = new WeakMap<object, number>();
+  /** Emitter keys for a car's grinding contacts, by index (shared between cars: they only carry fractions). */
+  private readonly grindKeys = Array.from({ length: 8 }, () => ({}));
 
   constructor(
     scene: THREE.Scene,
@@ -82,8 +98,7 @@ export class Juice implements CarEvents {
   ) {
     this.snow = new Particles(scene, field, { capacity: 2500, blending: THREE.NormalBlending, gravity: 0.25, drag: 2.5 });
     this.clods = new Particles(scene, field, { capacity: 1500, blending: THREE.NormalBlending, gravity: 1, drag: 0.6 });
-    // Normal blending: additive sparks wash out to white against bright snow.
-    this.sparks = new Particles(scene, field, { capacity: 600, blending: THREE.NormalBlending, gravity: 1, drag: 0.4 });
+    this.sparks = new Sparks(scene, field, 1500);
   }
 
   update(dt: number, cars: readonly Car[], halfHeight: number): void {
@@ -103,7 +118,7 @@ export class Juice implements CarEvents {
     if (this.near(at)) {
       const k = Math.min(1, severity / 12);
       if (surface === 'metal' || surface === 'rock' || (surface === 'ground' && this.isHard(at))) {
-        this.burstSparks(at, car.velocity, 10 + Math.round(30 * k));
+        this.burstSparks(at, car.velocity, JUICE.hitSparks + Math.round(JUICE.hitSparksPerSeverity * severity));
         if (surface !== 'metal') this.burstDust(at, car.velocity, 6, 1.5, COLOR.rockDust);
       } else {
         this.burstGround(at, car.velocity, 8 + Math.round(40 * k), 2 + 4 * k);
@@ -173,15 +188,41 @@ export class Juice implements CarEvents {
     }
   }
 
-  /** Metal on rock or metal throws sparks; a body dragging through snow throws a plume. */
+  /**
+   * The body grinding along rock or another car throws sparks from each contact (see grind); a
+   * body dragging through snow, grass or dirt throws a plume of it.
+   */
   private scrape(dt: number, car: Car): void {
+    const grinds = car.grinds;
+    for (let i = 0; i < grinds.length; i++) {
+      if (grinds[i].surface !== 'tree') this.grind(dt, grinds[i], this.grindKeys[i]);
+    }
     const speed = car.velocity.length();
     if (!car.scraping || speed < 3) return;
     const at = car.scrapePoint;
-    const metal = car.scrapeSurface === 'metal' || car.scrapeSurface === 'rock' || (car.scrapeSurface === 'ground' && this.isHard(at));
-    const n = this.take(car, speed * (metal ? 3 : 2) * dt);
-    if (metal) this.burstSparks(at, car.velocity, n);
-    else if (n > 0) this.burstGround(at, car.velocity, n, 1.5);
+    if (car.scrapeSurface !== 'ground' || this.isHard(at)) return;
+    const n = this.take(car, speed * 2 * dt);
+    if (n > 0) this.burstGround(at, car.velocity, n, 1.5);
+  }
+
+  /** Sparks streaming off one grinding contact, along the slide, with fractions carried per `key`. */
+  private grind(dt: number, grind: Grind, key: object): void {
+    const J = JUICE;
+    const speed = grind.slide.length();
+    if (speed < J.sparkFrom) return;
+    const n = this.take(key, (speed - J.sparkFrom) * J.sparksPerSlide * dt);
+    if (n === 0) return;
+    _across.crossVectors(grind.normal, grind.slide).normalize();
+    for (let i = 0; i < n; i++) {
+      _v.copy(grind.slide).multiplyScalar(J.sparkCarry[0] + (J.sparkCarry[1] - J.sparkCarry[0]) * Math.random());
+      _v.addScaledVector(_across, (Math.random() - 0.5) * 2 * J.sparkSpread);
+      // Off the surface: the grind's normal points out of the car, into what it grinds on.
+      _v.addScaledVector(grind.normal, -Math.random() * J.sparkLift);
+      // Spread along the last step's slide, so a stream doesn't come out of one point, and start
+      // just off the surface.
+      _p.copy(grind.at).addScaledVector(grind.slide, -Math.random() * 0.02).addScaledVector(grind.normal, -0.03);
+      this.sparks.emit({ position: _p, velocity: _v, life: 0.25 + Math.random() * 0.45 });
+    }
   }
 
   // --- Bursts
@@ -225,21 +266,14 @@ export class Juice implements CarEvents {
     else r < 0.5 ? clod(COLOR.stoneChip) : powder(COLOR.rockDust, 0.9, 0.5, 0.9);
   }
 
+  /** A hard hit's fan of sparks, carried on with the car and flung wide. */
   private burstSparks(at: THREE.Vector3, carry: THREE.Vector3, count: number): void {
     for (let i = 0; i < count; i++) {
-      _v.copy(carry).multiplyScalar(0.6);
-      _v.x += (Math.random() - 0.5) * 8;
-      _v.y += 1 + Math.random() * 4;
-      _v.z += (Math.random() - 0.5) * 8;
-      this.sparks.emit({
-        position: at,
-        velocity: _v,
-        size: 0.09 + Math.random() * 0.06,
-        grow: -0.08,
-        life: 0.3 + Math.random() * 0.35,
-        color: Math.random() < 0.4 ? COLOR.sparkHot : COLOR.spark,
-        alpha: 1,
-      });
+      _v.copy(carry).multiplyScalar(0.4 + 0.4 * Math.random());
+      _v.x += (Math.random() - 0.5) * 10;
+      _v.y += 1 + Math.random() * 5;
+      _v.z += (Math.random() - 0.5) * 10;
+      this.sparks.emit({ position: at, velocity: _v, life: 0.25 + Math.random() * 0.5 });
     }
   }
 
