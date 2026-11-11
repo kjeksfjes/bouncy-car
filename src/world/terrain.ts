@@ -54,7 +54,7 @@ export class Terrain {
     trees: TreeLayout,
     rocks: RockLayout,
   ) {
-    this.props = new PropScatter(trees, world);
+    this.props = new PropScatter(trees, world, (x, z) => field.height(x, z));
     this.details = new DetailScatter(field, trees, rocks, world);
     this.far = new FarTerrain(field, scene, trees, CHUNK_SIZE);
   }
