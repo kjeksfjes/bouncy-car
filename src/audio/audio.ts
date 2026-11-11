@@ -54,7 +54,9 @@ const ROCK = {
 
 /** Simulated gearbox for engine pitch: upper speed (m/s) of each gear. */
 const GEAR_TOPS = [9, 17, 27, 40, 70];
-const IDLE_RPM = 800;
+const IDLE_RPM = 750;
+/** How long (s) a dying engine sputters and winds down before it's silent. */
+const STALL = 1.6;
 const SHIFT_RPM = 5800;
 
 /** Panners: full volume within `ref` metres, fading with distance. */
@@ -90,6 +92,9 @@ class CarVoice {
   private readonly grind: GrindChain;
   private readonly drag: DragChain;
   private rpm = IDLE_RPM;
+  /** When a dying engine stops sputtering (context time); 0 while it runs or once it's stopped. */
+  private stallUntil = 0;
+  private wasAlive = true;
   lastCrunch = 0;
 
   constructor(
@@ -103,20 +108,28 @@ class CarVoice {
     this.panner.connect(out);
 
     // Engine: combustion pulses (worklet) → exhaust resonances → soft saturation → muffler.
-    this.engine = new AudioWorkletNode(ctx, ENGINE_PROCESSOR, { numberOfInputs: 0, outputChannelCount: [1] });
+    this.engine = new AudioWorkletNode(ctx, ENGINE_PROCESSOR, { numberOfInputs: 0, outputChannelCount: [2] });
+    const split = new ChannelSplitterNode(ctx, { numberOfOutputs: 2 });
+    this.engine.connect(split);
     this.rasp = new BiquadFilterNode(ctx, { type: 'peaking', frequency: 750, Q: 1.2, gain: 0 });
     this.muffler = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 600, Q: 0.8 });
     this.engineGain = new GainNode(ctx, { gain: 0 });
-    this.engine
-      .connect(new BiquadFilterNode(ctx, { type: 'highpass', frequency: 30 }))
-      // Chest: the big, low exhaust resonance that makes a V8 rumble.
-      .connect(new BiquadFilterNode(ctx, { type: 'peaking', frequency: 130, Q: 1.1, gain: 8 }))
+    split
+      .connect(new BiquadFilterNode(ctx, { type: 'highpass', frequency: 30 }), 0)
+      // Chest: the big, low exhaust resonance that makes a V8 rumble, and weight below it.
+      .connect(new BiquadFilterNode(ctx, { type: 'peaking', frequency: 95, Q: 1, gain: 10 }))
+      .connect(new BiquadFilterNode(ctx, { type: 'lowshelf', frequency: 180, gain: 4 }))
       .connect(this.rasp)
       .connect(new GainNode(ctx, { gain: 0.6 }))
       .connect(new WaveShaperNode(ctx, { curve: softClip(), oversample: '2x' }))
       .connect(this.muffler)
       .connect(this.engineGain)
       .connect(this.panner);
+    // A failing engine's rod knock: mechanical, heard through the block rather than the exhaust.
+    split
+      .connect(new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 1800, Q: 2 }), 1)
+      .connect(new GainNode(ctx, { gain: 3 }))
+      .connect(this.engineGain);
 
     this.tyreRoll = new GrindChain(ctx, profile, noise, this.panner);
     this.tyreSlide = new DragChain(ctx, noise, this.panner);
@@ -136,14 +149,20 @@ class CarVoice {
     const speed = Math.abs(car.forwardSpeed);
     const throttle = Math.max(car.lastInput.throttle, car.forwardSpeed < 1 ? car.lastInput.brake : 0);
     const airborne = car.groundedWheels === 0;
+    // A dying engine sputters down to a stop over STALL seconds instead of cutting out.
+    if (this.wasAlive && !car.engineAlive) this.stallUntil = now + STALL;
+    this.wasAlive = car.engineAlive;
+    const stalling = !car.engineAlive && now < this.stallUntil;
     // Free-revving in the air, otherwise RPM follows road speed through the gears.
     const target = !car.engineAlive ? 0 : airborne && throttle > 0 ? SHIFT_RPM : gearRpm(speed, throttle);
-    this.rpm += (target - this.rpm) * Math.min(1, dt * (target > this.rpm ? 6 : 3));
-    const alive = car.engineAlive ? 1 : 0;
-    const load = throttle * alive;
+    this.rpm += (target - this.rpm) * Math.min(1, dt * (stalling ? 1.5 : target > this.rpm ? 6 : 3));
+    const alive = car.engineAlive || stalling ? 1 : 0;
+    const load = car.engineAlive ? throttle : 0;
     const revs = this.rpm / SHIFT_RPM;
     this.engine.parameters.get('rpm')!.setTargetAtTime(this.rpm * pitch, now, 0.03);
     this.engine.parameters.get('load')!.setTargetAtTime(load, now, 0.05);
+    // Runs clean while alive; dying, it misfires, backfires and knocks as it stalls.
+    this.engine.parameters.get('health')!.setTargetAtTime(car.engineAlive ? 1 : 0, now, 0.1);
     // Open throttle brings out the rasp; revs and throttle open the muffler up.
     this.rasp.gain.setTargetAtTime(-4 + load * 10, now, 0.06);
     this.muffler.frequency.setTargetAtTime((350 + revs * 1800 + load * 1400) * pitch, now, 0.05);
