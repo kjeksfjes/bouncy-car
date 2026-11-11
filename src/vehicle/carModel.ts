@@ -4,6 +4,7 @@ import { bendEnds, buildPanels, endShift, sample, sideHalfWidth, type Bumper, ty
 import type { CarConfig } from './carConfig';
 import type { LightFixtureDef, LightKind } from './lights';
 import { engineParts } from './engine';
+import { addWearAttributes, paintWithWear } from './paintWear';
 import { Linkage, underbodyParts } from './underbody';
 
 /** A dentable mesh on the car. Detachable pieces can be knocked off. */
@@ -189,8 +190,11 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
     const std = (color: string, extra: THREE.MeshStandardMaterialParameters = {}) =>
       new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.55, metalness: 0.1, ...extra });
     // Panels are solid (see solidify), so ordinary front-face rendering is enough.
+    const paintMaterial = std(paint, { roughness: 0.4, metalness: 0.25 });
+    // Chips and scratches (see paintWear).
+    paintWithWear(paintMaterial);
     m = {
-      paint: std(paint, { roughness: 0.4, metalness: 0.25 }),
+      paint: paintMaterial,
       glass: std(GLASS_TINT, { roughness: 0.05, metalness: 0.5, transparent: true, opacity: GLASS_OPACITY }),
       chrome: std('#d9dde2', { roughness: 0.2, metalness: 0.9 }),
       steel: std('#4b5056', { roughness: 0.5, metalness: 0.6 }),
@@ -409,10 +413,12 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     mesh.receiveShadow = true;
     root.add(mesh);
     const glass = GLASS.test(name) ? planarProjection(geometry) : undefined;
+    const original = Float32Array.from(geometry.getAttribute('position').array);
+    if (Array.isArray(material) ? material.includes(mat.paint) : material === mat.paint) addWearAttributes(geometry, original);
     pieces.push({
       name,
       mesh,
-      original: Float32Array.from(geometry.getAttribute('position').array),
+      original,
       origin: mesh.position.clone(),
       rigid: RIGID.has(name),
       base: Float32Array.from(geometry.getAttribute('position').array),

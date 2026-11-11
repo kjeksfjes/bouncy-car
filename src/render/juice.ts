@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Car, CarEvents, ContactSurface } from '../vehicle/car';
 import type { GroundMix } from '../world/biome';
 import { emptySample } from '../world/environment';
-import type { TerrainField } from '../world/terrainField';
+import { HARD_GROUND, type TerrainField } from '../world/terrainField';
 import type { TreeLayout } from '../world/trees';
 import type { OrbitCamera } from './orbitCamera';
 import { Particles } from './particles';
@@ -15,10 +15,6 @@ const JUICE = {
   sprayPerSlip: 9,
   sprayPerSpeed: 0.7,
   sprayFromSpeed: 6,
-  /** Terrain steeper than this (normal Y below) is rock: sparks, no snow. Matches the terrain colouring. */
-  rockBelow: 0.7,
-  /** Ground counts as hard (metal scraping it sparks) past this share of stone. */
-  stoneHard: 0.5,
   /** Screen shake (trauma 0..1) per m/s of impact severity / landing speed. */
   shakePerSeverity: 0.06,
   maxImpactShake: 0.7,
@@ -279,12 +275,12 @@ export class Juice implements CarEvents {
   }
 
   private isRock(at: THREE.Vector3): boolean {
-    return this.field.normal(at.x, at.z, _n).y < JUICE.rockBelow;
+    return this.field.normal(at.x, at.z, _n).y < HARD_GROUND.rockBelow;
   }
 
-  /** Hard ground that metal sparks against: near-vertical rock, or mostly stone. */
+  /** Hard ground that metal sparks against (see TerrainField.isHard). */
   private isHard(at: THREE.Vector3): boolean {
-    return this.isRock(at) || this.groundAt(at).stone > JUICE.stoneHard;
+    return this.field.isHard(at.x, at.z);
   }
 
   /** What the ground at `at` is made of; also leaves it in the shared mix that pickGround reads. */

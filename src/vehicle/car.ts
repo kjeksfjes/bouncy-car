@@ -11,6 +11,7 @@ import { Crush, type CrushEnd } from './crush';
 import { CarLights } from './lights';
 import { BodyOutline } from './outline';
 import { applyDent, inwardDirection } from './damage';
+import { wearPaint } from './paintWear';
 import { HingedPanels, createPanelBody } from './panels';
 import { sample } from './blueprint';
 import { Smoke } from '../render/smoke';
@@ -94,6 +95,8 @@ const _pt = new THREE.Vector3();
 const _tmp = new THREE.Vector3();
 const _contactLocal = new THREE.Vector3();
 const _contactNormal = new THREE.Vector3();
+const _qInv = new THREE.Quaternion();
+const _hitWear = { chips: 1, scratches: 1 };
 /** World-space move of the car by its crush (see advanceIntoCrush). */
 const _shift = new THREE.Vector3();
 
@@ -496,15 +499,19 @@ export class Car {
     this.bodyTouching = false;
     let scrapeFound = false;
     for (const own of this.colliders.values()) {
-      this.world.contactPairsWith(own, (other) =>
-        this.forEachContact(own, other, (local) => {
+      this.world.contactPairsWith(own, (other) => {
+        let scratched = false;
+        this.forEachContact(own, other, (local, normal) => {
           this.bodyTouching = true;
+          // One scratch per touching pair and step is plenty (and keeps it cheap).
+          if (!scratched) this.scratchPaint(local, normal, other);
+          scratched = true;
           if (scrapeFound) return;
           scrapeFound = true;
           this.scrapePoint.copy(this.localToWorld(local));
           this.scrapeSurface = surfaceOf(other);
-        }),
-      );
+        });
+      });
     }
     const d = this.cfg.damage;
     for (const impact of this.pending.values()) {
@@ -555,6 +562,61 @@ export class Car {
     });
   }
 
+  /**
+   * Scratches the paint where the body slides along something hard (rock, a tree, a boulder,
+   * another car; snow and grass don't): by how far the contact point slid this step, along the slide.
+   * @param local contact point, car-local
+   * @param normal contact normal pointing out of the car (car-local)
+   */
+  private scratchPaint(local: THREE.Vector3, normal: THREE.Vector3, other: RAPIER.Collider): void {
+    const d = this.cfg.damage;
+    const slide = this.slideAt(local, normal, other);
+    const speed = slide.length();
+    if (speed < d.scratchFrom) return;
+    if (surfaceOf(other) === 'ground') {
+      const at = this.localToWorld(local);
+      if (!this.debris.field.isHard(at.x, at.z)) return;
+    }
+    wearPaint(this.model.pieces, local, d.scratchReach, 0, speed * PHYSICS_STEP * d.scratchPerMetre, slide.divideScalar(speed));
+  }
+
+  /**
+   * How much a hit chips and scratches the paint, as a share of a hit on something hard: full on
+   * rock, trees, boulders, cars and hard ground; less on snow and grass (see softHitChips and
+   * softHitScratches). Shared result, overwritten on the next call.
+   * @param local the hit, car-local
+   */
+  private hitWear(local: THREE.Vector3, surface: ContactSurface): Readonly<{ chips: number; scratches: number }> {
+    _hitWear.chips = _hitWear.scratches = 1;
+    if (surface !== 'ground') return _hitWear;
+    const at = this.localToWorld(local);
+    const field = this.debris.field;
+    if (field.isHard(at.x, at.z)) return _hitWear;
+    const d = this.cfg.damage;
+    const mix = field.groundMix(at.x, at.z);
+    const by = (soft: { snow: number; grass: number }) => mix.snow * soft.snow + (mix.grass + mix.dirt) * soft.grass + mix.stone;
+    _hitWear.chips = by(d.softHitChips);
+    _hitWear.scratches = by(d.softHitScratches);
+    return _hitWear;
+  }
+
+  /**
+   * How a car-local contact point moves along the surface it touches (car-local, m/s): the body's
+   * velocity there, less that of what it touches if that moves, less the part along the normal.
+   */
+  private slideAt(local: THREE.Vector3, normal: THREE.Vector3, other?: RAPIER.Collider): THREE.Vector3 {
+    const slide = this.pointVelocity(this.localToWorld(local));
+    const body = other?.parent();
+    if (body?.isDynamic()) {
+      const v = body.linvel();
+      slide.x -= v.x;
+      slide.y -= v.y;
+      slide.z -= v.z;
+    }
+    slide.applyQuaternion(_qInv.copy(this.currQuat).invert());
+    return slide.addScaledVector(normal, -slide.dot(normal));
+  }
+
   /** @param normal contact normal pointing out of the car (car-local) */
   private applyImpact(local: THREE.Vector3, normal: THREE.Vector3, severity: number, surface: ContactSurface): void {
     const d = this.cfg.damage;
@@ -596,6 +658,13 @@ export class Car {
 
     const dir = inwardDirection(local, this.hullCenter, this.hullHalf);
     const radius = d.dentRadius * (1 + Math.min(severity, 10) * 0.05);
+    const wear = this.hitWear(local, surface);
+    wearPaint(this.model.pieces, local, radius * d.chipReach, severity * wear.chips * d.chipPerDv, 0);
+    // A few scratches close round the hit, along the way the car was going there (or the car's
+    // length, for a hit straight on).
+    const slide = this.slideAt(local, normal);
+    if (slide.lengthSq() < 1) slide.set(0, 0, 1).addScaledVector(normal, -normal.z);
+    if (slide.lengthSq() > 1e-6) wearPaint(this.model.pieces, local, d.scratchHitReach, 0, severity * wear.scratches * d.scratchPerDv, slide.normalize());
     const dent = Math.min(d.maxDent, severity * d.dentPerDv) * (1 - square);
     if (dent > 0) {
       applyDent(this.model.pieces, local, dir, dent, radius, d.maxDent);

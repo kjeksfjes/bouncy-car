@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import type { NoiseFunction2D } from 'simplex-noise';
 import { SUN_DIR } from '../render/stage';
-import { Biome, treeSuitability, type Stand } from './biome';
+import { Biome, treeSuitability, type GroundMix, type Stand } from './biome';
 import type { EnvSample } from './environment';
-import { Environment } from './environment';
+import { emptySample, Environment } from './environment';
 import { DescentFeatures, type TerrainPreset } from './features';
 import { Landform } from './landform';
 import { LandmarkLayout } from './landmarks';
@@ -101,7 +101,16 @@ export interface SurfaceLayers {
   kickers: number;
 }
 
+/**
+ * Hard ground, which metal sparks against and the paint scratches on: terrain steeper than
+ * `rockBelow` (normal Y; matches the terrain colouring), or past `stone` share of stone.
+ */
+export const HARD_GROUND = { rockBelow: 0.7, stone: 0.5 };
+
 const _surface: SurfaceLayers = { moguls: 0, kickers: 0 };
+const _hardNormal = new THREE.Vector3();
+const _hardEnv = emptySample();
+const _hardMix: GroundMix = { snow: 0, grass: 0, dirt: 0, stone: 0 };
 const _stand: Stand = { chance: 0, maturity: 0 };
 
 /** Kicker ridges at full height (m), for scaling them in the dev inspection view. */
@@ -214,6 +223,21 @@ export class TerrainField {
   private rawHeight(x: number, z: number, landform = this.landform(x, z)): number {
     const layers = this.surface(x, z, _surface);
     return landform + layers.moguls + layers.kickers + this.features.height(x, z);
+  }
+
+  /** True on hard ground (see HARD_GROUND): near-vertical rock, or mostly stone. */
+  isHard(x: number, z: number): boolean {
+    const n = this.normal(x, z, _hardNormal);
+    if (n.y < HARD_GROUND.rockBelow) return true;
+    return this.groundMix(x, z, n).stone > HARD_GROUND.stone;
+  }
+
+  /**
+   * What the ground is made of at (x, z) (see Biome.mix). Shared result, overwritten on the next call.
+   * @param normal the ground's normal there, if already at hand
+   */
+  groundMix(x: number, z: number, normal = this.normal(x, z, _hardNormal)): Readonly<GroundMix> {
+    return this.biome.mix(x, z, normal, this.environment.at(x, z, _hardEnv), _hardMix);
   }
 
   /** Surface normal via central differences. */

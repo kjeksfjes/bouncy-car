@@ -1,6 +1,7 @@
 import type { CarBlueprint } from './blueprint';
 import type { CrushTuning } from './crush';
 import type { LightTuning } from './lights';
+import type { WearTuning } from './paintWear';
 
 /**
  * Data-driven car definition. All values are gameplay tuning, not real-world
@@ -89,8 +90,8 @@ export interface CarConfig {
   };
   aeroDrag: number;
 
-  /** Crumple zones: see CrushTuning; light fixtures: see LightTuning. */
-  damage: CrushTuning & LightTuning & {
+  /** Crumple zones: see CrushTuning; light fixtures: see LightTuning; paint chips and scratches: see WearTuning. */
+  damage: CrushTuning & LightTuning & WearTuning & {
     /** Impact Δv (m/s, per physics step) the car shrugs off without a scratch. */
     toughness: number;
     /** The same for hits from above on the cabin (landing on the roof), which is much weaker. */
@@ -364,6 +365,19 @@ export const COUPE_70S: CarConfig = {
     // Tuned against probed bumper hits: severity ≈12.6 shatters the windshield, ≈9 cracks it, ≈6 leaves it.
     glassReachGrowth: 0.08,
     glassReachCap: 15,
+    // A hit just over toughness speckles the paint; ≈8 m/s over chips it right through.
+    chipPerDv: 0.2,
+    chipReach: 0.7,
+    // Fully scratched after ≈2.5 m of sliding on the same spot.
+    scratchPerMetre: 0.4,
+    scratchReach: 0.35,
+    scratchFrom: 0.8,
+    // Round a hit: a 5 m/s hit over toughness scratches its spot about halfway.
+    scratchPerDv: 0.1,
+    scratchHitReach: 0.3,
+    // Snow is too soft to chip paint off, but grit in it still scratches.
+    softHitChips: { snow: 0, grass: 0.5 },
+    softHitScratches: { snow: 0.3, grass: 0.5 },
     steamBelow: 0.5,
     // Tougher than a real car: one big landing (floor hit ≈70 + bottom-outs ≈55) doesn't leak,
     // two at most weep, three or four leave a proper oil trail.
