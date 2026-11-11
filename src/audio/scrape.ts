@@ -50,6 +50,8 @@ export interface GrindSound {
 }
 
 export interface DragSound {
+  /** Resonance frequency at standstill (Hz), 0 if not given. */
+  base?: number;
   /** Resonance frequency per m/s of slide: the surface's dominant bump spacing (f = v / spacing). */
   hzPerMs: number;
   /** Resonance Q: low is noisy and rough, high is more pitched. */
@@ -59,6 +61,8 @@ export interface DragSound {
   /** Low-pass ceiling (Hz) at full speed. */
   top: number;
   level: number;
+  /** Speed (m/s) at full loudness and brightness; SCRAPE.full if not given. */
+  full?: number;
   grains: readonly ScrapeGrain[];
 }
 
@@ -201,9 +205,9 @@ export const SCRAPE = {
 } satisfies Record<string, GrindSound | DragSound | number>;
 
 /** Loudness 0..1 for a slide speed: ∝ √speed (frictional power ∝ speed · force). */
-export function scrapeLoudness(speed: number): number {
+export function scrapeLoudness(speed: number, full: number = SCRAPE.full): number {
   if (speed < SCRAPE.from) return 0;
-  return Math.sqrt(Math.min(1, speed / SCRAPE.full));
+  return Math.sqrt(Math.min(1, speed / full));
 }
 
 /**
@@ -341,13 +345,14 @@ export class DragChain {
   }
 
   set(sound: DragSound, speed: number, level: number, pitch: number, at: number): void {
-    const k = scrapeLoudness(speed);
-    const v = Math.min(speed, SCRAPE.full * 1.5);
-    this.reson.frequency.setTargetAtTime(Math.max(40, v * sound.hzPerMs) * pitch, at, 0.03);
+    const full = sound.full ?? SCRAPE.full;
+    const k = scrapeLoudness(speed, full);
+    const v = Math.min(speed, full * 1.5);
+    this.reson.frequency.setTargetAtTime(Math.max(40, (sound.base ?? 0) + v * sound.hzPerMs) * pitch, at, 0.03);
     this.reson.Q.setTargetAtTime(sound.q, at, 0.03);
     // The resonance is narrow; the raw grit is broadband and much louder per unit gain.
     this.grit.gain.setTargetAtTime(sound.grit * 0.15, at, 0.03);
-    this.lowpass.frequency.setTargetAtTime(Math.min(sound.top, 300 + (v * sound.top) / SCRAPE.full) * pitch, at, 0.03);
+    this.lowpass.frequency.setTargetAtTime(Math.min(sound.top, 300 + (v * sound.top) / full) * pitch, at, 0.03);
     this.gain.gain.setTargetAtTime(k * sound.level * level, at, 0.03);
   }
 
@@ -361,13 +366,37 @@ export class DragChain {
  * part dirt. Grains are kept per kind, scaled by weight.
  */
 export function blendDrag(parts: readonly (readonly [DragSound, number])[]): DragSound {
-  const total = parts.reduce((s, [, w]) => s + w, 0) || 1;
+  const total = parts.reduce((s, [, w]) => s + w, 0);
+  // Nothing weighted (the ground mix can be all zero): take the first, rather than averaging to 0.
+  if (!(total > 0)) return parts[0][0];
   const avg = (key: 'hzPerMs' | 'q' | 'grit' | 'top' | 'level') => parts.reduce((s, [p, w]) => s + p[key] * w, 0) / total;
   return {
     hzPerMs: avg('hzPerMs'),
     q: avg('q'),
     grit: avg('grit'),
     top: avg('top'),
+    level: avg('level'),
+    full: parts.reduce((s, [p, w]) => s + (p.full ?? SCRAPE.full) * w, 0) / total,
+    base: parts.reduce((s, [p, w]) => s + (p.base ?? 0) * w, 0) / total,
+    grains: parts.flatMap(([p, w]) => (w > 0 ? p.grains.map((g) => ({ ...g, rate: (g.rate * w) / total })) : [])),
+  };
+}
+
+/** Blends grind sounds by weight, like blendDrag. */
+export function blendGrind(parts: readonly (readonly [GrindSound, number])[]): GrindSound {
+  const total = parts.reduce((s, [, w]) => s + w, 0);
+  if (!(total > 0)) return parts[0][0];
+  const avg = (key: 'rough' | 'rate' | 'sharp' | 'ring' | 'damping' | 'rasp' | 'rumble' | 'drive' | 'level') =>
+    parts.reduce((s, [p, w]) => s + p[key] * w, 0) / total;
+  return {
+    rough: avg('rough'),
+    rate: avg('rate'),
+    sharp: avg('sharp'),
+    ring: avg('ring'),
+    damping: avg('damping'),
+    rasp: avg('rasp'),
+    rumble: avg('rumble'),
+    drive: avg('drive'),
     level: avg('level'),
     grains: parts.flatMap(([p, w]) => (w > 0 ? p.grains.map((g) => ({ ...g, rate: (g.rate * w) / total })) : [])),
   };
@@ -388,10 +417,11 @@ export function scrapeGrains(
   pitch: number,
   dt: number,
   at: number,
+  full: number = SCRAPE.full,
 ): void {
-  const k = scrapeLoudness(speed);
+  const k = scrapeLoudness(speed, full);
   if (k <= 0) return;
-  const share = Math.min(1, speed / SCRAPE.full);
+  const share = Math.min(1, speed / full);
   for (const g of grains) {
     let expected = g.rate * share * dt;
     while (expected > 0) {

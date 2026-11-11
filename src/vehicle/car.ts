@@ -108,6 +108,7 @@ const _arm = new THREE.Vector3();
 const _imp = new THREE.Vector3();
 const _pt = new THREE.Vector3();
 const _tmp = new THREE.Vector3();
+const _tyreMid = new THREE.Vector3();
 const _contactLocal = new THREE.Vector3();
 const _contactNormal = new THREE.Vector3();
 const _qInv = new THREE.Quaternion();
@@ -460,6 +461,7 @@ export class Car {
       this.airTime = 0;
     }
     this.slip = grounded > 0 ? slipSum / grounded : 0;
+    if (grounded > 0) this.sampleTyreGround();
 
     // --- Aerodynamic drag ∝ v².
     _imp.copy(_lin).multiplyScalar(-_lin.length() * cfg.aeroDrag * dt);
@@ -1101,6 +1103,23 @@ export class Car {
   /** True while the body itself drags along something (for scrape sounds and sparks). */
   get scraping(): boolean {
     return this.bodyTouching;
+  }
+
+  /** What the ground under the grounded tyres is made of (stone 1 on near-vertical rock), for their sound. */
+  readonly tyreGround: GroundMix = { snow: 1, grass: 0, dirt: 0, stone: 0 };
+
+  private sampleTyreGround(): void {
+    _tyreMid.set(0, 0, 0);
+    let n = 0;
+    for (const w of this.wheels) {
+      if (!w.attached || !w.grounded) continue;
+      _tyreMid.add(w.contact);
+      n++;
+    }
+    _tyreMid.divideScalar(n);
+    const field = this.debris.field;
+    Object.assign(this.tyreGround, field.groundMix(_tyreMid.x, _tyreMid.z));
+    if (field.isHard(_tyreMid.x, _tyreMid.z)) this.tyreGround.stone = 1;
   }
 
   /** World-space point and surface of the body's fastest-sliding contact, while scraping. */

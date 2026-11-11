@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import type { Car, CarEvents, ContactSurface } from '../vehicle/car';
 import { ENGINE_PROCESSOR, loadEngineWorklet } from './engineWorklet';
-import { DragChain, GrindChain, SCRAPE, blendDrag, scrapeGrains, surfaceProfile, type GrindSound } from './scrape';
+import { DragChain, GrindChain, SCRAPE, blendDrag, blendGrind, scrapeGrains, surfaceProfile, type GrindSound } from './scrape';
+import { Squeal, TYRE_ROLL, TYRE_SLIDE } from './tyres';
 
 /** Mix levels. Everything is synthesised; these are by-ear starting points. */
 /** The slow-motion low-pass: wide open at normal speed, and the lowest it closes down to (Hz). */
@@ -81,11 +82,13 @@ class CarVoice {
   private readonly rasp: BiquadFilterNode;
   private readonly muffler: BiquadFilterNode;
   private readonly engineGain: GainNode;
-  private readonly tyreGain: GainNode;
+  /** Tyres rolling and sliding, by the ground under them (see tyres.ts). */
+  private readonly tyreRoll: GrindChain;
+  private readonly tyreSlide: DragChain;
+  private readonly squeal: Squeal;
   /** Body scraping: hard surfaces (rock, trees, cars) and soft ground (grass, snow, dirt). */
   private readonly grind: GrindChain;
   private readonly drag: DragChain;
-  private readonly sources: AudioBufferSourceNode[] = [];
   private rpm = IDLE_RPM;
   lastCrunch = 0;
 
@@ -115,18 +118,11 @@ class CarVoice {
       .connect(this.engineGain)
       .connect(this.panner);
 
-    // Tyres on snow: a low, crunchy band of noise.
-    this.tyreGain = new GainNode(ctx, { gain: 0 });
-    this.loop(noise, new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 650, Q: 0.9 }), this.tyreGain);
+    this.tyreRoll = new GrindChain(ctx, profile, noise, this.panner);
+    this.tyreSlide = new DragChain(ctx, noise, this.panner);
+    this.squeal = new Squeal(ctx, noise, this.panner);
     this.grind = new GrindChain(ctx, profile, noise, this.panner);
     this.drag = new DragChain(ctx, noise, this.panner);
-  }
-
-  private loop(noise: AudioBuffer, filter: BiquadFilterNode, gain: GainNode): void {
-    const src = new AudioBufferSourceNode(this.ctx, { buffer: noise, loop: true });
-    src.start(0, Math.random() * noise.duration);
-    src.connect(filter).connect(gain).connect(this.panner);
-    this.sources.push(src);
   }
 
   /** @param pitch slow motion lowers the engine (see AudioEngine.setTimeScale) */
@@ -153,11 +149,37 @@ class CarVoice {
     this.muffler.frequency.setTargetAtTime((350 + revs * 1800 + load * 1400) * pitch, now, 0.05);
     this.engineGain.gain.setTargetAtTime(MIX.engine * this.level * alive * (0.7 + 0.3 * load), now, 0.08);
 
-    const grounded = car.groundedWheels / 4;
-    const rolling = Math.min(1, speed / 20) * 0.15;
-    const sliding = Math.min(1, car.slip / 6);
-    this.tyreGain.gain.setTargetAtTime(MIX.tyres * this.level * grounded * (rolling + sliding), now, 0.05);
+    this.tyres(dt, car, speed, pitch);
     this.scrape(dt, car, pitch);
+  }
+
+  private tyres(dt: number, car: Car, speed: number, pitch: number): void {
+    const now = this.ctx.currentTime;
+    const level = MIX.tyres * this.level * (car.groundedWheels / 4);
+    if (level <= 0) {
+      this.tyreRoll.set(TYRE_ROLL.snow, 0, 0, pitch, now);
+      this.tyreSlide.set(TYRE_SLIDE.snow, 0, 0, pitch, now);
+      this.squeal.set(0, 0, 0, pitch, now);
+      return;
+    }
+    const g = car.tyreGround;
+    const roll = blendGrind([
+      [TYRE_ROLL.snow, g.snow],
+      [TYRE_ROLL.grass, g.grass],
+      [TYRE_ROLL.dirt, g.dirt],
+      [TYRE_ROLL.stone, g.stone],
+    ]);
+    const slide = blendDrag([
+      [TYRE_SLIDE.snow, g.snow],
+      [TYRE_SLIDE.grass, g.grass],
+      [TYRE_SLIDE.dirt, g.dirt],
+      [TYRE_SLIDE.stone, g.stone],
+    ]);
+    this.tyreRoll.set(roll, speed, level, pitch, now);
+    this.tyreSlide.set(slide, car.slip, level, pitch, now);
+    this.squeal.set(car.slip, speed, level * g.stone, pitch, now);
+    scrapeGrains(this.ctx, this.noise, this.panner, roll.grains, speed, level, pitch, dt, now);
+    scrapeGrains(this.ctx, this.noise, this.panner, slide.grains, car.slip, level, pitch, dt, now, slide.full);
   }
 
   /**
@@ -194,8 +216,10 @@ class CarVoice {
     this.panner.disconnect();
     this.engine.port.postMessage('stop');
     this.engine.disconnect();
-    this.sources.forEach((s) => s.stop(now + 0.05));
     this.grind.stop(now + 0.05);
+    this.tyreRoll.stop(now + 0.05);
+    this.tyreSlide.stop(now + 0.05);
+    this.squeal.stop(now + 0.05);
     this.drag.stop(now + 0.05);
   }
 }
