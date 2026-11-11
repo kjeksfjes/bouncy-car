@@ -79,8 +79,6 @@ export class Game {
   private readonly hud = new Hud();
   private readonly audio = new GameAudio();
   private readonly juice: Juice;
-  /** Remaining hit-stop: the simulation is frozen while this is above zero. */
-  private hitStop = 0;
   /** Whether the first frame has drawn the glass shards' warm-up (see Shards.warmUp). */
   private warmedUp = false;
   /** Last sane position of the player's car, where N respawns if the physics blew up. */
@@ -126,7 +124,6 @@ export class Game {
     this.juice = new Juice(
       this.stage.scene, this.field, this.trees, this.orbit, this.stage.camera,
       (car) => car === this.car,
-      (seconds) => (this.hitStop = Math.max(this.hitStop, seconds)),
     );
     this.clods = new Clods(this.stage.scene, (x, z) => this.terrain.surfaceHeight(x, z));
     this.boulders = new Boulders(this.world, this.stage.scene, this.field, this.terrain, this.debris, (at, velocity, radius, ground) => {
@@ -236,12 +233,9 @@ export class Game {
     for (const a of this.traffic.cars) controls.set(a.car, this.drive(a.driver, a.car, gt));
 
     const cars = this.allCars;
-    // Hit-stop freezes the simulation; the camera (and its shake) keeps running. Slow motion
-    // feeds physics less time: it still steps at PHYSICS_STEP (damage and the rest are tuned
-    // per step), just less often, and everything is drawn interpolated between steps.
-    const simDt = this.hitStop > 0 ? 0 : gt;
-    this.hitStop = Math.max(0, this.hitStop - dt);
-    this.accumulator = Math.min(this.accumulator + simDt, PHYSICS_STEP * MAX_STEPS_PER_FRAME);
+    // Slow motion feeds physics less time: it still steps at PHYSICS_STEP (damage and the rest
+    // are tuned per step), just less often, and everything is drawn interpolated between steps.
+    this.accumulator = Math.min(this.accumulator + gt, PHYSICS_STEP * MAX_STEPS_PER_FRAME);
     while (this.accumulator >= PHYSICS_STEP) {
       for (const car of cars) car.step(PHYSICS_STEP, controls.get(car)!);
       this.world.step(this.events);
