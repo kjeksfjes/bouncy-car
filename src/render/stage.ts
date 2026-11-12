@@ -105,8 +105,6 @@ function makeSky(radius: number): THREE.Mesh {
   return mesh;
 }
 
-const _forward = new THREE.Vector3();
-
 /** Whether `object` and everything it hangs from are shown. */
 function shown(object: THREE.Object3D): boolean {
   for (let o: THREE.Object3D | null = object; o; o = o.parent) if (!o.visible) return false;
@@ -223,18 +221,17 @@ export class Stage {
   }
 
   /**
-   * How far in front of the camera (along its view, m) the first visible surface under `ndc`
-   * (−1..1 screen coordinates) lies, or null where there is only sky. One raycast through the
-   * whole scene: fine for a click, too slow for every frame.
+   * The first visible surface under `ndc` (−1..1 screen coordinates), or null where there is only
+   * sky: written into `out`. One raycast through the whole scene: fine for a click, too slow for
+   * every frame.
    */
-  depthAt(ndc: THREE.Vector2): number | null {
+  surfaceAt(ndc: THREE.Vector2, out: THREE.Vector3): THREE.Vector3 | null {
     this.raycaster.setFromCamera(ndc, this.camera);
     this.raycaster.far = this.camera.far;
-    this.camera.getWorldDirection(_forward);
     for (const hit of this.raycaster.intersectObject(this.scene, true)) {
       const o = hit.object;
       if (o === this.sky || !(o as THREE.Mesh).isMesh || !shown(o)) continue;
-      return hit.point.sub(this.camera.position).dot(_forward);
+      return out.copy(hit.point);
     }
     return null;
   }
