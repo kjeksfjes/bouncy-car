@@ -332,20 +332,21 @@ export function buildPanels(bp: CarBlueprint): Panels {
     }
   }
 
-  // Nose and tail caps (paint), firewall and rear-seat bulkhead (dark), closing the engine
-  // bay, cabin and trunk off from each other. The caps have the light openings cut out.
+  // Nose and tail caps (paint), firewall and rear-seat bulkhead (painted lining toward the engine
+  // bay and trunk, trim toward the cabin), closing them off from each other. The caps have the
+  // light openings cut out.
   const walls = [
     { z: bp.front, inward: 1, mat: 'paint' },
     { z: bp.rear, inward: -1, mat: 'paint' },
-    { z: ghFrom, inward: 1, mat: 'dark' },
-    { z: ghTo, inward: -1, mat: 'dark' },
+    { z: ghFrom, inward: 1, mat: 'lining' },
+    { z: ghTo, inward: -1, mat: 'lining' },
   ] as const;
   for (const { z, inward, mat } of walls) {
     const s = lower(z);
     const mid = (sample(bp.rocker, z) + sample(bp.deck, z)) / 2;
     // Interior walls shrink toward their centre so their edges stay inside the skin
     // (an edge lying in the outer surface flickers against the paint).
-    const k = mat === 'dark' ? INNER_WALL_SCALE : 1;
+    const k = mat === 'lining' ? INNER_WALL_SCALE : 1;
     const at = (x: number, h: number) => v(x * k, mid + (h - mid) * k, z);
     const ring = [...s.map(([x, h]) => at(x, h)), ...s.slice(1, -1).reverse().map(([x, h]) => at(-x, h))];
     const center = v(0, mid, z);
@@ -415,8 +416,9 @@ export function buildPanels(bp: CarBlueprint): Panels {
     for (const [mat, triangles] of byMaterial) {
       const { outer, inner } = solidify(triangles, THICKNESS[mat]);
       target(panels, part, mat).push(...outer);
+      // A bulkhead's lining faces the bay or trunk; its other side faces the cabin.
       if (mat !== 'paint') {
-        target(panels, part, mat).push(...inner);
+        target(panels, part, mat === 'lining' ? 'trim' : mat).push(...inner);
         continue;
       }
       // The inside of a painted panel: trim where it faces the cabin, painted lining elsewhere.

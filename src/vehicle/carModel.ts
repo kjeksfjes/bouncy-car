@@ -92,6 +92,8 @@ interface CarMaterials {
   lining: THREE.Material;
   /** The inside of painted panels round the cabin: dark trim. */
   trim: THREE.Material;
+  /** Painted sheet metal in the engine bay (aprons, strut towers, radiator support): the lining's shade, evenly. */
+  bay: THREE.Material;
   glass: THREE.Material;
   chrome: THREE.Material;
   steel: THREE.Material;
@@ -185,9 +187,10 @@ function panelsFor(bp: CarBlueprint): Panels {
 /**
  * The painted inside of the engine bay and trunk, shaded as the pit it is (nothing here darkens a
  * cavity on its own): the paint × `shade` (linear) at the deck, down to × `shade` × `floorShade`
- * at the rocker, and matte. Feel values.
+ * at the rocker, and matte. The bay's own sheet metal (see engineParts) is evenly `bayShade` of
+ * the paint. Feel values.
  */
-const LINING = { shade: 0.3, floorShade: 0.35, roughness: 0.7 };
+const LINING = { shade: 0.3, floorShade: 0.35, bayShade: 0.24, roughness: 0.7 };
 
 /**
  * Vertex colours for a part's surfaces, white except the lining: darker the lower it sits between
@@ -227,6 +230,7 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
       paint: paintMaterial,
       lining: std(paint, { roughness: LINING.roughness, metalness: 0.1, vertexColors: true }),
       trim: std('#2a2b2f', { roughness: 0.75 }),
+      bay: std(paint, { color: new THREE.Color(paint).multiplyScalar(LINING.bayShade), roughness: LINING.roughness, metalness: 0.1 }),
       glass: std(GLASS_TINT, { roughness: 0.05, metalness: 0.5, transparent: true, opacity: GLASS_OPACITY }),
       chrome: std('#d9dde2', { roughness: 0.2, metalness: 0.9 }),
       steel: std('#4b5056', { roughness: 0.5, metalness: 0.6 }),
@@ -676,7 +680,8 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   cabin.push(
     [put(new THREE.BoxGeometry(1.24, 0.14, 0.45), 0, 0.47, 0.95), mat.upholstery],
     [put(new THREE.BoxGeometry(1.24, 0.5, 0.12), 0, 0.78, 1.22, 0.35), mat.upholstery],
-    [put(new THREE.BoxGeometry(1.5, 0.16, 0.3), 0, 0.92, -0.62), mat.dark],
+    // The dash's front face sits inside the firewall's wall (bay face at z −0.77), not in its face.
+    [put(new THREE.BoxGeometry(1.5, 0.16, 0.285), 0, 0.92, -0.6125), mat.dark],
     [put(new THREE.TorusGeometry(0.17, 0.022, 6, 14), -0.42, 0.88, -0.38, -0.45), mat.dark],
     [put(new THREE.CylinderGeometry(0.025, 0.025, 0.35, 6), -0.42, 0.9, -0.52, Math.PI / 2 - 0.45), mat.dark],
   );
