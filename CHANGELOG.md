@@ -3,6 +3,34 @@
 Releases are named plainly after what they bring (the first three after
 game-development milestones).
 
+## v0.6.0 – "Photo Mode and Engine Bay" (2026-11-12)
+
+Pause and frame the wreck with a full photo mode, open the hood to a
+filled engine bay, and watch slides grind the paint where the body
+rests on the ground.
+
+- **Photo mode:** from the pause, a right-drag, Shift+drag or
+  Option+drag hands over the camera. Drag orbits the point under the
+  cursor, right-drag turns the camera, Shift+drag pans, scroll moves
+  towards the point under the cursor and Shift+scroll zooms the lens;
+  the arrow keys pan and move. Every move eases in, and the camera
+  stays above the ground, sliding along it when orbiting low. In slow
+  motion, Esc plays the action on as seen from the photo camera.
+- **Controls card:** a small card lists photo mode's controls while
+  paused (H hides it), in the new Barlow typeface, with the keys named
+  for a Mac or a PC.
+- **Engine bay:** inner fender aprons with spring towers, a radiator
+  support, a painted firewall, power steering pump, brake lines,
+  battery cables and hoses. Panel insides are shaded in the bay and
+  trunk and trimmed dark round the cabin.
+- **Grind marks:** sliding scratches cover every panel resting on what
+  the car slides along: straight streaks, ragged gouges down to primer
+  and metal, and rock dust ground in.
+- **Smoother crashes:** crumpling does about 5× less work per crash,
+  and breaking glass no longer stalls a frame.
+- **Fixes:** the rear bench and the engine bay no longer flicker in or
+  show through the wheel wells and front fenders.
+
 ## v0.5.0 – "Old Oak, Smooth Crashes" (2026-11-12)
 
 The great oak is rebuilt to look its age, and big crashes no longer
