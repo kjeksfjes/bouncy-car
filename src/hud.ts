@@ -1,6 +1,8 @@
 import type { Car } from './vehicle/car';
 
 const AIR_POPUP_SECONDS = 1.6;
+/** How long photo mode shows the slow-motion badge after a change (ms). */
+const SLOW_FLASH_MS = 1500;
 
 /** Minimal DOM overlay: speed, integrity, airtime popups. */
 export class Hud {
@@ -15,6 +17,7 @@ export class Hud {
   private readonly inspect = document.getElementById('inspect')!;
   private readonly where = document.getElementById('where')!;
   private toastTimer: number | undefined;
+  private slowFlashTimer: number | undefined;
   private seenJumps = 0;
   private airTimer = 0;
 
@@ -24,6 +27,13 @@ export class Hud {
     this.toastBox.classList.add('visible');
     clearTimeout(this.toastTimer);
     this.toastTimer = window.setTimeout(() => this.toastBox.classList.remove('visible'), 2200);
+  }
+
+  /** In photo mode, where the UI is hidden, shows the slow-motion badge for a moment (on toggling it on or changing speed). */
+  flashSlowMotion(): void {
+    this.slow.classList.add('flash');
+    clearTimeout(this.slowFlashTimer);
+    this.slowFlashTimer = window.setTimeout(() => this.slow.classList.remove('flash'), SLOW_FLASH_MS);
   }
 
   /** Shows the slow-motion speed (e.g. '¼×'), or hides the badge with null. */
@@ -59,6 +69,11 @@ export class Hud {
 
   setPaused(paused: boolean): void {
     this.paused.classList.toggle('visible', paused);
+  }
+
+  /** Photo mode hides all the UI (but not an error report). */
+  setPhotoMode(on: boolean): void {
+    document.getElementById('hud')!.classList.toggle('photo', on);
   }
 
   update(dt: number, car: Car, autopilot: boolean): void {

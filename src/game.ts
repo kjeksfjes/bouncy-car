@@ -6,6 +6,7 @@ import { Hud } from './hud';
 import { Input } from './input';
 import { OrbitCamera } from './render/orbitCamera';
 import { HeliCamera } from './render/heliCamera';
+import { PhotoCamera } from './render/photoCamera';
 import { PointerOrbit } from './render/pointerOrbit';
 import { Juice } from './render/juice';
 import { Stage } from './render/stage';
@@ -67,6 +68,8 @@ export class Game {
   private cameraMode: CameraMode = 'orbit';
   /** Esc pauses: the simulation stops, the camera keeps running. */
   private paused = false;
+  /** Photo mode (while paused, from a Shift+drag): a free camera and no UI. */
+  private photoMode = false;
   /** T toggles slow motion; ' picks its speed from SLOW_SPEEDS. timeScale eases toward it. */
   private slowMotion = false;
   private slowLevel = 1;
@@ -77,6 +80,8 @@ export class Game {
   private warmth = 0;
   private readonly input = new Input();
   private readonly hud = new Hud();
+  private readonly pointer = new PointerOrbit();
+  private readonly photo: PhotoCamera;
   private readonly audio = new GameAudio();
   private readonly juice: Juice;
   /** Whether the first frame has drawn the glass shards' warm-up (see Shards.warmUp). */
@@ -117,10 +122,10 @@ export class Game {
     this.debris = new Debris(this.stage.scene, this.world, this.field);
     this.traffic = new Traffic(this.field, obstacles, this.terrain, (at, yaw, paint) => this.newCar(at, yaw, paint));
     // Both cameras orbit with the mouse; only the active one takes the input.
-    const pointer = new PointerOrbit();
-    pointer.attach(this.stage.renderer.domElement);
-    this.orbit = new OrbitCamera(this.stage.camera, this.field, pointer);
-    this.heli = new HeliCamera(this.stage.camera, this.field, pointer);
+    this.pointer.attach(this.stage.renderer.domElement);
+    this.orbit = new OrbitCamera(this.stage.camera, this.field, this.pointer);
+    this.heli = new HeliCamera(this.stage.camera, this.field, this.pointer);
+    this.photo = new PhotoCamera(this.stage.camera, this.pointer);
     this.juice = new Juice(
       this.stage.scene, this.field, this.trees, this.orbit, this.stage.camera,
       (car) => car === this.car,
@@ -184,7 +189,23 @@ export class Game {
     const dt = Math.min(0.1, (now - this.lastTime) / 1000);
     this.lastTime = now;
 
-    if (this.input.consume('Escape')) this.togglePause();
+    // Slow motion first: Esc below depends on it.
+    if (this.input.consume('KeyT')) {
+      this.slowMotion = !this.slowMotion;
+      if (this.slowMotion) this.hud.flashSlowMotion();
+    }
+    if (this.input.consume("char:'")) {
+      // Cycles the slow-motion speed; from normal speed it first switches to the current one.
+      if (this.slowMotion) this.slowLevel = (this.slowLevel + 1) % SLOW_SPEEDS.length;
+      this.slowMotion = true;
+      this.hud.flashSlowMotion();
+    }
+    // Esc pauses and resumes. In photo mode it leaves photo mode, except in slow motion, where it
+    // plays the action on (and pauses it again) as seen from the photo camera.
+    if (this.input.consume('Escape')) {
+      if (this.photoMode && !this.slowMotion) this.setPhotoMode(false);
+      else this.togglePause();
+    }
     // While paused, only the camera and mute keys act; the rest are dropped, not queued.
     const reset = this.input.consume('KeyR');
     const replace = this.input.consume('KeyN');
@@ -202,13 +223,7 @@ export class Game {
     }
     if (this.input.consume('KeyM')) this.audio.toggleMute();
     if (this.input.consume('KeyC')) this.cycleCamera();
-    if (this.input.consume('KeyT')) this.slowMotion = !this.slowMotion;
     if (import.meta.env.DEV && this.input.consume('KeyI')) this.cycleInspect();
-    if (this.input.consume("char:'")) {
-      // Cycles the slow-motion speed; from normal speed it first switches to the current one.
-      if (this.slowMotion) this.slowLevel = (this.slowLevel + 1) % SLOW_SPEEDS.length;
-      this.slowMotion = true;
-    }
     this.input.endFrame();
     const slowTarget = this.slowMotion ? SLOW_SPEEDS[this.slowLevel] : 1;
     this.timeScale += (slowTarget - this.timeScale) * (1 - Math.exp(-SLOW_RAMP * dt));
@@ -220,8 +235,14 @@ export class Game {
 
     if (this.paused) {
       // Everything stands still except the camera, which runs on real time so the frozen
-      // scene can be looked around.
-      (this.cameraMode === 'orbit' ? this.orbit : this.heli).update(dt, this.car.model.root, this.car.velocity, true);
+      // scene can be looked around. A Shift+drag hands it to photo mode's free camera.
+      if (!this.photoMode && this.pointer.panning) this.setPhotoMode(true);
+      if (this.photoMode) {
+        const keys = this.input.car();
+        this.photo.update(dt, keys.steer, keys.throttle - keys.brake, this.input.shift, this.car.position);
+      } else {
+        (this.cameraMode === 'orbit' ? this.orbit : this.heli).update(dt, this.car.model.root, this.car.velocity, true);
+      }
       this.view.update(this.stage.camera, this.stage.viewDistance);
       this.stage.follow(this.car.position);
       this.stage.render();
@@ -262,8 +283,13 @@ export class Game {
       ...this.traffic.cars.map((a) => ({ position: a.car.position, radius: AI_STREAM_RADIUS })),
     ];
     this.terrain.update(centers, STREAM_BUDGET);
-    const camera = this.cameraMode === 'orbit' ? this.orbit : this.heli;
-    camera.update(dt, this.car.model.root, this.car.velocity, false, this.timeScale);
+    if (this.photoMode) {
+      // While the action runs, the keys drive the car as usual; the photo camera takes the mouse.
+      this.photo.update(dt, 0, 0, false, this.car.position);
+    } else {
+      const camera = this.cameraMode === 'orbit' ? this.orbit : this.heli;
+      camera.update(dt, this.car.model.root, this.car.velocity, false, this.timeScale);
+    }
     this.view.update(this.stage.camera, this.stage.viewDistance);
     this.debris.update(gt, pos, this.view, alpha);
     this.clods.update(gt);
@@ -313,6 +339,24 @@ export class Game {
     this.paused = !this.paused;
     this.hud.setPaused(this.paused);
     this.audio.setPaused(this.paused);
+  }
+
+  /**
+   * Photo mode on (from the pause): the free camera takes over from the view as it is (orbiting the
+   * point it looks at, as far off as the car), and the UI hides. Off: the field of view and the UI
+   * come back. In slow motion the game can run on in photo mode (see Esc in tick).
+   */
+  private setPhotoMode(on: boolean): void {
+    if (on === this.photoMode) return;
+    this.photoMode = on;
+    this.hud.setPhotoMode(on);
+    if (!on) {
+      this.photo.end();
+      return;
+    }
+    const camera = this.stage.camera;
+    const pivot = camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(camera.position.distanceTo(this.car.position)).add(camera.position);
+    this.photo.begin(pivot);
   }
 
   /** Dev: off → each inspection view in turn → off. */
