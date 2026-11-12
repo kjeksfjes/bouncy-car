@@ -23,13 +23,14 @@ const PHOTO = {
   panPerSecond: 0.8,
   panNear: 4,
   /**
-   * A drag pans as if what it grabbed were between these depths (m): one this close to the lens
-   * still pans, and one far off (distant terrain, the sky) doesn't fling the camera hundreds of
-   * metres per drag. At `grabFarthest` and the normal 60° view, a drag across a 1000 px high canvas
-   * pans ≈35 m.
+   * A drag pans as if what it grabbed were no nearer than `grabNearest` (m), so one close to the
+   * lens still pans, and no further than the car (but at least `grabFarthest` m): something far
+   * beyond it (distant terrain, the sky) pans as though it were by the car, rather than flinging
+   * the camera tens of metres a drag. At 30 m and the normal 60° view, a drag across a 1000 px
+   * high canvas pans ≈35 m.
    */
   grabNearest: 0.05,
-  grabFarthest: 30,
+  grabFarthest: 4,
   /**
    * How long the camera takes to settle after the mouse, keys or wheel move it (s): it covers
    * about two thirds of each move in this time and eases out the rest. 0 follows instantly.
@@ -51,6 +52,14 @@ const PHOTO = {
   /** Field-of-view limits (degrees, vertical). */
   fovMin: 8,
   fovMax: 100,
+  /**
+   * Unless it may go under the ground (see FEATURES.groundSection), the camera stays at least this
+   * far above it (m), measured at the camera and `groundReach` m around it: the near plane reaches
+   * a little below and ahead of the camera, and would cut into the ground (leaving a see-through
+   * hole) closer than that, on a slope rising ahead or with a wide lens.
+   */
+  groundClearance: 0.3,
+  groundReach: 0.3,
 };
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -59,6 +68,7 @@ const _up = new THREE.Vector3();
 const _forward = new THREE.Vector3();
 const _offset = new THREE.Vector3();
 const _hit = new THREE.Vector3();
+const _point = new THREE.Vector3();
 const _ray = new THREE.Raycaster();
 
 /** A camera move still to be made: what update eases through. */
@@ -110,6 +120,12 @@ export class PhotoCamera {
   private readonly dollyDir = new THREE.Vector3();
   /** Moves made with the mouse and keys that the camera hasn't caught up with yet. */
   private pending = still();
+  /**
+   * Whether turning is held off: while it's set, the drags that look round or orbit pan instead,
+   * Shift+arrow keys do nothing, and what's still easing in of a turn stops. Set while the camera is under the ground,
+   * where the view is drawn from behind the cut and turning swings it about (see GroundSection).
+   */
+  noTurning = false;
   private readonly step = still();
 
   /**
@@ -119,6 +135,8 @@ export class PhotoCamera {
     private readonly camera: THREE.PerspectiveCamera,
     private readonly pointer: PointerOrbit,
     private readonly surfaceAt: (ndc: THREE.Vector2, out: THREE.Vector3) => THREE.Vector3 | null,
+    /** The ground's height at (x, z) to keep the camera above, or null to let it go under. */
+    private readonly groundAt: ((x: number, z: number) => number) | null,
   ) {}
 
   /** Takes over from the camera where it stands, looking where it looks. */
@@ -154,11 +172,13 @@ export class PhotoCamera {
     // point an orbit turns round (open sky: as far off as the car, along the mouse's ray).
     if (input.grab || input.dragGrab) cam.getWorldDirection(_forward);
     const subjectDistance = cam.position.distanceTo(subject);
-    if (input.grab) {
-      const hit = this.surfaceAt(input.grab.ndc, _hit);
+    // Under the ground, where turning is held off, every drag pans (see noTurning).
+    const panGrab = input.grab ?? (this.noTurning ? input.dragGrab : null);
+    if (panGrab) {
+      const hit = this.surfaceAt(panGrab.ndc, _hit);
       const depth = hit ? hit.sub(cam.position).dot(_forward) : subjectDistance;
-      this.grabDepth = THREE.MathUtils.clamp(depth, P.grabNearest, P.grabFarthest);
-      this.grabHeight = input.grab.height;
+      this.grabDepth = THREE.MathUtils.clamp(depth, P.grabNearest, Math.max(P.grabFarthest, subjectDistance));
+      this.grabHeight = panGrab.height;
     }
     if (input.dragGrab) {
       if (!this.surfaceAt(input.dragGrab.ndc, this.orbitAt)) {
@@ -179,13 +199,16 @@ export class PhotoCamera {
     // screen), the scene turning with the mouse.
     m.across -= input.dx * P.orbitTurn;
     m.over -= input.dy * P.orbitTurn;
+    if (this.noTurning) m.yaw = m.pitch = m.across = m.over = 0;
 
     // Pan: a drag keeps what it grabbed under the mouse (it moves one pixel's width at that depth
     // per pixel); the arrow keys slide it left and right, and move it forward and back.
     const pan = (this.grabDepth * 2 * Math.tan(THREE.MathUtils.degToRad(this.fov) / 2)) / this.grabHeight;
     const panKeys = shift ? 0 : Math.max(P.panNear, subjectDistance) * P.panPerSecond * dt;
-    m.right -= input.panX * pan + turn * panKeys;
-    m.up += input.panY * pan;
+    const panX = input.panX + (this.noTurning ? input.dx + input.lookX : 0);
+    const panY = input.panY + (this.noTurning ? input.dy + input.lookY : 0);
+    m.right -= panX * pan + turn * panKeys;
+    m.up += panY * pan;
     m.ahead += tilt * panKeys;
 
     // Towards or away from the point under the mouse, taking a share of the way there that's left
@@ -222,23 +245,48 @@ export class PhotoCamera {
     cam.getWorldDirection(_forward);
     cam.position.addScaledVector(_right, d.right).addScaledVector(_up, d.up).addScaledVector(this.dollyDir, d.forward).addScaledVector(_forward, d.ahead);
     this.fov = THREE.MathUtils.clamp(this.fov * Math.exp(d.zoom), P.fovMin, P.fovMax);
+    this.keepAboveGround();
     this.place();
+  }
+
+  /** Lifts the camera clear of the ground, unless it may go under (see groundAt). */
+  private keepAboveGround(): void {
+    const { x, y, z } = this.camera.position;
+    this.camera.position.y = Math.max(y, this.lowest(x, z));
+  }
+
+  /** The lowest the camera may be at (x, z): its clearance over the ground (−∞ if it may go under). */
+  private lowest(x: number, z: number): number {
+    if (!this.groundAt) return -Infinity;
+    const r = PHOTO.groundReach;
+    const ground = Math.max(this.groundAt(x, z), this.groundAt(x + r, z), this.groundAt(x - r, z), this.groundAt(x, z + r), this.groundAt(x, z - r));
+    return ground + PHOTO.groundClearance;
   }
 
   /**
    * Swings the camera round `orbitAt` as one piece: `across` (rad) about the vertical, `over` (rad)
-   * about its own right-hand axis (positive tilts it up), held to the tilt limits.
+   * about its own right-hand axis (positive tilts it up), held to the tilt limits. It never swings
+   * into the ground (lifting it out afterwards would move the point off its place on screen): a
+   * swing that would drops its tilt, and one that still would doesn't happen.
    */
   private orbit(across: number, over: number): void {
     const P = PHOTO;
     const cam = this.camera;
     const tilt = THREE.MathUtils.clamp(this.pitch + over, -P.pitchMax, P.pitchMax) - this.pitch;
-    _offset.subVectors(cam.position, this.orbitAt);
-    _right.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
-    _offset.applyAxisAngle(_right, tilt).applyAxisAngle(UP, across);
-    cam.position.addVectors(this.orbitAt, _offset);
-    this.pitch += tilt;
-    this.yaw += across;
+    // How far clear of the ground the camera is now: a swing may not leave it less clear than
+    // this, where that's below its clearance (so one that's already low can still swing up).
+    const clear = cam.position.y - this.lowest(cam.position.x, cam.position.z);
+    for (const [turn, lean] of [[across, tilt], [across, 0]]) {
+      _offset.subVectors(cam.position, this.orbitAt);
+      _right.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
+      _offset.applyAxisAngle(_right, lean).applyAxisAngle(UP, turn);
+      _point.addVectors(this.orbitAt, _offset);
+      if (_point.y - this.lowest(_point.x, _point.z) < Math.min(0, clear)) continue;
+      cam.position.copy(_point);
+      this.pitch += lean;
+      this.yaw += turn;
+      return;
+    }
   }
 
   private place(): void {

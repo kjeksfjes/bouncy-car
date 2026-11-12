@@ -1,12 +1,13 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { GRAVITY, PHYSICS_STEP } from './constants';
+import { FEATURES, GRAVITY, PHYSICS_STEP } from './constants';
 import { GameAudio } from './audio/audio';
 import { Hud } from './hud';
 import { Input } from './input';
 import { OrbitCamera } from './render/orbitCamera';
 import { HeliCamera } from './render/heliCamera';
 import { PhotoCamera } from './render/photoCamera';
+import { GroundSection } from './render/groundSection';
 import { PointerOrbit } from './render/pointerOrbit';
 import { Juice } from './render/juice';
 import { Stage } from './render/stage';
@@ -64,6 +65,8 @@ export class Game {
   private readonly view = new Visibility();
   private readonly events = new RAPIER.EventQueue(true);
   private readonly terrain: Terrain;
+  /** The ground cut open when the camera goes under it, if it may (see FEATURES.groundSection). */
+  private readonly section: GroundSection | null;
   private readonly debris: Debris;
   private readonly orbit: OrbitCamera;
   private readonly heli: HeliCamera;
@@ -119,6 +122,7 @@ export class Game {
     this.rocks = new RockLayout(this.field, this.trees);
     const obstacles = new Obstacles(this.trees, this.rocks, this.field.landmarks);
     this.terrain = new Terrain(this.field, this.stage.scene, this.world, this.trees, this.rocks);
+    this.section = FEATURES.groundSection ? new GroundSection(this.stage.scene, (x, z) => this.terrain.surfaceHeight(x, z)) : null;
     this.ai = new AiDriver(obstacles);
     this.aiArrow.visible = false;
     this.stage.scene.add(this.aiArrow);
@@ -128,7 +132,8 @@ export class Game {
     this.pointer.attach(this.stage.renderer.domElement);
     this.orbit = new OrbitCamera(this.stage.camera, this.field, this.pointer);
     this.heli = new HeliCamera(this.stage.camera, this.field, this.pointer);
-    this.photo = new PhotoCamera(this.stage.camera, this.pointer, (ndc, out) => this.stage.surfaceAt(ndc, out));
+    const ground = (x: number, z: number) => this.terrain.surfaceHeight(x, z);
+    this.photo = new PhotoCamera(this.stage.camera, this.pointer, (ndc, out) => this.stage.surfaceAt(ndc, out), FEATURES.groundSection ? null : ground);
     this.juice = new Juice(
       this.stage.scene, this.field, this.trees, this.orbit, this.stage.camera,
       (car) => car === this.car,
@@ -245,13 +250,16 @@ export class Game {
       if (!this.photoMode && this.pointer.freeLook) this.setPhotoMode(true);
       if (this.photoMode) {
         const keys = this.input.car();
+        this.holdTurning();
         this.photo.update(dt, keys.steer, keys.throttle - keys.brake, this.input.shift, this.car.position);
       } else {
         (this.cameraMode === 'orbit' ? this.orbit : this.heli).update(dt, this.car.model.root, this.car.velocity, true);
       }
       this.view.update(this.stage.camera, this.stage.viewDistance);
       this.stage.follow(this.car.position);
+      this.section?.update(this.stage.camera);
       this.stage.render();
+      this.section?.restore(this.stage.camera);
       return;
     }
 
@@ -291,6 +299,7 @@ export class Game {
     this.terrain.update(centers, STREAM_BUDGET);
     if (this.photoMode) {
       // While the action runs, the keys drive the car as usual; the photo camera takes the mouse.
+      this.holdTurning();
       this.photo.update(dt, 0, 0, false, this.car.position);
     } else {
       const camera = this.cameraMode === 'orbit' ? this.orbit : this.heli;
@@ -320,7 +329,9 @@ export class Game {
       this.stage.warmUp(crashWarmUpObjects());
       this.warmedUp = true;
     }
+    this.section?.update(this.stage.camera);
     this.stage.render();
+    this.section?.restore(this.stage.camera);
   }
 
   /**
@@ -354,6 +365,16 @@ export class Game {
    * hides. Off: the field of view and the UI
    * come back. In slow motion the game can run on in photo mode (see Esc in tick).
    */
+  /**
+   * Under the ground photo mode can't turn (see PhotoCamera.noTurning), and a drag there doesn't
+   * mark a point to orbit. Goes by the last frame's look.
+   */
+  private holdTurning(): void {
+    const underground = this.section?.underground ?? false;
+    this.photo.noTurning = underground;
+    this.pointer.orbitsCursor = !underground;
+  }
+
   private setPhotoMode(on: boolean): void {
     if (on === this.photoMode) return;
     this.photoMode = on;

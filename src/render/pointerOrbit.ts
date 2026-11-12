@@ -29,7 +29,7 @@ export class PointerOrbit {
   private rightButton = false;
   /** What the current drag did on its last move. */
   private held: 'drag' | 'pan' | 'look' | null = null;
-  /** Where a pan, and a drag, started since the last take. */
+  /** Where a pan, and a drag or look, started since the last take. */
   private grab: Grab | null = null;
   private dragGrab: Grab | null = null;
   /** Seconds since the last drag or scroll. */
@@ -71,8 +71,9 @@ export class PointerOrbit {
       const mode = e.shiftKey ? 'pan' : e.altKey || this.rightButton ? 'look' : 'drag';
       // A pan or look follows the cursor, so it has no mark.
       if (mode === 'pan' || mode === 'look') this.showMarker(false);
-      if (mode !== this.held && mode !== 'look') {
-        // A drag or pan starts here: where it grabbed, before this move.
+      if (mode !== this.held) {
+        // A drag, pan or look starts here: where it grabbed, before this move (a look's grab is
+        // for photo mode under the ground, where it pans).
         const box = element.getBoundingClientRect();
         const x = e.clientX - e.movementX - box.left;
         const y = e.clientY - e.movementY - box.top;

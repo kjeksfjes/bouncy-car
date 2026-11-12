@@ -6,3 +6,15 @@ export const PHYSICS_STEP = 1 / 60;
  * landings feel weighty; tune together with suspension stiffness.
  */
 export const GRAVITY = 11;
+
+/**
+ * Features that are off unless switched on. In dev, a URL parameter switches one on for a look.
+ */
+export const FEATURES = {
+  /**
+   * Photo mode's camera can go under the ground, which then shows cut open (see GroundSection).
+   * Off: the camera stays above the ground. Meant as a hidden extra for a settings menu to come;
+   * `?section` turns it on in dev.
+   */
+  groundSection: import.meta.env.DEV && new URLSearchParams(location.search).has('section'),
+};
