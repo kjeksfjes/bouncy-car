@@ -677,9 +677,12 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
       [put(new THREE.BoxGeometry(0.3, 0.16, 0.1), x, 1.2, 0.42, 0.2), mat.upholstery],
     );
   }
+  // The rear bench fits between the rear wheel wells, clear of their walls (0.03 thick, see the
+  // blueprint's THICKNESS) by 1 cm: ends in a wall's plane flicker against it.
+  const bench = 2 * (bp.wellHalf - 0.04);
   cabin.push(
-    [put(new THREE.BoxGeometry(1.24, 0.14, 0.45), 0, 0.47, 0.95), mat.upholstery],
-    [put(new THREE.BoxGeometry(1.24, 0.5, 0.12), 0, 0.78, 1.22, 0.35), mat.upholstery],
+    [put(new THREE.BoxGeometry(bench, 0.14, 0.45), 0, 0.47, 0.95), mat.upholstery],
+    [put(new THREE.BoxGeometry(bench, 0.5, 0.12), 0, 0.78, 1.22, 0.35), mat.upholstery],
     // The dash's front face sits inside the firewall's wall (bay face at z −0.77), not in its face.
     [put(new THREE.BoxGeometry(1.5, 0.16, 0.285), 0, 0.92, -0.6125), mat.dark],
     [put(new THREE.TorusGeometry(0.17, 0.022, 6, 14), -0.42, 0.88, -0.38, -0.45), mat.dark],

@@ -52,6 +52,9 @@ const INITIAL_CHUNKS = 25;
 /** AI cars only need ground under them (they're beyond the fog when far away). */
 const AI_STREAM_RADIUS = 1;
 
+/** Dev only: ?nohood (see newCar). */
+const NO_HOOD = import.meta.env.DEV && new URLSearchParams(location.search).has('nohood');
+
 export class Game {
   readonly stage: Stage;
   readonly world: RAPIER.World;
@@ -151,6 +154,8 @@ export class Game {
   private newCar(position: THREE.Vector3, yaw: number, paint?: string): Car {
     const car = new Car(COUPE_70S, this.world, this.stage.scene, this.debris, position, yaw, paint);
     car.events = fanOut(this.audio, this.juice);
+    // Dev only: ?nohood leaves the hood off (only its look: it still collides), to see into the bay.
+    if (import.meta.env.DEV && NO_HOOD) car.model.pieces.find((p) => p.name === 'hood')!.mesh.visible = false;
     return car;
   }
 

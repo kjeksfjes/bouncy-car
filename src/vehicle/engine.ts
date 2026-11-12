@@ -53,14 +53,18 @@ const FRONT = BLOCK.z - BLOCK.length / 2;
 const EXHAUST_START = { x: 0.33, h: 0.54, z: -1.3 };
 /**
  * The inner fender aprons, painted sheet metal boxing the bay in at the sides, from behind the
- * battery (`from`) to the firewall: a deck over the wheel housings' crest (≈0.71–0.73) at `top`,
- * from the fender in to `edge` (just inside the housings' inner walls, |x| 0.62), sloping from
- * there down to the frame rail (`rail`: its middle, half width, and top) beside the headers. A
- * spring tower rises out of each slope over the front wheel (`tower`: centre x, at the arch's z;
- * radius; top), a drum with a rounded shoulder standing half over the deck.
+ * battery (`from`) to the firewall: a deck over the wheel housings at `top`, from the fender in
+ * to `edge` (just inside the housings' inner walls, |x| 0.62), sloping from there down to the
+ * frame rail (`rail`: its middle, half width, and top) beside the headers. The deck's underside
+ * clears the housings' crest (≈0.71–0.73, seen from the wheel) and its top covers their 3 cm
+ * thick top (≈0.75 on the bay side), so neither pokes through the other. A spring tower rises
+ * over each front wheel (`tower`: centre x, at the arch's z; radius; top), a drum with a rounded
+ * shoulder standing half over the deck.
  */
+/** Segments round a spring tower: its foot's arc starts and ends on the drum's edges. */
+const TOWER_SEGMENTS = 16;
 const APRON = {
-  top: 0.735,
+  top: 0.765,
   edge: 0.61,
   thickness: 0.02,
   rail: { x: 0.45, half: 0.04, top: 0.5 },
@@ -280,7 +284,7 @@ export function engineParts(cfg: CarConfig, mat: EngineMaterials): { engine: Par
   const valve = { x: -0.75, h: APRON.top + 0.02, z: wall - 0.17 };
   put(new THREE.BoxGeometry(0.06, 0.04, 0.09), mat.alloy, valve.x, valve.h, valve.z);
   for (const dz of [-0.03, 0.03]) {
-    tube([[booster.x - 0.04, booster.h - 0.02, wall - 0.2 + dz], [-0.52, 0.745, wall - 0.19 + dz], [-0.62, 0.76, valve.z + dz], [valve.x + 0.03, valve.h, valve.z + dz]], 0.0045, mat.steel);
+    tube([[booster.x - 0.04, booster.h - 0.02, wall - 0.2 + dz], [-0.52, 0.76, wall - 0.19 + dz], [-0.62, APRON.top + 0.025, valve.z + dz], [valve.x + 0.03, valve.h, valve.z + dz]], 0.0045, mat.steel);
   }
   tube([[-0.09, 0.8, BLOCK.z + 0.2], [-0.2, 0.84, -1.05], [-0.33, 0.83, wall - 0.14], [-0.36, 0.8, wall - 0.125]], 0.012, mat.dark);
 
@@ -355,15 +359,26 @@ export function engineParts(cfg: CarConfig, mat: EngineMaterials): { engine: Par
     put(new THREE.BoxGeometry(deckWidth, A.thickness, apronLength, 3, 1, along), mat.bay, side * (A.edge + deckWidth / 2), A.top - A.thickness / 2, apronZ);
     put(new THREE.BoxGeometry(slope.length() + A.thickness, A.thickness, apronLength, 2, 1, along), mat.bay, side * slopeMid.x, slopeMid.y, apronZ, side * Math.atan2(slope.y, slope.x));
     put(new THREE.BoxGeometry(2 * A.rail.half, 0.1, apronLength, 1, 1, along), mat.bay, side * A.rail.x, A.rail.top - 0.05, apronZ);
-    // The tower: a drum rising out of the slope (its foot hidden in it, at the rail's top), with a
-    // rounded shoulder into its flat top, the shock's top mount in the middle and three bolts.
+    // The tower: a drum standing on the deck, with a rounded shoulder into its flat top, the
+    // shock's top mount in the middle and three bolts. Below the deck it goes on down into the
+    // slope (its foot hidden in it, at the rail's top) only on the engine's side of the housing's
+    // inner wall: the rest would stand in the wheel housing, over the tyre.
     const T = A.tower;
     const tx = side * T.x;
-    const rise = T.top - A.rail.top;
+    const deckUnder = A.top - A.thickness;
+    const rise = T.top - deckUnder;
     const profile = [
       [T.radius, 0], [T.radius, rise - 0.05], [T.radius - 0.012, rise - 0.02], [T.radius - 0.03, rise - 0.004], [T.radius - 0.045, rise], [0, rise],
     ].map(([r, y]) => new THREE.Vector2(r, y));
-    put(new THREE.LatheGeometry(profile, 16), mat.bay, tx, A.rail.top, T.z);
+    put(new THREE.LatheGeometry(profile, TOWER_SEGMENTS), mat.bay, tx, deckUnder, T.z);
+    // The foot's arc keeps within the inner wall: lathe angle φ puts a point at x = r·sin φ from
+    // the centre, so the engine's side is sin φ ≤ (edge − x) / r, rounded in to whole segments of
+    // the drum above so their edges meet. Its ends lie in the wall's thickness.
+    const step = (2 * Math.PI) / TOWER_SEGMENTS;
+    const half = Math.floor((Math.PI / 2 - Math.asin((T.x - A.edge) / T.radius)) / step) * step;
+    const footCentre = side > 0 ? (3 * Math.PI) / 2 : Math.PI / 2;
+    const foot = [new THREE.Vector2(T.radius, 0), new THREE.Vector2(T.radius, deckUnder - A.rail.top)];
+    put(new THREE.LatheGeometry(foot, Math.round((2 * half) / step), footCentre - half, 2 * half), mat.bay, tx, A.rail.top, T.z);
     put(new THREE.CylinderGeometry(0.045, 0.045, 0.012, 10), mat.dark, tx, T.top + 0.006, T.z);
     put(new THREE.CylinderGeometry(0.016, 0.016, 0.03, 6), mat.steel, tx, T.top + 0.015, T.z);
     for (let i = 0; i < 3; i++) {
@@ -376,7 +391,7 @@ export function engineParts(cfg: CarConfig, mat: EngineMaterials): { engine: Par
   }
   // The loom runs along the left deck's outer edge, outside the tower, on to the headlights.
   const loomX = -(outer - 0.09);
-  tube([[-0.62, 0.8, wall - 0.03], [loomX, 0.755, wall - 0.12], [loomX, 0.748, -1.3], [loomX, 0.748, -1.7], [loomX, 0.75, A.from + 0.02], [-0.72, 0.76, rz - 0.1], [-0.7, 0.73, rz - 0.2]], 0.011, mat.dark);
+  tube([[-0.62, 0.8, wall - 0.03], [loomX, A.top + 0.02, wall - 0.12], [loomX, A.top + 0.013, -1.3], [loomX, A.top + 0.013, -1.7], [loomX, A.top + 0.015, A.from + 0.02], [-0.72, 0.76, rz - 0.1], [-0.7, 0.73, rz - 0.2]], 0.011, mat.dark);
   for (const z of [-1.1, -1.75]) put(new THREE.BoxGeometry(0.025, 0.025, 0.03), mat.dark, loomX, A.top + 0.012, z);
   put(new THREE.BoxGeometry(0.09, 0.04, 0.06), mat.dark, 0.72, A.top + 0.02, wall - 0.12);
   put(new THREE.BoxGeometry(0.03, 0.02, 0.03), mat.plate, 0.72, A.top + 0.05, wall - 0.12);
