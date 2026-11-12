@@ -181,13 +181,17 @@ export function sideHalfWidth(bp: CarBlueprint, z: number, h: number): number {
 }
 
 /** `recess` is drawn like `dark` but thin-walled: lamp recesses sit right behind the panel edges. */
-/** `lining`: the inside of painted panels, painted too but never worn (see paintWear). */
-export type PanelMaterial = 'paint' | 'lining' | 'dark' | 'glass' | 'recess';
+/**
+ * The inside of painted panels (never worn, see paintWear): `lining` in the engine bay and trunk,
+ * painted like the outside but in their shade; `trim` round the cabin (doors, roof, the shell
+ * between firewall and bulkhead), where real cars cover the metal.
+ */
+export type PanelMaterial = 'paint' | 'lining' | 'trim' | 'dark' | 'glass' | 'recess';
 /** Body triangles (flat position arrays, car-local) grouped by part, then material. */
 export type Panels = Map<string, Map<PanelMaterial, number[]>>;
 
 /** Wall thickness per surface type (m): sheet metal reads as a visible edge, glass is thin. */
-const THICKNESS: Record<PanelMaterial, number> = { paint: 0.03, lining: 0.03, dark: 0.03, glass: 0.01, recess: 0.005 };
+const THICKNESS: Record<PanelMaterial, number> = { paint: 0.03, lining: 0.03, trim: 0.03, dark: 0.03, glass: 0.01, recess: 0.005 };
 /** Firewall and rear bulkhead are scaled down by this much to sit inside the skin. */
 const INNER_WALL_SCALE = 0.93;
 
@@ -411,7 +415,17 @@ export function buildPanels(bp: CarBlueprint): Panels {
     for (const [mat, triangles] of byMaterial) {
       const { outer, inner } = solidify(triangles, THICKNESS[mat]);
       target(panels, part, mat).push(...outer);
-      target(panels, part, mat === 'paint' ? 'lining' : mat).push(...inner);
+      if (mat !== 'paint') {
+        target(panels, part, mat).push(...inner);
+        continue;
+      }
+      // The inside of a painted panel: trim where it faces the cabin, painted lining elsewhere.
+      const cabinPart = part === 'roof' || part.startsWith('door-');
+      for (let t = 0; t < inner.length; t += 9) {
+        const zm = (inner[t + 2] + inner[t + 5] + inner[t + 8]) / 3;
+        const inCabin = cabinPart || (part === 'shell' && zm > ghFrom && zm < ghTo);
+        target(panels, part, inCabin ? 'trim' : 'lining').push(...inner.slice(t, t + 9));
+      }
     }
   }
 

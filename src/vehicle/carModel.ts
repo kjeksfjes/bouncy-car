@@ -88,8 +88,10 @@ export interface CarModel {
 
 interface CarMaterials {
   paint: THREE.Material;
-  /** The inside of painted panels: the same paint, never worn. */
+  /** The inside of painted panels in the engine bay and trunk: the paint in shade (see LINING). */
   lining: THREE.Material;
+  /** The inside of painted panels round the cabin: dark trim. */
+  trim: THREE.Material;
   glass: THREE.Material;
   chrome: THREE.Material;
   steel: THREE.Material;
@@ -180,6 +182,31 @@ function panelsFor(bp: CarBlueprint): Panels {
   return panels;
 }
 
+/**
+ * The painted inside of the engine bay and trunk, shaded as the pit it is (nothing here darkens a
+ * cavity on its own): the paint × `shade` (linear) at the deck, down to × `shade` × `floorShade`
+ * at the rocker, and matte. Feel values.
+ */
+const LINING = { shade: 0.3, floorShade: 0.35, roughness: 0.7 };
+
+/**
+ * Vertex colours for a part's surfaces, white except the lining: darker the lower it sits between
+ * rocker and deck (shading the lining material, see LINING; other materials ignore them).
+ */
+function liningShade(bp: CarBlueprint, positions: number[], lining: boolean): THREE.Float32BufferAttribute {
+  const colors = new Float32Array(positions.length).fill(1);
+  if (lining) {
+    for (let i = 0; i < positions.length; i += 3) {
+      const z = positions[i + 2];
+      const rocker = sample(bp.rocker, z);
+      const h = (positions[i + 1] - bp.groundY - rocker) / (sample(bp.deck, z) - rocker);
+      const k = LINING.shade * THREE.MathUtils.lerp(LINING.floorShade, 1, THREE.MathUtils.smoothstep(h, 0, 1));
+      colors[i] = colors[i + 1] = colors[i + 2] = k;
+    }
+  }
+  return new THREE.Float32BufferAttribute(colors, 3);
+}
+
 // Materials are shared between every car built from the same config and paint (and their
 // debris), so they are never disposed with an individual car.
 const materialCache = new WeakMap<CarConfig, Map<string, CarMaterials>>();
@@ -198,7 +225,8 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
     paintWithWear(paintMaterial);
     m = {
       paint: paintMaterial,
-      lining: std(paint, paintLook),
+      lining: std(paint, { roughness: LINING.roughness, metalness: 0.1, vertexColors: true }),
+      trim: std('#2a2b2f', { roughness: 0.75 }),
       glass: std(GLASS_TINT, { roughness: 0.05, metalness: 0.5, transparent: true, opacity: GLASS_OPACITY }),
       chrome: std('#d9dde2', { roughness: 0.2, metalness: 0.9 }),
       steel: std('#4b5056', { roughness: 0.5, metalness: 0.6 }),
@@ -443,6 +471,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     for (const [m, positions] of byMaterial) {
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      g.setAttribute('color', liningShade(bp, positions, m === 'lining'));
       geos.push(g);
       // Lamp recesses are thin-walled but look like the rest of the dark inner panels.
       materials.push(m === 'recess' ? mat.dark : mat[m satisfies Exclude<PanelMaterial, 'recess'>]);
