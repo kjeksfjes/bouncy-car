@@ -13,13 +13,14 @@ const PHOTO = {
   pitchMin: -1.4,
   pitchMax: 1.5,
   /**
-   * Pan, scaled by the camera's distance from the car (at least `panNear` m), so it reaches further
-   * the further out the camera is: metres per pixel dragged, and per second on Shift+arrow keys,
-   * per metre of that distance.
+   * Pan on Shift+arrow keys, scaled by the camera's distance from the car (at least `panNear` m),
+   * so it reaches further the further out the camera is: metres per second per metre of that
+   * distance. (A Shift+drag pans by what it grabbed instead: see PhotoCamera.update.)
    */
-  panPerPixel: 0.0012,
   panPerSecond: 0.8,
   panNear: 4,
+  /** A grab this close to the lens (m) still pans at least this much, so it never stops dead. */
+  grabNearest: 0.05,
   /** Moving forward/back: metres per scroll unit (a wheel notch is ≈100). */
   movePerScroll: 0.02,
   /** Lens zoom: how fast the field of view changes per Shift scroll unit. */
@@ -36,7 +37,8 @@ const _forward = new THREE.Vector3();
 
 /**
  * Photo mode's free camera, used while paused: it takes over from wherever the camera is and
- * orbits a pivot (drag, or the arrow keys), pans it (Shift+drag, or Shift+arrow keys), moves
+ * orbits a pivot (drag, or the arrow keys), pans it (Shift+drag, keeping the grabbed point under
+ * the mouse, or Shift+arrow keys), moves
  * forward and back along the view (scroll), and zooms the lens (Shift+scroll). The field of view is put back on leaving.
  */
 export class PhotoCamera {
@@ -48,10 +50,18 @@ export class PhotoCamera {
   private fov = 60;
   /** The field of view before photo mode, put back on leaving. */
   private normalFov = 60;
+  /** How far in front of the lens the current Shift+drag grabbed (m), and the canvas's height (px). */
+  private grabDepth = 1;
+  private grabHeight = 1;
 
+  /**
+   * @param depthAt how far in front of the camera the first surface under a screen point lies
+   *   (m, along the view), or null for open sky (see Stage.depthAt)
+   */
   constructor(
     private readonly camera: THREE.PerspectiveCamera,
     private readonly pointer: PointerOrbit,
+    private readonly depthAt: (ndc: THREE.Vector2) => number | null,
   ) {}
 
   /** Takes over from the camera where it is, orbiting `pivot` (what it was looking at). */
@@ -80,6 +90,12 @@ export class PhotoCamera {
   update(dt: number, turn: number, tilt: number, shift: boolean, subject: THREE.Vector3): void {
     const P = PHOTO;
     const input = this.pointer.take(dt);
+    // A new Shift+drag: what it grabbed, as the camera stood when the mouse went down (open sky
+    // grabs at the pivot's distance).
+    if (input.grab) {
+      this.grabDepth = Math.max(P.grabNearest, this.depthAt(input.grab.ndc) ?? this.distance);
+      this.grabHeight = input.grab.height;
+    }
     const orbitKeys = shift ? 0 : P.turnSpeed * dt;
 
     this.yaw += -input.dx * P.dragTurn + turn * orbitKeys;
@@ -91,9 +107,10 @@ export class PhotoCamera {
     _up.setFromMatrixColumn(this.camera.matrixWorld, 1);
     this.camera.getWorldDirection(_forward);
 
-    // Pan: a drag moves the scene along with the mouse; Shift+arrow keys slide the camera.
+    // Pan: a drag keeps what it grabbed under the mouse (it moves one pixel's width at that depth
+    // per pixel); Shift+arrow keys slide the camera.
+    const pan = (this.grabDepth * 2 * Math.tan(THREE.MathUtils.degToRad(this.fov) / 2)) / this.grabHeight;
     const reach = Math.max(P.panNear, this.camera.position.distanceTo(subject));
-    const pan = reach * P.panPerPixel;
     const panKeys = shift ? reach * P.panPerSecond * dt : 0;
     this.pivot.addScaledVector(_right, -input.panX * pan - turn * panKeys).addScaledVector(_up, input.panY * pan + tilt * panKeys);
 

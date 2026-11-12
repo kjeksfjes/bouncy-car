@@ -125,7 +125,7 @@ export class Game {
     this.pointer.attach(this.stage.renderer.domElement);
     this.orbit = new OrbitCamera(this.stage.camera, this.field, this.pointer);
     this.heli = new HeliCamera(this.stage.camera, this.field, this.pointer);
-    this.photo = new PhotoCamera(this.stage.camera, this.pointer);
+    this.photo = new PhotoCamera(this.stage.camera, this.pointer, (ndc) => this.stage.depthAt(ndc));
     this.juice = new Juice(
       this.stage.scene, this.field, this.trees, this.orbit, this.stage.camera,
       (car) => car === this.car,

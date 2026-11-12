@@ -105,6 +105,14 @@ function makeSky(radius: number): THREE.Mesh {
   return mesh;
 }
 
+const _forward = new THREE.Vector3();
+
+/** Whether `object` and everything it hangs from are shown. */
+function shown(object: THREE.Object3D): boolean {
+  for (let o: THREE.Object3D | null = object; o; o = o.parent) if (!o.visible) return false;
+  return true;
+}
+
 /** Renderer, scene, camera and lighting. */
 export class Stage {
   readonly renderer: THREE.WebGLRenderer;
@@ -120,6 +128,7 @@ export class Stage {
   private bakedWarmth = 0;
   /** Bound only while compiling shaders for render targets (see compileForTargets). */
   private readonly compileTarget = new THREE.WebGLRenderTarget(1, 1);
+  private readonly raycaster = new THREE.Raycaster();
 
   constructor(container: HTMLElement) {
     installFogFade();
@@ -211,6 +220,23 @@ export class Stage {
     this.scene.environment = pmrem.fromScene(envScene, 0.04).texture;
     old?.dispose();
     pmrem.dispose();
+  }
+
+  /**
+   * How far in front of the camera (along its view, m) the first visible surface under `ndc`
+   * (−1..1 screen coordinates) lies, or null where there is only sky. One raycast through the
+   * whole scene: fine for a click, too slow for every frame.
+   */
+  depthAt(ndc: THREE.Vector2): number | null {
+    this.raycaster.setFromCamera(ndc, this.camera);
+    this.raycaster.far = this.camera.far;
+    this.camera.getWorldDirection(_forward);
+    for (const hit of this.raycaster.intersectObject(this.scene, true)) {
+      const o = hit.object;
+      if (o === this.sky || !(o as THREE.Mesh).isMesh || !shown(o)) continue;
+      return hit.point.sub(this.camera.position).dot(_forward);
+    }
+    return null;
   }
 
   /** Keeps the shadow frustum, the sky and the sun's flare centred on the action. Call after the camera moves. */
