@@ -68,7 +68,7 @@ export class Game {
   private cameraMode: CameraMode = 'orbit';
   /** Esc pauses: the simulation stops, the camera keeps running. */
   private paused = false;
-  /** Photo mode (while paused, from a Shift+drag): a free camera and no UI. */
+  /** Photo mode (while paused, from a right-drag, Shift+drag or Option+drag): a free camera and no UI. */
   private photoMode = false;
   /** T toggles slow motion; ' picks its speed from SLOW_SPEEDS. timeScale eases toward it. */
   private slowMotion = false;
@@ -125,7 +125,7 @@ export class Game {
     this.pointer.attach(this.stage.renderer.domElement);
     this.orbit = new OrbitCamera(this.stage.camera, this.field, this.pointer);
     this.heli = new HeliCamera(this.stage.camera, this.field, this.pointer);
-    this.photo = new PhotoCamera(this.stage.camera, this.pointer);
+    this.photo = new PhotoCamera(this.stage.camera, this.pointer, (ndc, out) => this.stage.surfaceAt(ndc, out));
     this.juice = new Juice(
       this.stage.scene, this.field, this.trees, this.orbit, this.stage.camera,
       (car) => car === this.car,
@@ -235,8 +235,8 @@ export class Game {
 
     if (this.paused) {
       // Everything stands still except the camera, which runs on real time so the frozen
-      // scene can be looked around. A Shift+drag hands it to photo mode's free camera.
-      if (!this.photoMode && this.pointer.panning) this.setPhotoMode(true);
+      // scene can be looked around. A right-drag, Shift+drag or Option+drag hands it to photo mode's free camera.
+      if (!this.photoMode && this.pointer.freeLook) this.setPhotoMode(true);
       if (this.photoMode) {
         const keys = this.input.car();
         this.photo.update(dt, keys.steer, keys.throttle - keys.brake, this.input.shift, this.car.position);
@@ -344,21 +344,20 @@ export class Game {
   }
 
   /**
-   * Photo mode on (from the pause): the free camera takes over from the view as it is (orbiting the
-   * point it looks at, as far off as the car), and the UI hides. Off: the field of view and the UI
+   * Photo mode on (from the pause): the free camera takes over from the view as it is, and the UI
+   * hides. Off: the field of view and the UI
    * come back. In slow motion the game can run on in photo mode (see Esc in tick).
    */
   private setPhotoMode(on: boolean): void {
     if (on === this.photoMode) return;
     this.photoMode = on;
     this.hud.setPhotoMode(on);
+    this.pointer.orbitsCursor = on;
     if (!on) {
       this.photo.end();
       return;
     }
-    const camera = this.stage.camera;
-    const pivot = camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(camera.position.distanceTo(this.car.position)).add(camera.position);
-    this.photo.begin(pivot);
+    this.photo.begin();
   }
 
   /** Dev: off → each inspection view in turn → off. */
