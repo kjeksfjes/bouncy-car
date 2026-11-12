@@ -20,6 +20,8 @@
       #loading { position: fixed; inset: 0; display: grid; place-items: center; font-size: 18px; }
 
       #hud { position: fixed; inset: 0; pointer-events: none; }
+      #hud.photo > :not(#error) { display: none; }
+      #hud.photo > #slow.visible.flash { display: block; }
       .hint {
         position: absolute; top: 16px; left: 16px; padding: 8px 12px; border-radius: 8px;
         background: var(--panel); font-weight: 500; font-size: 13px;
@@ -94,7 +96,7 @@
       <div id="slow"></div>
       <div id="toast"></div>
       <div id="inspect"></div>
-      <div id="paused"><strong>PAUSED</strong><small>Esc to resume · drag to orbit, scroll to zoom · C camera</small></div>
+      <div id="paused"><strong>PAUSED</strong><small>Esc to resume · drag to orbit, scroll to zoom · Shift+drag for photo mode · C camera</small></div>
       <div id="error" hidden></div>
       <div class="panel">
         <div class="speed"><span id="speed">0</span> <small>km/h</small></div>
