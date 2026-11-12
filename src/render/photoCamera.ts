@@ -60,6 +60,11 @@ const PHOTO = {
    */
   groundClearance: 0.3,
   groundReach: 0.3,
+  /**
+   * An orbit that meets the ground slides along it while that takes at most this much tilt per
+   * radian swung (1: ground rising up to ≈45° across the swing); steeper, it stops.
+   */
+  slideSteepest: 1,
 };
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -267,26 +272,52 @@ export class PhotoCamera {
    * Swings the camera round `orbitAt` as one piece: `across` (rad) about the vertical, `over` (rad)
    * about its own right-hand axis (positive tilts it up), held to the tilt limits. It never swings
    * into the ground (lifting it out afterwards would move the point off its place on screen): a
-   * swing that would drops its tilt, and one that still would doesn't happen.
+   * swing that would is tilted up just enough to stay clear, so the camera slides along the
+   * ground, unless that takes more than `slideSteepest` of tilt per radian swung (the ground
+   * rises too steeply across the swing), where it doesn't happen.
    */
   private orbit(across: number, over: number): void {
     const P = PHOTO;
     const cam = this.camera;
-    const tilt = THREE.MathUtils.clamp(this.pitch + over, -P.pitchMax, P.pitchMax) - this.pitch;
+    const tilt = this.heldTilt(over);
     // How far clear of the ground the camera is now: a swing may not leave it less clear than
     // this, where that's below its clearance (so one that's already low can still swing up).
-    const clear = cam.position.y - this.lowest(cam.position.x, cam.position.z);
-    for (const [turn, lean] of [[across, tilt], [across, 0]]) {
-      _offset.subVectors(cam.position, this.orbitAt);
-      _right.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
-      _offset.applyAxisAngle(_right, lean).applyAxisAngle(UP, turn);
-      _point.addVectors(this.orbitAt, _offset);
-      if (_point.y - this.lowest(_point.x, _point.z) < Math.min(0, clear)) continue;
-      cam.position.copy(_point);
-      this.pitch += lean;
-      this.yaw += turn;
-      return;
+    const clear = Math.min(0, cam.position.y - this.lowest(cam.position.x, cam.position.z));
+    const fits = (lean: number) => this.swung(across, lean).y - this.lowest(_point.x, _point.z) >= clear;
+    let lean = tilt;
+    if (!fits(lean)) {
+      // Slide: tilt the swing toward lifting the camera, by as little as keeps it clear.
+      const most = P.slideSteepest * (Math.abs(across) + Math.abs(tilt));
+      const up = this.swung(across, this.heldTilt(tilt + most)).y;
+      const down = this.swung(across, this.heldTilt(tilt - most)).y;
+      const lift = up >= down ? 1 : -1;
+      const furthest = this.heldTilt(tilt + lift * most);
+      if (!fits(furthest)) return;
+      let near = tilt;
+      let far = furthest;
+      for (let i = 0; i < 10; i++) {
+        const mid = (near + far) / 2;
+        if (fits(mid)) far = mid;
+        else near = mid;
+      }
+      lean = far;
     }
+    cam.position.copy(this.swung(across, lean));
+    this.pitch += lean;
+    this.yaw += across;
+  }
+
+  /** `over` (rad) held so the tilt stays within its limits: what's left of it. */
+  private heldTilt(over: number): number {
+    return THREE.MathUtils.clamp(this.pitch + over, -PHOTO.pitchMax, PHOTO.pitchMax) - this.pitch;
+  }
+
+  /** Where swinging round `orbitAt` by `turn` and `lean` (rad) takes the camera (in _point). */
+  private swung(turn: number, lean: number): THREE.Vector3 {
+    _offset.subVectors(this.camera.position, this.orbitAt);
+    _right.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
+    _offset.applyAxisAngle(_right, lean).applyAxisAngle(UP, turn);
+    return _point.addVectors(this.orbitAt, _offset);
   }
 
   private place(): void {
