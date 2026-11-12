@@ -117,6 +117,11 @@ const SOCKET_RAY_START = 0.4;
 const SOCKET_LIFT = 0.004;
 
 const wireMaterial = new THREE.LineBasicMaterial({ color: '#141416' });
+
+/** A stand-in wire, for compiling the wire's shader at load (see crashWarmUpObjects). */
+export function lightWireWarmUp(): THREE.Line {
+  return new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0.01, 0)]), wireMaterial);
+}
 const raycaster = new THREE.Raycaster();
 const _w = new THREE.Vector3();
 const _turn = new THREE.Quaternion();

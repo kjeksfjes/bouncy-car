@@ -13,7 +13,7 @@ import { Stage } from './render/stage';
 import { Visibility } from './render/visibility';
 import { Traffic } from './traffic';
 import { AiDriver } from './vehicle/aiDriver';
-import { Car, type CarEvents, type CarInput } from './vehicle/car';
+import { Car, crashWarmUpObjects, type CarEvents, type CarInput } from './vehicle/car';
 import { COUPE_70S } from './vehicle/carConfig';
 import { Debris } from './world/debris';
 import { BIOMES } from './world/biome';
@@ -307,9 +307,11 @@ export class Game {
     this.audio.update(gt, this.stage.camera, live);
     this.hud.update(gt, this.car, this.autopilot);
     if (import.meta.env.DEV) this.hud.setWhere(this.describeWhere());
-    // The first frame, with the camera behind the car, compiles the glass for the first crash.
+    // The first frame compiles what a crash first shows (glass shards and their transmission pass,
+    // cracked panes, light wires), so the first crash doesn't stall on it.
     if (!this.warmedUp) {
       this.debris.warmUp();
+      this.stage.warmUp(crashWarmUpObjects());
       this.warmedUp = true;
     }
     this.stage.render();
