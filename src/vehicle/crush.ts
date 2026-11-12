@@ -48,6 +48,27 @@ export interface CrushTuning {
 }
 
 export type CrushEnd = 'front' | 'rear';
+/** The parts of the body that crush independently: the two ends and the roof (they don't overlap). */
+export type CrushArea = CrushEnd | 'roof';
+
+/**
+ * A piece's vertices in one crush area, grouped by rest point: the flat-shaded mesh repeats each
+ * corner once per triangle, and every copy moves the same, so each point is worked out once.
+ */
+interface Patch {
+  /** The distinct rest points (car-local xyz), and the wrinkle noise at each (xyz). */
+  points: Float32Array;
+  noise: Float32Array;
+  /** The vertices at point j are vertices[starts[j] .. starts[j + 1]). */
+  starts: Uint32Array;
+  vertices: Uint32Array;
+}
+
+/**
+ * Patches per blueprint and piece name, built once and shared by every car of that model (their
+ * pieces are built alike). Built when the first car of a model is made, so no crash pays for it.
+ */
+const PATCHES = new WeakMap<CarBlueprint, Map<string, Partial<Record<CrushArea, Patch>>>>();
 
 interface Zone {
   /** −1 = front (−Z), +1 = rear. */
@@ -102,6 +123,15 @@ const WRAP_FOLD_MAX = 0.5;
 
 const _p = new THREE.Vector3();
 const _shift = new THREE.Vector3();
+const _noise = new THREE.Vector3();
+
+/** Wrinkle noise per model, so every car of a model wrinkles alike (and shares its patches). */
+const NOISE = new WeakMap<CarBlueprint, ReturnType<typeof createNoise3D>[]>();
+function noiseFor(bp: CarBlueprint): ReturnType<typeof createNoise3D>[] {
+  let noise = NOISE.get(bp);
+  if (!noise) NOISE.set(bp, (noise = [createNoise3D(), createNoise3D(), createNoise3D()]));
+  return noise;
+}
 
 /**
  * Front and rear crumple zones. Each end tracks how far it has been pushed in, per
@@ -116,9 +146,8 @@ export class Crush {
   private readonly halfWidth: number;
   /** Distance (m) between neighbouring crush columns. */
   private readonly columnGap: number;
-  private readonly noise = [createNoise3D(), createNoise3D(), createNoise3D()];
-  /** Per piece: indices of the vertices inside a crumple zone (computed on first use). */
-  private readonly affected = new Map<CarPiece, Uint32Array>();
+  /** Wrinkle noise, the same for every car of a model (so their shared patches hold it). */
+  private readonly noise: ReturnType<typeof createNoise3D>[];
   private readonly everyVertex = new Map<CarPiece, Uint32Array>();
 
   constructor(
@@ -149,6 +178,66 @@ export class Crush {
     this.halfWidth = Math.max(...bp.halfWidth.map(([, w]) => w));
     this.columnGap = (2 * this.halfWidth) / (COLUMNS - 1);
     this.roof = { columns: new Float32Array(COLUMNS), max: tuning.roofCrushMax, lean: 0, from: firewall, to: rearWall };
+    this.noise = noiseFor(bp);
+  }
+
+  /** Groups each piece's vertices by crush area and rest point (once per model; see Patch). */
+  prepare(pieces: readonly CarPiece[]): void {
+    let byName = PATCHES.get(this.bp);
+    if (!byName) PATCHES.set(this.bp, (byName = new Map()));
+    for (const piece of pieces) {
+      if (piece.glass || piece.rigid || byName.has(piece.name)) continue;
+      byName.set(piece.name, this.buildPatches(piece));
+    }
+  }
+
+  /** Which crush area a car-local rest point lies in, if any. */
+  private areaAt(y: number, z: number): CrushArea | null {
+    const end = this.zoneAt(z);
+    if (end) return end;
+    const R = this.roof;
+    return z > R.from && z < R.to && y > this.deckY(z) ? 'roof' : null;
+  }
+
+  private buildPatches(piece: CarPiece): Partial<Record<CrushArea, Patch>> {
+    const rest = piece.original;
+    const o = piece.origin;
+    const groups: Partial<Record<CrushArea, Map<string, number[]>>> = {};
+    for (let i = 0; i < rest.length / 3; i++) {
+      const x = rest[i * 3] + o.x;
+      const y = rest[i * 3 + 1] + o.y;
+      const z = rest[i * 3 + 2] + o.z;
+      const area = this.areaAt(y, z);
+      if (!area) continue;
+      const map = (groups[area] ??= new Map());
+      const key = `${x},${y},${z}`;
+      const list = map.get(key);
+      if (list) list.push(i);
+      else map.set(key, [i]);
+    }
+    const patches: Partial<Record<CrushArea, Patch>> = {};
+    for (const area of ['front', 'rear', 'roof'] as const) {
+      const map = groups[area];
+      if (!map) continue;
+      const n = map.size;
+      const points = new Float32Array(n * 3);
+      const noise = new Float32Array(n * 3);
+      const starts = new Uint32Array(n + 1);
+      const vertices = new Uint32Array([...map.values()].reduce((sum, l) => sum + l.length, 0));
+      let j = 0;
+      let v = 0;
+      for (const list of map.values()) {
+        const k = list[0] * 3;
+        _p.set(rest[k] + o.x, rest[k + 1] + o.y, rest[k + 2] + o.z).toArray(points, j * 3);
+        this.noiseAt(_p, _shift).toArray(noise, j * 3);
+        starts[j] = v;
+        for (const i of list) vertices[v++] = i;
+        j++;
+      }
+      starts[n] = v;
+      patches[area] = { points, noise, starts, vertices };
+    }
+    return patches;
   }
 
   /** True for car-local points on the cabin above the beltline (where the roof crush applies). */
@@ -230,34 +319,49 @@ export class Crush {
   }
 
   /**
-   * Reshapes every closed body piece to the current crush. Dents made so far ride along:
-   * each piece's `base` (rest shape after crush) moves, and the dent offset on top is kept.
+   * Reshapes the closed body pieces to the current crush of one area (the one just hit: the others
+   * haven't changed). Dents made so far ride along: each piece's `base` (rest shape after crush)
+   * moves, and the dent offset on top is kept.
    * @param loose hinged panels that broke loose in this same crash: they're still being pushed
    *   in with the body around them, so they take the crush too (in their own frame, as if still
    *   closed), instead of keeping the shape they had when they broke loose
    */
-  deform(pieces: readonly CarPiece[], root: THREE.Object3D, loose: { has(piece: CarPiece): boolean } = new Set()): void {
+  deform(area: CrushArea, pieces: readonly CarPiece[], root: THREE.Object3D, loose: { has(piece: CarPiece): boolean } = new Set()): void {
+    const byName = PATCHES.get(this.bp);
     for (const piece of pieces) {
       // Glass panes crack instead; pieces parented to another piece aren't in car-local space.
       if (piece.glass) continue;
       const onCar = piece.state === 'closed' && piece.mesh.parent === root;
       if (!onCar && !(piece.state === 'hinged' && loose.has(piece))) continue;
       const pos = piece.mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
+      const array = pos.array as Float32Array;
       const o = piece.origin;
       const rest = piece.original;
       const base = piece.base;
-      // A rigid piece moves as a whole, by the displacement at its origin; the rest crumples.
-      const shift = piece.rigid ? this.displace(_shift.copy(o)).sub(o) : null;
-      const indices = shift ? this.allVertices(piece) : this.affectedVertices(piece);
-      if (indices.length === 0) continue;
-      for (const i of indices) {
-        const k = i * 3;
-        if (shift) _p.set(rest[k], rest[k + 1], rest[k + 2]).add(shift);
-        else this.displace(_p.set(rest[k] + o.x, rest[k + 1] + o.y, rest[k + 2] + o.z)).sub(o);
-        pos.setXYZ(i, _p.x + pos.getX(i) - base[k], _p.y + pos.getY(i) - base[k + 1], _p.z + pos.getZ(i) - base[k + 2]);
-        base[k] = _p.x;
-        base[k + 1] = _p.y;
-        base[k + 2] = _p.z;
+      if (piece.rigid) {
+        // A rigid piece moves as a whole, by the displacement at its origin.
+        if (this.areaAt(o.y, o.z) !== area) continue;
+        this.displace(_shift.copy(o)).sub(o);
+        for (const i of this.allVertices(piece)) {
+          const k = i * 3;
+          this.moveBase(array, base, k, rest[k] + _shift.x, rest[k + 1] + _shift.y, rest[k + 2] + _shift.z);
+        }
+      } else {
+        const patch = byName?.get(piece.name)?.[area];
+        if (!patch) continue;
+        const { points, noise, starts, vertices } = patch;
+        for (let j = 0; j < starts.length - 1; j++) {
+          const j3 = j * 3;
+          // How far this rest point moves; every vertex on it moves the same.
+          this.displaceWith(_p.fromArray(points, j3), noise[j3], noise[j3 + 1], noise[j3 + 2]);
+          const dx = _p.x - points[j3];
+          const dy = _p.y - points[j3 + 1];
+          const dz = _p.z - points[j3 + 2];
+          for (let v = starts[j]; v < starts[j + 1]; v++) {
+            const k = vertices[v] * 3;
+            this.moveBase(array, base, k, rest[k] + dx, rest[k + 1] + dy, rest[k + 2] + dz);
+          }
+        }
       }
       pos.needsUpdate = true;
       // The fold can lift past the build-time bounds; stale bounds get the piece culled at screen edges.
@@ -265,8 +369,30 @@ export class Crush {
     }
   }
 
+  /** Moves vertex `k` (×3) to a new crushed base, keeping its dent offset on top. */
+  private moveBase(array: Float32Array, base: Float32Array, k: number, x: number, y: number, z: number): void {
+    array[k] += x - base[k];
+    array[k + 1] += y - base[k + 1];
+    array[k + 2] += z - base[k + 2];
+    base[k] = x;
+    base[k + 1] = y;
+    base[k + 2] = z;
+  }
+
+  /** The wrinkle noise at a car-local rest point (xyz, into `out`). */
+  private noiseAt(p: THREE.Vector3, out: THREE.Vector3): THREE.Vector3 {
+    const s = 1 / this.tuning.crushWrinkleSize;
+    return out.set(this.noise[0](p.x * s, p.y * s, p.z * s), this.noise[1](p.x * s, p.y * s, p.z * s), this.noise[2](p.x * s, p.y * s, p.z * s));
+  }
+
   /** Moves a car-local rest position to its crushed place (in place). */
   displace(p: THREE.Vector3): THREE.Vector3 {
+    const n = this.noiseAt(p, _noise);
+    return this.displaceWith(p, n.x, n.y, n.z);
+  }
+
+  /** displace, with the wrinkle noise at `p` given (nx, ny, nz). */
+  private displaceWith(p: THREE.Vector3, nx: number, ny: number, nz: number): THREE.Vector3 {
     const T = this.tuning;
     const bp = this.bp;
     for (const zone of [this.zones.front, this.zones.rear]) {
@@ -292,11 +418,7 @@ export class Crush {
       const shortened = crush * (1 - (1 - arch) ** FALLOFF);
       const bow = t < arch ? (2 / Math.PI) * Math.sqrt(arch * zone.length * shortened) * Math.sin((Math.PI * t) / arch) : 0;
 
-      const s = 1 / T.crushWrinkleSize;
       const wrinkle = T.crushWrinkle * crush * (1 - t);
-      const nx = this.noise[0](p.x * s, p.y * s, p.z * s);
-      const ny = this.noise[1](p.x * s, p.y * s, p.z * s);
-      const nz = this.noise[2](p.x * s, p.y * s, p.z * s);
 
       // Wrapping round the notch: drawn toward the deepest column, gone by the wheel arch (the
       // fender stays off the wheel; behind the arch the body is held by the frame anyway).
@@ -317,10 +439,9 @@ export class Crush {
         const h = Math.min(1, (p.y - deck) / (roof - deck));
         const crush = this.crushAt(R, p.x);
         if (crush > 0 || R.lean !== 0) {
-          const s = 1 / T.crushWrinkleSize;
           const wrinkle = T.crushWrinkle * crush * h;
-          p.y += -crush * h + this.noise[1](p.x * s, p.y * s, p.z * s) * wrinkle;
-          p.x += R.lean * h + Math.sign(p.x) * T.roofBuckle * crush * Math.sin(Math.PI * h) + this.noise[0](p.x * s, p.y * s, p.z * s) * wrinkle;
+          p.y += -crush * h + ny * wrinkle;
+          p.x += R.lean * h + Math.sign(p.x) * T.roofBuckle * crush * Math.sin(Math.PI * h) + nx * wrinkle;
         }
       }
     }
@@ -372,23 +493,6 @@ export class Crush {
   private allVertices(piece: CarPiece): Uint32Array {
     let indices = this.everyVertex.get(piece);
     if (!indices) this.everyVertex.set(piece, (indices = Uint32Array.from({ length: piece.original.length / 3 }, (_, i) => i)));
-    return indices;
-  }
-
-  private affectedVertices(piece: CarPiece): Uint32Array {
-    let indices = this.affected.get(piece);
-    if (!indices) {
-      const list: number[] = [];
-      const rest = piece.original;
-      const o = piece.origin;
-      const R = this.roof;
-      for (let i = 0; i < rest.length / 3; i++) {
-        const z = rest[i * 3 + 2] + o.z;
-        const y = rest[i * 3 + 1] + o.y;
-        if (this.zoneAt(z) || (z > R.from && z < R.to && y > this.deckY(z))) list.push(i);
-      }
-      this.affected.set(piece, (indices = Uint32Array.from(list)));
-    }
     return indices;
   }
 }

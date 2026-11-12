@@ -9,7 +9,7 @@ import type { CarConfig } from './carConfig';
 import { buildCarModel, GLASS_OPACITY, GLASS_TINT, type CarModel, type CarPiece, type WheelVisual } from './carModel';
 import { hullBoxes } from './blueprint';
 import { Crush, type CrushEnd } from './crush';
-import { CarLights } from './lights';
+import { CarLights, lightWireWarmUp } from './lights';
 import { BodyOutline } from './outline';
 import { applyDent, inwardDirection } from './damage';
 import { wearPaint } from './paintWear';
@@ -59,6 +59,20 @@ interface Wheel extends TyreState {
 }
 
 /** Things a car reports as they happen (e.g. for sound). Positions are world space. */
+/** A cracked pane's material, over its crack pattern. */
+function crackedGlass(map: THREE.Texture): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({ map, transparent: true, roughness: 0.1, metalness: 0.3, flatShading: true });
+}
+
+/**
+ * Stand-ins for what only appears on a car in a crash (a cracked pane, a light's wire), for
+ * compiling their shaders at load instead of mid-crash (see Stage.warmUp).
+ */
+export function crashWarmUpObjects(): THREE.Object3D[] {
+  const plane = new THREE.PlaneGeometry(0.01, 0.01);
+  return [new THREE.Mesh(plane, crackedGlass(new THREE.Texture())), lightWireWarmUp()];
+}
+
 export interface CarEvents {
   impact(car: Car, at: THREE.Vector3, severity: number, surface: ContactSurface): void;
   glass(car: Car, at: THREE.Vector3, shattered: boolean): void;
@@ -256,6 +270,7 @@ export class Car {
     this.model = buildCarModel(cfg, paint);
     scene.add(this.model.root);
     this.crush = new Crush(cfg.blueprint, cfg.damage);
+    this.crush.prepare(this.model.pieces);
     this.lights = new CarLights(
       this.model.lights, this.model.root, scene, debris, cfg.damage, this.model.smashedLens,
       new BodyOutline(cfg.blueprint, this.crush, this.model.pieces), debris.field,
@@ -679,7 +694,7 @@ export class Car {
     if (end && square > 0) {
       const before = this.crush.depth(end);
       this.crush.hit(end, local.x, severity * square, surface === 'tree');
-      this.crush.deform(this.model.pieces, this.model.root, this.justLoose);
+      this.crush.deform(end, this.model.pieces, this.model.root, this.justLoose);
       this.fitHullToCrush();
       this.advanceIntoCrush(end, this.crush.depth(end) - before);
     }
@@ -688,7 +703,7 @@ export class Car {
     if (this.crush.inRoof(local) && normal.y > 0) {
       const down = normal.y ** 2;
       this.crush.hitRoof(local.x, severity * down, -normal.x);
-      this.crush.deform(this.model.pieces, this.model.root, this.justLoose);
+      this.crush.deform('roof', this.model.pieces, this.model.root, this.justLoose);
       this.fitHullToCrush();
       if (this.crush.roofDepth() > d.roofGlassBreak) {
         for (const piece of this.model.pieces) if (piece.glass && piece.state !== 'gone') this.shatter(piece);
@@ -856,13 +871,7 @@ export class Car {
       THREE.MathUtils.clamp((p.dot(pane.u) - pane.min.x) / pane.size.x, 0.05, 0.95),
       THREE.MathUtils.clamp((p.dot(pane.v) - pane.min.y) / pane.size.y, 0.05, 0.95),
     );
-    pane.cracked = new THREE.MeshStandardMaterial({
-      map: crackTexture(uv, GLASS_TINT, GLASS_OPACITY),
-      transparent: true,
-      roughness: 0.1,
-      metalness: 0.3,
-      flatShading: true,
-    });
+    pane.cracked = crackedGlass(crackTexture(uv, GLASS_TINT, GLASS_OPACITY));
     piece.mesh.material = pane.cracked;
     this.events?.glass(this, piece.mesh.getWorldPosition(new THREE.Vector3()), false);
   }

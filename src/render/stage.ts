@@ -118,6 +118,8 @@ export class Stage {
   /** The sky the ambient light is baked from, and the warmth it was last baked at. */
   private readonly envSky: THREE.Mesh;
   private bakedWarmth = 0;
+  /** Bound only while compiling shaders for render targets (see compileForTargets). */
+  private readonly compileTarget = new THREE.WebGLRenderTarget(1, 1);
 
   constructor(container: HTMLElement) {
     installFogFade();
@@ -220,6 +222,39 @@ export class Stage {
   }
 
   render(): void {
+    const programs = this.programCount();
     this.renderer.render(this.scene, this.camera);
+    // Something new on screen just compiled its shaders; compile its render-target versions now
+    // too (see compileForTargets), in this already slow frame, rather than in a crash later.
+    if (this.programCount() > programs) this.compileForTargets();
+  }
+
+  private programCount(): number {
+    return this.renderer.info.programs?.length ?? 0;
+  }
+
+  /**
+   * Compiles the shaders of everything in the scene for drawing into a render target, as the
+   * glass's transmission pass does (it draws the scene behind see-through glass, in linear colour),
+   * so the first shattered window near something new doesn't stall compiling them.
+   */
+  private compileForTargets(): void {
+    this.renderer.setRenderTarget(this.compileTarget);
+    this.renderer.compile(this.scene, this.camera);
+    this.renderer.setRenderTarget(null);
+  }
+
+  /**
+   * Compiles the shaders of everything in the scene (on screen or not), plus `extra` objects that
+   * only show up later (put in the scene just for this), for the screen and for render targets,
+   * so they don't compile mid-game in a visible hitch.
+   */
+  warmUp(extra: THREE.Object3D[]): void {
+    const group = new THREE.Group();
+    group.add(...extra);
+    this.scene.add(group);
+    this.renderer.compile(this.scene, this.camera);
+    this.compileForTargets();
+    this.scene.remove(group);
   }
 }
