@@ -348,7 +348,11 @@ export function engineParts(cfg: CarConfig, mat: EngineMaterials): { engine: Par
   const apronZ = (A.from + apronTo) / 2;
   const along = Math.ceil(apronLength / 0.1);
   let outer = Infinity;
-  for (let z = A.from; z <= apronTo; z += 0.05) outer = Math.min(outer, sideHalfWidth(cfg.blueprint, z, A.top) - 0.045);
+  // Inside the fender (0.03 thick) with room to spare, at the deck's top and underside: over the
+  // arch the fender tucks in toward its lip.
+  for (let z = A.from; z <= apronTo; z += 0.05) {
+    for (const h of [A.top, A.top - A.thickness]) outer = Math.min(outer, sideHalfWidth(cfg.blueprint, z, h) - 0.045);
+  }
   const deckWidth = outer - A.edge;
   // The slope from the deck's inner edge down to the rail's outer top corner.
   const slopeFrom = new THREE.Vector2(A.edge, A.top - A.thickness / 2);
@@ -390,7 +394,8 @@ export function engineParts(cfg: CarConfig, mat: EngineMaterials): { engine: Par
     }
   }
   // The loom runs along the left deck's outer edge, outside the tower, on to the headlights.
-  const loomX = -(outer - 0.09);
+  // Between the tower's outside (x 0.80) and the fender bolts (outer − 0.02).
+  const loomX = -(outer - 0.065);
   tube([[-0.62, 0.8, wall - 0.03], [loomX, A.top + 0.02, wall - 0.12], [loomX, A.top + 0.013, -1.3], [loomX, A.top + 0.013, -1.7], [loomX, A.top + 0.015, A.from + 0.02], [-0.72, 0.76, rz - 0.1], [-0.7, 0.73, rz - 0.2]], 0.011, mat.dark);
   for (const z of [-1.1, -1.75]) put(new THREE.BoxGeometry(0.025, 0.025, 0.03), mat.dark, loomX, A.top + 0.012, z);
   put(new THREE.BoxGeometry(0.09, 0.04, 0.06), mat.dark, 0.72, A.top + 0.02, wall - 0.12);

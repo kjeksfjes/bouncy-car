@@ -173,11 +173,17 @@ export function endShift(bp: CarBlueprint, x: number, h: number, z: number): num
   return at(bp.nose, z - bp.front) - at(bp.tail, bp.rear - z);
 }
 
-/** Half width of the body's side at `z` and height `h` (above the drawing's ground line). */
+/**
+ * Half width of the body's side at `z` and height `h` (above the drawing's ground line). Over an
+ * arch the side's profile is squeezed in above it, as sideSection builds it (below the arch's top
+ * it's the lip's width).
+ */
 export function sideHalfWidth(bp: CarBlueprint, z: number, h: number): number {
   const rocker = sample(bp.rocker, z);
   const deck = sample(bp.deck, z);
-  return sample(bp.halfWidth, z) * sample(bp.side, (h - rocker) / (deck - rocker));
+  const from = (Math.max(rocker, archHeight(bp, z)) - rocker) / (deck - rocker);
+  const f = (h - rocker) / (deck - rocker);
+  return sample(bp.halfWidth, z) * sample(bp.side, Math.max(0, (f - from) / (1 - from)));
 }
 
 /** `recess` is drawn like `dark` but thin-walled: lamp recesses sit right behind the panel edges. */
