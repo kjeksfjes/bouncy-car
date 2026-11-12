@@ -372,9 +372,11 @@ export const COUPE_70S: CarConfig = {
     glancingChips: 0.35,
     flakePerDv: 0.18,
     flakeReach: 0.6,
-    // Rock grinds the paint: fully scratched after ≈0.3 m of sliding on the same spot.
+    // Rock grinds the paint: fully scratched after ≈0.3 m of sliding on the same spot. What rests
+    // against it: panels within 6 cm of the outermost, up to 0.5 m past the hull's contacts.
     scratchPerMetre: 3,
-    scratchReach: 0.35,
+    scratchReach: 0.5,
+    scratchDepth: 0.06,
     scratchFrom: 0.8,
     slideScratches: { tree: 0.15, metal: 0.25 },
     // Round a hit: a 5 m/s hit over toughness scratches its spot about halfway.
