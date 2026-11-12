@@ -12,7 +12,7 @@ import { Crush, type CrushEnd } from './crush';
 import { CarLights, lightWireWarmUp } from './lights';
 import { BodyOutline } from './outline';
 import { applyDent, inwardDirection } from './damage';
-import { wearPaint } from './paintWear';
+import { grindPaint, wearPaint } from './paintWear';
 import { HingedPanels, createPanelBody } from './panels';
 import { sample } from './blueprint';
 import { Smoke } from '../render/smoke';
@@ -127,6 +127,11 @@ const _contactLocal = new THREE.Vector3();
 const _contactNormal = new THREE.Vector3();
 const _qInv = new THREE.Quaternion();
 const _hitWear = { chips: 1, scratches: 1 };
+/** A touching pair's points, for grinding: a box resting flat touches at its four corners, a few more on rough ground. */
+const MAX_GRIND_CONTACTS = 8;
+const _grindContacts = Array.from({ length: MAX_GRIND_CONTACTS }, () => new THREE.Vector3());
+const _grindNormal = new THREE.Vector3();
+const _grindCentre = new THREE.Vector3();
 /** World-space move of the car by its crush (see advanceIntoCrush). */
 const _shift = new THREE.Vector3();
 
@@ -539,20 +544,24 @@ export class Car {
     let scrapeFound = false;
     for (const own of this.colliders.values()) {
       this.world.contactPairsWith(own, (other) => {
-        let scratched = false;
+        // All of the pair's touching points: the body grinds wherever it rests against `other`.
+        let count = 0;
+        _grindNormal.set(0, 0, 0);
         this.forEachContact(own, other, (local, normal) => {
-          this.bodyTouching = true;
-          // One scratch per touching pair and step is plenty (and keeps it cheap).
-          if (scratched) return;
-          scratched = true;
-          const speed = this.scratchPaint(local, normal, other);
-          // The scrape heard and seen is the fastest-sliding contact.
-          if (scrapeFound && speed <= this.scrapeSpeed) return;
-          scrapeFound = true;
-          this.scrapeSpeed = speed;
-          this.scrapePoint.copy(this.localToWorld(local));
-          this.scrapeSurface = surfaceOf(other);
+          if (count === MAX_GRIND_CONTACTS) return;
+          _grindContacts[count++].copy(local);
+          _grindNormal.add(normal);
         });
+        if (count === 0) return;
+        this.bodyTouching = true;
+        _grindNormal.normalize();
+        const speed = this.scratchPaint(_grindContacts, count, _grindNormal, other);
+        // The scrape heard and seen is the fastest-sliding pair.
+        if (scrapeFound && speed <= this.scrapeSpeed) return;
+        scrapeFound = true;
+        this.scrapeSpeed = speed;
+        this.scrapePoint.copy(this.localToWorld(_grindCentre));
+        this.scrapeSurface = surfaceOf(other);
       });
     }
     if (scrapeFound && this.scrapeSurface === 'ground') {
@@ -613,13 +622,17 @@ export class Car {
 
   /**
    * Scratches the paint where the body slides along something hard (rock, a tree, a boulder,
-   * another car; snow and grass don't): by how far the contact point slid this step, along the slide.
-   * @param local contact point, car-local
+   * another car; snow and grass don't): wherever it rests against it, by how far it slid this
+   * step, along the slide. Leaves the contacts' middle in `_grindCentre`.
+   * @param contacts the touching points (the first `count`), car-local
    * @param normal contact normal pointing out of the car (car-local)
-   * @returns how fast the contact slides (m/s), scratched or not
+   * @returns how fast the body slides there (m/s), scratched or not
    */
-  private scratchPaint(local: THREE.Vector3, normal: THREE.Vector3, other: RAPIER.Collider): number {
+  private scratchPaint(contacts: readonly THREE.Vector3[], count: number, normal: THREE.Vector3, other: RAPIER.Collider): number {
     const d = this.cfg.damage;
+    const local = _grindCentre.set(0, 0, 0);
+    for (let c = 0; c < count; c++) local.add(contacts[c]);
+    local.divideScalar(count);
     const slide = this.slideAt(local, normal, other);
     const speed = slide.length();
     if (speed < d.scratchFrom) return speed;
@@ -636,7 +649,10 @@ export class Car {
       grind.surface = surface;
     }
     const share = surface === 'tree' ? d.slideScratches.tree : surface === 'metal' ? d.slideScratches.metal : 1;
-    wearPaint(this.model.pieces, local, normal, d.scratchReach, 0, speed * PHYSICS_STEP * d.scratchPerMetre * share, 0, slide.divideScalar(speed));
+    const scratch = speed * PHYSICS_STEP * d.scratchPerMetre * share;
+    // Rock (boulders, rock faces, stony ground) leaves its dust in the scratches.
+    const dust = surface === 'rock' || surface === 'ground' ? scratch : 0;
+    grindPaint(this.model.pieces, contacts, count, normal, d.scratchReach, d.scratchDepth, scratch, slide.divideScalar(speed), dust);
     return speed;
   }
 

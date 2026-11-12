@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+import { createNoise3D } from 'simplex-noise';
+import { mulberry32 } from '../world/noise';
 import type { CarPiece } from './carModel';
 
 /** Paint wear feel values (part of the car's damage config). */
@@ -11,9 +13,14 @@ export interface WearTuning {
   /** Big flakes laid round a head-on hit, per m/s of Δv over toughness (fewer the more glancing), and their reach (× dentRadius). */
   flakePerDv: number;
   flakeReach: number;
-  /** Scratches from the body dragging along something: per metre slid, and their reach (m, round each contact). */
+  /**
+   * Scratches from the body dragging along something, per metre slid, wherever the body rests
+   * against it: every panel within `scratchDepth` (m) of the part that sticks out furthest toward
+   * it, up to `scratchReach` (m) round the contacts (a box's corners when it lies flat).
+   */
   scratchPerMetre: number;
   scratchReach: number;
+  scratchDepth: number;
   /** Slower than this (m/s) a contact doesn't scratch. */
   scratchFrom: number;
   /** Sliding scratches on bark and on another car, as a share of those on rock (rock faces, stony ground, boulders). */
@@ -97,36 +104,48 @@ const LOOK = {
   /** How chipped, and how flaked, a crease gets at most on its own (a hit there adds to it). */
   creaseWear: 0.9,
   creaseFlake: 0.5,
-  /** Scratch lines: noise stretched along the slide (features per metre across the lines and along them). */
-  scratchAcross: 60,
-  scratchAlong: 3,
-  /** Half width of a line (in that noise) at full scratching; the deepest middle shows bare metal. */
-  scratchWidth: 0.07,
   /**
-   * Of those lines, only stretches show as scratches: where slower noise (× `segmentAcross` and
-   * `segmentAlong` of the line noise's scale) passes `segmentFrom`, lowered by `segmentSpread` × wear.
+   * Streaks: straight lines along the slide. Tubes run along it, one per cell of a grid across it
+   * (`cells` per metre), at a random spot in the cell, `radiusMin`..`radiusMax` of a cell thick;
+   * a panel cuts them into parallel streaks. A tube is there when its hash is under `density` ×
+   * how far the wear is from `from` to `full`, and it shows in stretches (noise along it, `breaks`
+   * per metre), more of it the more worn (`gapFrom` at the start to `gapTo` at full wear).
+   * Fine lines scratch the clear coat; gouges go through to primer, the deepest to bare metal.
+   * Gouge edges are ragged: their thickness wavers by `ragged` (share) along them, `raggedScale` per metre.
    */
-  segmentAcross: 0.12,
-  segmentAlong: 0.6,
-  segmentFrom: 0.55,
-  segmentSpread: 0.45,
-  /** How much a scratched coat lightens toward white, and how rough it turns. */
-  scratchLighten: 0.5,
-  scratchRoughness: 0.8,
+  fine: { cells: 120, radiusMin: 0.1, radiusMax: 0.35, density: 0.9, from: 0, full: 0.6, breaks: 3, gapFrom: 0.5, gapTo: -0.3 },
+  gouge: { cells: 40, radiusMin: 0.06, radiusMax: 0.2, density: 1, from: 0.15, full: 0.7, breaks: 1, gapFrom: 0.6, gapTo: 0 },
+  ragged: 0.45,
+  raggedScale: 30,
+  /** A gouge's middle shows bare metal: none of them below `gougeMetalFrom` of scratch wear, half of them at full. */
+  gougeMetalFrom: 0.5,
+  gougeMetal: 0.5,
+  /**
+   * The slide's direction is snapped to steps of this (radians, 5°), blending the four nearest,
+   * so each set of lines stays dead straight: a direction that drifts across the panel bends them.
+   */
+  directionStep: Math.PI / 36,
+  /** How far a fine line lightens toward pale grey, and how rough it is. */
+  lineLighten: 0.45,
+  lineRoughness: 0.85,
+  /** Rock dust ground into the scratches (at full dust). */
+  dustInLines: 0.6,
 };
 
 const PRIMER = new THREE.Color('#8e8b85');
 const METAL = new THREE.Color('#878c91');
+const LINE = new THREE.Color('#e8e6e0');
+const DUST = new THREE.Color('#8f8577');
 
 /**
  * Gives a body piece's geometry the wear attributes the paint shader reads: its rest shape (for
- * creases and to pin the patterns), wear (chips, scratches, flakes; 0..1 each) and the scratches'
+ * creases and to pin the patterns), wear (chips, scratches, flakes, rock dust; 0..1 each) and the scratches'
  * direction (geometry-local, unnormalised, sign-free). `rest` is shared, not copied: keep it unchanged.
  */
 export function addWearAttributes(geometry: THREE.BufferGeometry, rest: Float32Array): void {
   const n = rest.length / 3;
   geometry.setAttribute('aRest', new THREE.BufferAttribute(rest, 3));
-  geometry.setAttribute('aWear', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+  geometry.setAttribute('aWear', new THREE.BufferAttribute(new Float32Array(n * 4), 4));
   geometry.setAttribute('aScrape', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
 }
 
@@ -148,8 +167,8 @@ const WEAR_FALLOFF = 3;
 /**
  * Wears the paint of every closed piece near `point` (car-local), on faces turned toward `normal`
  * (car-local, unit, out of the car: see FACING_FROM), falling off smoothly over `radius`:
- * `chip`, `scratch` and `flake` are added (each capped at 1); scratches run along `dir`
- * (car-local, unit). Pieces are unrotated children of the car root, like for applyDent.
+ * `chip`, `scratch`, `flake` and `dust` (rock dust ground in with the scratches) are added
+ * (each capped at 1); scratches run along `dir` (car-local, unit). Pieces are unrotated children of the car root, like for applyDent.
  */
 export function wearPaint(
   pieces: CarPiece[],
@@ -160,6 +179,7 @@ export function wearPaint(
   scratch: number,
   flake: number,
   dir?: THREE.Vector3,
+  dust = 0,
 ): void {
   for (const piece of pieces) {
     if (piece.glass || piece.rides || piece.state !== 'closed' || piece.bounds.distanceToPoint(point) > radius) continue;
@@ -178,11 +198,12 @@ export function wearPaint(
       const facing = THREE.MathUtils.smoothstep(_n.fromBufferAttribute(normals, i).dot(normal), FACING_FROM, FACING_TO);
       if (facing <= 0) continue;
       const f = (1 - d / radius) ** WEAR_FALLOFF * facing;
-      wear.setXYZ(
+      wear.setXYZW(
         i,
         Math.min(1, wear.getX(i) + chip * f),
         Math.min(1, wear.getY(i) + scratch * f),
         Math.min(1, wear.getZ(i) + flake * f),
+        Math.min(1, wear.getW(i) + dust * f),
       );
       if (dir && scratch > 0) {
         // Lines have no sign: add the direction the way that agrees with what's there.
@@ -199,10 +220,165 @@ export function wearPaint(
   }
 }
 
+const _u = new THREE.Vector3();
+const _w = new THREE.Vector3();
+const _centre = new THREE.Vector3();
+
+/**
+ * How the edge of a grind frays (feel values). What counts as touching reaches `depth` × 1 ± `ragged`
+ * in, varying over the panel (noise, `raggedScale` per metre), so the edge wanders instead of
+ * following a straight line across a flat panel. A vertex that only just touches wears no further
+ * than √(how much it touches), so the edge stays thin however long it grinds. The touching area
+ * fades out over the last `fadeFrom`..1 of `reach` past the contacts.
+ */
+const GRIND_EDGE = { ragged: 0.7, raggedScale: 2.5, fadeFrom: 0.3 };
+
+/** Per geometry: the edge noise (−1..1) at each vertex's rest position. */
+const edgeNoise = new WeakMap<THREE.BufferGeometry, Float32Array>();
+const noise3 = createNoise3D(mulberry32(5023));
+
+function edgeNoiseOf(geometry: THREE.BufferGeometry): Float32Array {
+  let out = edgeNoise.get(geometry);
+  if (out) return out;
+  const rest = (geometry.getAttribute('aRest') as THREE.BufferAttribute).array;
+  const s = GRIND_EDGE.raggedScale;
+  out = new Float32Array(rest.length / 3);
+  for (let i = 0, k = 0; i < out.length; i++, k += 3) out[i] = noise3(rest[k] * s, rest[k + 1] * s, rest[k + 2] * s);
+  edgeNoise.set(geometry, out);
+  return out;
+}
+
+/**
+ * Scratches the paint wherever the body rests against what it slides on: of the faces turned
+ * toward it (see FACING_FROM) within `reach` (m, across the contact plane) of the `contacts`'
+ * spread, those within about `depth` (m, see GRIND_EDGE) of the furthest-out one along `normal`,
+ * the most at that one. Adds `scratch` and `dust` (capped at 1, and lower toward the edge);
+ * scratches run along `dir`. All car-local; `normal` and `dir` unit, `normal` out of the car.
+ * Pieces are unrotated children of the car root.
+ */
+export function grindPaint(
+  pieces: CarPiece[],
+  contacts: readonly THREE.Vector3[],
+  count: number,
+  normal: THREE.Vector3,
+  reach: number,
+  depth: number,
+  scratch: number,
+  dir: THREE.Vector3,
+  dust: number,
+): void {
+  const E = GRIND_EDGE;
+  // The contacts' spread across the contact plane, and a ball round it to skip pieces by.
+  _u.set(Math.abs(normal.x) < 0.9 ? 1 : 0, Math.abs(normal.x) < 0.9 ? 0 : 1, 0);
+  _u.addScaledVector(normal, -_u.dot(normal)).normalize();
+  _w.crossVectors(normal, _u);
+  let u0 = Infinity;
+  let u1 = -Infinity;
+  let w0 = Infinity;
+  let w1 = -Infinity;
+  _centre.set(0, 0, 0);
+  for (let c = 0; c < count; c++) {
+    const u = contacts[c].dot(_u);
+    const w = contacts[c].dot(_w);
+    u0 = Math.min(u0, u);
+    u1 = Math.max(u1, u);
+    w0 = Math.min(w0, w);
+    w1 = Math.max(w1, w);
+    _centre.add(contacts[c]);
+  }
+  _centre.divideScalar(count);
+  const deepest = depth * (1 + E.ragged);
+  const ball = Math.hypot(u1 - u0, w1 - w0) / 2 + reach + deepest;
+  const ux = _u.x, uy = _u.y, uz = _u.z;
+  const wx = _w.x, wy = _w.y, wz = _w.z;
+  const nx = normal.x, ny = normal.y, nz = normal.z;
+
+  // The vertices near that spread facing the surface: how far out toward it each is, how far in
+  // still touches there, and how squarely it faces the surface (less toward the spread's edge).
+  let found = 0;
+  let furthest = -Infinity;
+  for (let p = 0; p < pieces.length; p++) {
+    const piece = pieces[p];
+    if (piece.glass || piece.rides || piece.state !== 'closed' || piece.bounds.distanceToPoint(_centre) > ball) continue;
+    const geometry = piece.mesh.geometry;
+    if (!geometry.getAttribute('aWear')) continue;
+    const pos = (geometry.getAttribute('position') as THREE.BufferAttribute).array;
+    const normals = (geometry.getAttribute('normal') as THREE.BufferAttribute).array;
+    let ragged: Float32Array | undefined;
+    const { x: ox, y: oy, z: oz } = piece.mesh.position;
+    for (let i = 0, k = 0; k < pos.length; i++, k += 3) {
+      const facing = normals[k] * nx + normals[k + 1] * ny + normals[k + 2] * nz;
+      if (facing <= FACING_FROM) continue;
+      const x = pos[k] + ox;
+      const y = pos[k + 1] + oy;
+      const z = pos[k + 2] + oz;
+      const u = x * ux + y * uy + z * uz;
+      const du = Math.max(u0 - u, u - u1, 0);
+      if (du > reach) continue;
+      const w = x * wx + y * wy + z * wz;
+      const dw = Math.max(w0 - w, w - w1, 0);
+      if (dw > reach) continue;
+      const outside = Math.hypot(du, dw) / reach;
+      if (outside >= 1) continue;
+      const out = x * nx + y * ny + z * nz;
+      if (out < furthest - deepest) continue;
+      furthest = Math.max(furthest, out);
+      ragged ??= edgeNoiseOf(geometry);
+      if (found === _found.piece.length) growFound();
+      _found.piece[found] = p;
+      _found.vertex[found] = i;
+      _found.out[found] = out;
+      _found.depth[found] = depth * (1 + E.ragged * ragged[i]);
+      _found.facing[found] = THREE.MathUtils.smoothstep(facing, FACING_FROM, FACING_TO) * (1 - THREE.MathUtils.smoothstep(outside, E.fadeFrom, 1));
+      found++;
+    }
+  }
+
+  let last: CarPiece | undefined;
+  let wear!: THREE.BufferAttribute;
+  let scrape!: THREE.BufferAttribute;
+  for (let c = 0; c < found; c++) {
+    const f = (1 - (furthest - _found.out[c]) / _found.depth[c]) * _found.facing[c];
+    if (f <= 0) continue;
+    const piece = pieces[_found.piece[c]];
+    if (piece !== last) {
+      last = piece;
+      wear = piece.mesh.geometry.getAttribute('aWear') as THREE.BufferAttribute;
+      scrape = piece.mesh.geometry.getAttribute('aScrape') as THREE.BufferAttribute;
+      wear.needsUpdate = true;
+      scrape.needsUpdate = true;
+    }
+    const i = _found.vertex[c];
+    const most = Math.sqrt(f);
+    const was = wear.getY(i);
+    wear.setY(i, Math.max(was, Math.min(was + scratch * f, most)));
+    wear.setW(i, Math.max(wear.getW(i), Math.min(wear.getW(i) + dust * f, most)));
+    _s.fromBufferAttribute(scrape, i);
+    _s.addScaledVector(dir, (_s.dot(dir) < 0 ? -1 : 1) * scratch * f);
+    scrape.setXYZ(i, _s.x, _s.y, _s.z);
+  }
+}
+
+/** grindPaint's candidate vertices, kept between calls (grown as needed). */
+const _found = { piece: new Int32Array(4096), vertex: new Int32Array(4096), out: new Float32Array(4096), depth: new Float32Array(4096), facing: new Float32Array(4096) };
+function growFound(): void {
+  const n = _found.piece.length * 2;
+  const grow = <T extends Int32Array | Float32Array>(a: T, make: (n: number) => T): T => {
+    const b = make(n);
+    b.set(a);
+    return b;
+  };
+  _found.piece = grow(_found.piece, (k) => new Int32Array(k));
+  _found.vertex = grow(_found.vertex, (k) => new Int32Array(k));
+  _found.out = grow(_found.out, (k) => new Float32Array(k));
+  _found.depth = grow(_found.depth, (k) => new Float32Array(k));
+  _found.facing = grow(_found.facing, (k) => new Float32Array(k));
+}
+
 /**
  * Makes a paint material draw wear: chips (a primer ring round bare metal) where the attributes
- * say or where a face has creased away from its rest direction, and fine scratch lines along the
- * scrape direction. Geometry without the attributes reads them as zero and shows clean paint.
+ * say or where a face has creased away from its rest direction, and grinding along the scrape
+ * direction: straight lines and gouges, dusted with rock. Geometry without the attributes reads them as zero and shows clean paint.
  * Chains to the global onBeforeCompile (the fog haze's uniforms, see fogFade).
  */
 export function paintWithWear(material: THREE.MeshStandardMaterial): void {
@@ -213,16 +389,18 @@ export function paintWithWear(material: THREE.MeshStandardMaterial): void {
     THREE.Material.prototype.onBeforeCompile.call(material, shader, renderer);
     shader.uniforms.wearPrimer = { value: PRIMER };
     shader.uniforms.wearMetal = { value: METAL };
+    shader.uniforms.wearLine = { value: LINE };
+    shader.uniforms.wearDust = { value: DUST };
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
         `#include <common>
 attribute vec3 aRest;
-attribute vec3 aWear;
+attribute vec4 aWear;
 attribute vec3 aScrape;
 varying vec3 vWearRest;
 varying vec3 vWearNow;
-varying vec3 vWear;
+varying vec4 vWear;
 varying vec3 vWearScrape;`,
       )
       .replace(
@@ -239,19 +417,21 @@ vWearScrape = aScrape;`,
         `#include <common>
 uniform vec3 wearPrimer;
 uniform vec3 wearMetal;
+uniform vec3 wearLine;
+uniform vec3 wearDust;
 varying vec3 vWearRest;
 varying vec3 vWearNow;
-varying vec3 vWear;
+varying vec4 vWear;
 varying vec3 vWearScrape;
 ${WEAR_GLSL}`,
       )
       .replace(
         '#include <color_fragment>',
         `#include <color_fragment>
-// Paint wear: 0..1 shares of this fragment that show primer, bare metal and scratched coat.
+// Paint wear: 0..1 shares of this fragment that show primer, bare metal and scratch lines.
 float wearPrimerAmt = 0.0;
 float wearMetalAmt = 0.0;
-float wearScratchAmt = 0.0;
+float wearLineAmt = 0.0;
 {
   vec3 restFace = cross( dFdx( vWearRest ), dFdy( vWearRest ) );
   vec3 nowFace = cross( dFdx( vWearNow ), dFdy( vWearNow ) );
@@ -297,37 +477,53 @@ float wearScratchAmt = 0.0;
     wearMetalAmt = 1.0 - smoothstep( 1.0 - aaMetal, 1.0 + aaMetal, inMetal );
     wearPrimerAmt = max( 0.0, 1.0 - smoothstep( 1.0 - aa, 1.0 + aa, inPrimer ) - wearMetalAmt );
   }
+  // Grinding: fine lines through the clear coat and gouges to primer and metal,
+  // straight along the slide. Its direction is snapped to steps (the four nearest blended, each
+  // as a share of the lines) so every set of lines stays straight.
   float scratch = vWear.y;
   float dirLength = length( vWearScrape );
-  if ( scratch > 0.001 && dirLength > 1e-5 && length( restFace ) > 1e-12 ) {
-    vec3 faceN = normalize( restFace );
+  if ( scratch > 0.001 && dirLength > 1e-5 ) {
     vec3 along = vWearScrape / dirLength;
-    along = normalize( along - faceN * dot( along, faceN ) + 1e-6 );
-    vec3 across = cross( faceN, along );
-    vec3 q = vec3( dot( vWearRest, across ) * ${f(L.scratchAcross)}, dot( vWearRest, along ) * ${f(L.scratchAlong)}, dot( vWearRest, faceN ) * 4.0 );
-    float line = abs( wearNoise( q ) );
-    // Only stretches of the lines show, as separate scratches: more of them the more it's scratched.
-    float from = ${f(L.segmentFrom)} - ${f(L.segmentSpread)} * scratch;
-    float segment = smoothstep( from, from + 0.1, wearNoise( vec3( q.x * ${f(L.segmentAcross)}, q.y * ${f(L.segmentAlong)}, q.z ) + 23.0 ) );
-    float width = ${f(L.scratchWidth)} * ( 0.5 + 0.5 * scratch );
-    // Lines finer than a pixel blur into a faint scuff instead of shimmering.
-    float pixel = fwidth( q.x );
-    float sharp = clamp( 1.5 - pixel, 0.0, 1.0 );
-    float aa = fwidth( line ) + 1e-4;
-    float lines = ( 1.0 - smoothstep( width - aa, width + aa, line ) ) * segment;
-    wearScratchAmt = mix( width * 3.0 * segment, lines, sharp );
-    wearMetalAmt = max( wearMetalAmt, ( 1.0 - smoothstep( width * 0.35 - aa, width * 0.35 + aa, line ) ) * segment * smoothstep( 0.6, 1.0, scratch ) * sharp );
+    along *= along.z < 0.0 ? -1.0 : 1.0;
+    vec2 turn = vec2( atan( along.x, along.z ), asin( clamp( along.y, -1.0, 1.0 ) ) ) / ${f(L.directionStep)};
+    vec2 base = floor( turn );
+    vec2 t = turn - base;
+    float fineAmt = smoothstep( ${f(L.fine.from)}, ${f(L.fine.full)}, scratch );
+    float gougeAmt = smoothstep( ${f(L.gouge.from)}, ${f(L.gouge.full)}, scratch );
+    float fineGap = mix( ${f(L.fine.gapFrom)}, ${f(L.fine.gapTo)}, fineAmt );
+    float gougeGap = mix( ${f(L.gouge.gapFrom)}, ${f(L.gouge.gapTo)}, gougeAmt );
+    float metalShare = ${f(L.gougeMetal)} * smoothstep( ${f(L.gougeMetalFrom)}, 1.0, scratch );
+    float gouge = 0.0;
+    float gougeMetal = 0.0;
+    for ( int i = 0; i < 4; i++ ) {
+      vec2 o = vec2( mod( float( i ), 2.0 ), floor( float( i ) / 2.0 ) );
+      vec2 share = mix( 1.0 - t, t, o );
+      float w = share.x * share.y;
+      if ( w < 0.02 ) continue;
+      vec2 q = ( base + o ) * ${f(L.directionStep)};
+      vec3 dir = vec3( cos( q.y ) * sin( q.x ), sin( q.y ), cos( q.y ) * cos( q.x ) );
+      float seed = dot( base + o, vec2( 3.1, 7.3 ) );
+      vec3 fine = wearStreaks( vWearRest, dir, ${f(L.fine.cells)}, vec2( ${f(L.fine.radiusMin)}, ${f(L.fine.radiusMax)} ), ${f(L.fine.density)} * fineAmt * w, ${f(L.fine.breaks)}, fineGap, seed, vec2( 0.0 ) );
+      vec3 g = wearStreaks( vWearRest, dir, ${f(L.gouge.cells)}, vec2( ${f(L.gouge.radiusMin)}, ${f(L.gouge.radiusMax)} ), ${f(L.gouge.density)} * gougeAmt * w, ${f(L.gouge.breaks)}, gougeGap, seed + 50.0, vec2( ${f(L.ragged)}, ${f(L.raggedScale)} ) );
+      wearLineAmt = max( wearLineAmt, fine.x );
+      gouge = max( gouge, g.x );
+      gougeMetal = max( gougeMetal, g.x * step( g.y, metalShare ) * smoothstep( 0.35, 0.55, g.z ) );
+    }
+    wearMetalAmt = max( wearMetalAmt, gougeMetal );
+    wearPrimerAmt = max( wearPrimerAmt, gouge - wearMetalAmt );
   }
-  wearScratchAmt = clamp( wearScratchAmt - wearMetalAmt - wearPrimerAmt, 0.0, 1.0 );
-  diffuseColor.rgb = mix( diffuseColor.rgb, mix( diffuseColor.rgb, vec3( 1.0 ), ${f(L.scratchLighten)} ), wearScratchAmt );
+  float dust = vWear.w;
+  vec3 line = mix( mix( diffuseColor.rgb, wearLine, ${f(L.lineLighten)} ), wearDust, ${f(L.dustInLines)} * dust );
+  wearLineAmt = clamp( wearLineAmt - wearMetalAmt - wearPrimerAmt, 0.0, 1.0 );
+  diffuseColor.rgb = mix( diffuseColor.rgb, line, wearLineAmt );
   diffuseColor.rgb = mix( diffuseColor.rgb, wearPrimer, wearPrimerAmt );
-  diffuseColor.rgb = mix( diffuseColor.rgb, wearMetal, wearMetalAmt );
+  diffuseColor.rgb = mix( diffuseColor.rgb, mix( wearMetal, wearDust, 0.3 * dust ), wearMetalAmt );
 }`,
       )
       .replace(
         '#include <roughnessmap_fragment>',
         `#include <roughnessmap_fragment>
-roughnessFactor = mix( roughnessFactor, ${f(L.scratchRoughness)}, wearScratchAmt + wearPrimerAmt );
+roughnessFactor = mix( roughnessFactor, ${f(L.lineRoughness)}, wearLineAmt + wearPrimerAmt );
 roughnessFactor = mix( roughnessFactor, 0.5, wearMetalAmt );`,
       )
       .replace(
@@ -340,7 +536,7 @@ metalnessFactor = mix( metalnessFactor, 0.5, wearMetalAmt );`,
 }
 
 /**
- * The wear shader's helpers: a hash, the chip field, and 3D simplex noise (≈ −1..1) from Ashima
+ * The wear shader's helpers: a hash, the chip field, the streaks, and 3D simplex noise (≈ −1..1) from Ashima
  * Arts / Stefan Gustavson's webgl-noise (MIT licence, https://github.com/ashima/webgl-noise),
  * renamed to keep clear of other shader code.
  */
@@ -419,5 +615,32 @@ float wearNoise( vec3 v ) {
   vec4 m = max( 0.6 - vec4( dot( x0, x0 ), dot( x1, x1 ), dot( x2, x2 ), dot( x3, x3 ) ), 0.0 );
   m = m * m;
   return 42.0 * dot( m * m, vec4( dot( p0, x0 ), dot( p1, x1 ), dot( p2, x2 ), dot( p3, x3 ) ) );
+}
+// Straight streaks along 'dir' (unit): tubes laid along it, one per cell of a grid on the plane
+// square to it ('cells' per metre), each at a random spot in its cell, radii.x..radii.y of a cell
+// thick, there if its hash is under 'density', and in stretches where noise along it ('breaks'
+// per metre) passes 'gap', tapering to each stretch's ends, their thickness wavering by ragged.x
+// (share) along them, ragged.y per metre. A panel cuts them into parallel
+// streaks. x = coverage (antialiased; the average once a cell is under a pixel), y = the streak's
+// own random 0..1, z = 1 at its middle, 0 at its edge.
+vec3 wearStreaks( vec3 rest, vec3 dir, float cells, vec2 radii, float density, float breaks, float gap, float seed, vec2 ragged ) {
+  vec3 ref = abs( dir.y ) < 0.7 ? vec3( 0.0, 1.0, 0.0 ) : vec3( 1.0, 0.0, 0.0 );
+  vec3 e1 = normalize( ref - dir * dot( dir, ref ) );
+  vec3 e2 = cross( dir, e1 );
+  vec2 p = vec2( dot( rest, e1 ), dot( rest, e2 ) ) * cells;
+  float px = max( length( fwidth( p ) ), 1e-4 );
+  vec2 cell = floor( p );
+  vec3 key = vec3( cell, seed );
+  float radius = mix( radii.x, radii.y, wearHash( key + 3.7 ) );
+  vec2 centre = 0.5 + ( 0.5 - radius ) * ( 2.0 * vec2( wearHash( key + 5.1 ), wearHash( key + 8.9 ) ) - 1.0 );
+  float stretch = smoothstep( gap, gap + 0.3, wearNoise( vec3( cell * 0.71, dot( rest, dir ) * breaks + seed ) ) );
+  float r = radius * stretch * ( 1.0 + ragged.x * wearNoise( vec3( cell * 1.37, dot( rest, dir ) * ragged.y + seed ) ) );
+  float d = length( p - cell - centre );
+  float there = step( wearHash( key ), density );
+  float cover = there * ( 1.0 - smoothstep( r - px, r + px, d ) );
+  // The share of a panel the tubes cover on average (half of each tube showing).
+  float mean = 0.5 * density * 3.1416 * 0.5 * ( radii.x * radii.x + radii.y * radii.y );
+  float blur = smoothstep( 0.4, 1.2, px );
+  return vec3( mix( cover, mean, blur ), wearHash( key + 13.1 ), r > 0.0 ? clamp( 1.0 - d / r, 0.0, 1.0 ) : 0.0 );
 }
 `;
