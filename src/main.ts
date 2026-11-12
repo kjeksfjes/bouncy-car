@@ -1,4 +1,8 @@
 import RAPIER from '@dimforge/rapier3d-compat';
+// The HUD's typeface, served with the game (Latin only).
+import '@fontsource/barlow/latin-500.css';
+import '@fontsource/barlow/latin-600.css';
+import '@fontsource/barlow/latin-700.css';
 import { Game } from './game';
 
 declare global {

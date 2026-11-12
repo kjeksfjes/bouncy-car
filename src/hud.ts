@@ -4,6 +4,14 @@ const AIR_POPUP_SECONDS = 1.6;
 /** How long photo mode shows the slow-motion badge after a change (ms). */
 const SLOW_FLASH_MS = 1500;
 
+/**
+ * Whether the keyboard is a Mac's: the legend's keys go by their Mac symbols there, by name
+ * elsewhere. Dev only: ?keys=pc or ?keys=mac shows the other one.
+ */
+const KEYS = import.meta.env.DEV ? new URLSearchParams(location.search).get('keys') : null;
+const MAC = KEYS ? KEYS === 'mac' : /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const SHIFT = MAC ? '⇧' : 'Shift';
+
 /** Minimal DOM overlay: speed, integrity, airtime popups. */
 export class Hud {
   private readonly speed = document.getElementById('speed')!;
@@ -16,10 +24,22 @@ export class Hud {
   private readonly toastBox = document.getElementById('toast')!;
   private readonly inspect = document.getElementById('inspect')!;
   private readonly where = document.getElementById('where')!;
+  private readonly legend = document.getElementById('legend')!;
+  private readonly legendHow = document.getElementById('legend-how')!;
+  private readonly legendEsc = document.getElementById('legend-esc')!;
+  private isPaused = false;
+  private photo = false;
+  private slowMotion = false;
+  /** H hides photo mode's controls (for a clean shot) until pressed again. */
+  private legendHidden = false;
   private toastTimer: number | undefined;
   private slowFlashTimer: number | undefined;
   private seenJumps = 0;
   private airTimer = 0;
+
+  constructor() {
+    for (const key of document.querySelectorAll('#legend kbd[data-key="shift"]')) key.textContent = SHIFT;
+  }
 
   /** Shows a short message mid-screen for a couple of seconds. */
   toast(text: string): void {
@@ -39,6 +59,10 @@ export class Hud {
   /** Shows the slow-motion speed (e.g. '¼×'), or hides the badge with null. */
   setSlowMotion(label: string | null): void {
     this.slow.classList.toggle('visible', label !== null);
+    if (this.slowMotion !== (label !== null)) {
+      this.slowMotion = label !== null;
+      this.showLegend();
+    }
     if (label !== null && this.slow.textContent !== `SLOW ${label}`) this.slow.textContent = `SLOW ${label}`;
   }
 
@@ -69,11 +93,31 @@ export class Hud {
 
   setPaused(paused: boolean): void {
     this.paused.classList.toggle('visible', paused);
+    this.isPaused = paused;
+    this.showLegend();
   }
 
-  /** Photo mode hides all the UI (but not an error report). */
+  /** Photo mode hides all the UI but its controls (and an error report). */
   setPhotoMode(on: boolean): void {
     document.getElementById('hud')!.classList.toggle('photo', on);
+    this.photo = on;
+    this.showLegend();
+  }
+
+  /** H: hides or shows photo mode's controls. */
+  toggleLegend(): void {
+    this.legendHidden = !this.legendHidden;
+    this.showLegend();
+  }
+
+  /**
+   * Photo mode's controls show while paused: how to get into it from the pause, or out of it again
+   * (Esc plays on in slow motion, see Game.tick).
+   */
+  private showLegend(): void {
+    this.legend.classList.toggle('visible', (this.isPaused || this.photo) && !this.legendHidden);
+    this.legendHow.textContent = this.photo ? 'The camera is yours' : `Right-drag or ${SHIFT}-drag to start`;
+    this.legendEsc.textContent = !this.photo ? 'resume' : this.slowMotion ? 'play and pause' : 'back to the pause';
   }
 
   update(dt: number, car: Car, autopilot: boolean): void {

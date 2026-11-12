@@ -10,14 +10,15 @@ const PHOTO = {
    * mouse instead: see PhotoCamera.update.)
    */
   orbitTurn: 0.0035,
-  /** Looking round on the arrow keys (rad/s). */
+  /** Looking round on Shift+arrow keys (rad/s). */
   turnSpeed: 1.2,
   /** How far the view tilts up and down (rad): just short of straight up and down. */
   pitchMax: 1.5,
   /**
-   * Pan on Shift+arrow keys, scaled by the camera's distance from the car (at least `panNear` m),
-   * so it reaches further the further out the camera is: metres per second per metre of that
-   * distance. (A Shift+drag pans by what it grabbed instead: see PhotoCamera.update.)
+   * The arrow keys' pan (left/right) and move (up/down: forward/back along the view), scaled by
+   * the camera's distance from the car (at least `panNear` m), so they reach further the further
+   * out the camera is: metres per second per metre of that distance. (A Shift+drag pans by what it
+   * grabbed instead: see PhotoCamera.update.)
    */
   panPerSecond: 0.8,
   panNear: 4,
@@ -68,22 +69,24 @@ interface Move {
   /** Orbiting round `orbitAt` (rad; see PhotoCamera.orbit). */
   across: number;
   over: number;
-  /** Panning along the camera's right and up (m), and moving towards `dollyAt` (m). */
+  /** Panning along the camera's right and up (m), moving towards `dollyAt` (m), and along the view (m). */
   right: number;
   up: number;
   forward: number;
+  ahead: number;
   /** Zoom: the log of the factor the field of view changes by. */
   zoom: number;
 }
 
-const still = (): Move => ({ yaw: 0, pitch: 0, across: 0, over: 0, right: 0, up: 0, forward: 0, zoom: 0 });
+const still = (): Move => ({ yaw: 0, pitch: 0, across: 0, over: 0, right: 0, up: 0, forward: 0, ahead: 0, zoom: 0 });
 
 /**
  * Photo mode's free camera, used while paused: it takes over from wherever the camera is, orbits
  * the point under the mouse (drag), looks round from where it stands (right-drag or Option+drag,
- * or the arrow keys), pans (Shift+drag, keeping the grabbed point under the mouse, or Shift+arrow
- * keys), moves towards and away from the point under the mouse (scroll), and zooms the lens (Shift+scroll). The
- * scene moves with the mouse, as if dragged. Every move eases in over a moment (PHOTO.ease)
+ * or Shift+arrow keys), pans (Shift+drag, keeping the grabbed point under the mouse, or the left
+ * and right arrow keys), moves towards and away from the point under the mouse (scroll) or along
+ * the view (the up and down arrow keys), and zooms the lens (Shift+scroll). The scene moves with
+ * the mouse, as if dragged. Every move eases in over a moment (PHOTO.ease)
  * rather than jumping with each mouse event. The field of view is put back on leaving.
  */
 export class PhotoCamera {
@@ -137,11 +140,11 @@ export class PhotoCamera {
 
   /**
    * @param dt real time (s)
-   * @param turn left/right from the keys (−1..1, left is +1: looks left)
-   * @param tilt up/down from the keys (−1..1, up is +1: looks up)
-   * @param shift Shift held: the keys pan instead of looking round
-   * @param subject what's being photographed (the car): key panning speeds up with distance from
-   *   it, and a grab of open sky takes its distance
+   * @param turn left/right from the keys (−1..1, left is +1: pans left)
+   * @param tilt up/down from the keys (−1..1, up is +1: moves forward)
+   * @param shift Shift held: the keys look round instead (left looks left, up looks up)
+   * @param subject what's being photographed (the car): the keys' pan and move speed up with
+   *   distance from it, and a grab of open sky takes its distance
    */
   update(dt: number, turn: number, tilt: number, shift: boolean, subject: THREE.Vector3): void {
     const P = PHOTO;
@@ -165,10 +168,10 @@ export class PhotoCamera {
     }
 
     // Look round: a right-drag turns the view by the angle a pixel covers, so the scene stays under the
-    // mouse (slower the more it's zoomed in); the keys look the way they point.
+    // mouse (slower the more it's zoomed in); Shift+keys look the way they point.
     const m = this.pending;
     const lookTurn = THREE.MathUtils.degToRad(this.fov) / this.pointer.height;
-    const keyTurn = shift ? 0 : P.turnSpeed * dt;
+    const keyTurn = shift ? P.turnSpeed * dt : 0;
     m.yaw += input.lookX * lookTurn + turn * keyTurn;
     m.pitch += input.lookY * lookTurn + tilt * keyTurn;
 
@@ -178,11 +181,12 @@ export class PhotoCamera {
     m.over -= input.dy * P.orbitTurn;
 
     // Pan: a drag keeps what it grabbed under the mouse (it moves one pixel's width at that depth
-    // per pixel); Shift+arrow keys slide the camera.
+    // per pixel); the arrow keys slide it left and right, and move it forward and back.
     const pan = (this.grabDepth * 2 * Math.tan(THREE.MathUtils.degToRad(this.fov) / 2)) / this.grabHeight;
-    const panKeys = shift ? Math.max(P.panNear, subjectDistance) * P.panPerSecond * dt : 0;
+    const panKeys = shift ? 0 : Math.max(P.panNear, subjectDistance) * P.panPerSecond * dt;
     m.right -= input.panX * pan + turn * panKeys;
-    m.up += input.panY * pan + tilt * panKeys;
+    m.up += input.panY * pan;
+    m.ahead += tilt * panKeys;
 
     // Towards or away from the point under the mouse, taking a share of the way there that's left
     // once what's pending is made; and the lens zoom (Shift+scroll up narrows the view).
@@ -215,7 +219,8 @@ export class PhotoCamera {
     this.place();
     _right.setFromMatrixColumn(cam.matrixWorld, 0);
     _up.setFromMatrixColumn(cam.matrixWorld, 1);
-    cam.position.addScaledVector(_right, d.right).addScaledVector(_up, d.up).addScaledVector(this.dollyDir, d.forward);
+    cam.getWorldDirection(_forward);
+    cam.position.addScaledVector(_right, d.right).addScaledVector(_up, d.up).addScaledVector(this.dollyDir, d.forward).addScaledVector(_forward, d.ahead);
     this.fov = THREE.MathUtils.clamp(this.fov * Math.exp(d.zoom), P.fovMin, P.fovMax);
     this.place();
   }

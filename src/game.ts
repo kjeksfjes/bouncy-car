@@ -211,6 +211,7 @@ export class Game {
       if (this.photoMode && !this.slowMotion) this.setPhotoMode(false);
       else this.togglePause();
     }
+    if (this.input.consume('KeyH')) this.hud.toggleLegend();
     // While paused, only the camera and mute keys act; the rest are dropped, not queued.
     const reset = this.input.consume('KeyR');
     const replace = this.input.consume('KeyN');

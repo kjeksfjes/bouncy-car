@@ -22,6 +22,7 @@
       #hud { position: fixed; inset: 0; pointer-events: none; }
       #hud.photo > :not(#error) { display: none; }
       #hud.photo > #slow.visible.flash { display: block; }
+      #hud.photo > #legend { display: block; }
       .hint {
         position: absolute; top: 16px; left: 16px; padding: 8px 12px; border-radius: 8px;
         background: var(--panel); font-weight: 500; font-size: 13px;
@@ -76,6 +77,29 @@
       #inspect strong { display: block; margin-bottom: 6px; font-size: 13px; }
       #inspect .row { display: flex; align-items: center; gap: 6px; margin-top: 3px; }
       #inspect .swatch { width: 14px; height: 10px; border-radius: 2px; }
+      /* Photo mode's controls, while paused: a small glass card, out of the way in the corner. */
+      #legend {
+        --line: rgb(255 255 255 / 0.16);
+        position: absolute; left: 16px; bottom: 16px; padding: 12px 14px 10px; border-radius: 12px;
+        background: rgb(14 18 24 / 0.58); backdrop-filter: blur(10px) saturate(1.2); -webkit-backdrop-filter: blur(10px) saturate(1.2);
+        border: 1px solid var(--line); color: rgb(255 255 255 / 0.92);
+        font: 500 13px/1.25 Barlow, system-ui, sans-serif; letter-spacing: 0.01em;
+        opacity: 0; transform: translateY(6px); transition: opacity 0.25s, transform 0.25s; display: block;
+      }
+      #legend.visible { opacity: 1; transform: none; }
+      #legend header { display: flex; align-items: center; gap: 7px; margin-bottom: 2px; }
+      #legend header svg { width: 15px; height: 15px; opacity: 0.85; }
+      #legend h2 { margin: 0; font: 700 12px/1 Barlow, system-ui, sans-serif; letter-spacing: 0.16em; text-transform: uppercase; }
+      #legend .how { margin: 0 0 9px; font-size: 12px; color: rgb(255 255 255 / 0.6); }
+      #legend dl { display: grid; grid-template-columns: auto auto; gap: 5px 14px; margin: 0; align-items: center; }
+      #legend dt { display: flex; gap: 4px; justify-content: flex-end; white-space: nowrap; color: rgb(255 255 255 / 0.7); }
+      #legend dd { margin: 0; }
+      #legend kbd {
+        display: inline-block; min-width: 20px; padding: 1px 5px; border-radius: 5px; text-align: center;
+        font: 600 11px/16px Barlow, system-ui, sans-serif; color: #fff;
+        background: rgb(255 255 255 / 0.1); border: 1px solid var(--line); border-bottom-width: 2px;
+      }
+      #legend footer { margin-top: 9px; padding-top: 7px; border-top: 1px solid var(--line); font-size: 12px; color: rgb(255 255 255 / 0.6); }
       #error {
         position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); max-width: min(640px, calc(100% - 32px));
         padding: 10px 14px; border-radius: 8px; background: #b3261e; color: #fff; font-weight: 600;
@@ -96,7 +120,25 @@
       <div id="slow"></div>
       <div id="toast"></div>
       <div id="inspect"></div>
-      <div id="paused"><strong>PAUSED</strong><small>Esc to resume · drag to orbit, scroll to zoom · right-drag for photo mode · C camera</small></div>
+      <div id="paused"><strong>PAUSED</strong><small>Esc to resume · drag to orbit, scroll to zoom · C camera</small></div>
+      <div id="legend" aria-label="Photo mode controls">
+        <header>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
+          <h2>Photo mode</h2>
+        </header>
+        <p class="how" id="legend-how"></p>
+        <dl>
+          <dt>Drag</dt><dd>Orbit round the point</dd>
+          <dt>Right-drag</dt><dd>Turn the camera</dd>
+          <dt><kbd data-key="shift">⇧</kbd> Drag</dt><dd>Pan</dd>
+          <dt>Scroll</dt><dd>Move to the point</dd>
+          <dt><kbd data-key="shift">⇧</kbd> Scroll</dt><dd>Zoom the lens</dd>
+          <dt><kbd>←</kbd><kbd>→</kbd></dt><dd>Pan</dd>
+          <dt><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Forward and back</dd>
+          <dt><kbd data-key="shift">⇧</kbd> Arrows</dt><dd>Look round</dd>
+        </dl>
+        <footer><kbd>H</kbd> hide controls · <kbd>Esc</kbd> <span id="legend-esc"></span></footer>
+      </div>
       <div id="error" hidden></div>
       <div class="panel">
         <div class="speed"><span id="speed">0</span> <small>km/h</small></div>
