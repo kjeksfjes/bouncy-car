@@ -256,6 +256,7 @@ export class Car {
     this.model = buildCarModel(cfg, paint);
     scene.add(this.model.root);
     this.crush = new Crush(cfg.blueprint, cfg.damage);
+    this.crush.prepare(this.model.pieces);
     this.lights = new CarLights(
       this.model.lights, this.model.root, scene, debris, cfg.damage, this.model.smashedLens,
       new BodyOutline(cfg.blueprint, this.crush, this.model.pieces), debris.field,
@@ -679,7 +680,7 @@ export class Car {
     if (end && square > 0) {
       const before = this.crush.depth(end);
       this.crush.hit(end, local.x, severity * square, surface === 'tree');
-      this.crush.deform(this.model.pieces, this.model.root, this.justLoose);
+      this.crush.deform(end, this.model.pieces, this.model.root, this.justLoose);
       this.fitHullToCrush();
       this.advanceIntoCrush(end, this.crush.depth(end) - before);
     }
@@ -688,7 +689,7 @@ export class Car {
     if (this.crush.inRoof(local) && normal.y > 0) {
       const down = normal.y ** 2;
       this.crush.hitRoof(local.x, severity * down, -normal.x);
-      this.crush.deform(this.model.pieces, this.model.root, this.justLoose);
+      this.crush.deform('roof', this.model.pieces, this.model.root, this.justLoose);
       this.fitHullToCrush();
       if (this.crush.roofDepth() > d.roofGlassBreak) {
         for (const piece of this.model.pieces) if (piece.glass && piece.state !== 'gone') this.shatter(piece);
