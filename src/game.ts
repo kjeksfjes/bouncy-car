@@ -123,7 +123,7 @@ export class Game {
     const obstacles = new Obstacles(this.trees, this.rocks, this.field.landmarks);
     this.terrain = new Terrain(this.field, this.stage.scene, this.world, this.trees, this.rocks);
     this.section = FEATURES.groundSection ? new GroundSection(this.stage.scene, (x, z) => this.terrain.surfaceHeight(x, z)) : null;
-    this.ai = new AiDriver(obstacles);
+    this.ai = new AiDriver(this.field, obstacles);
     this.aiArrow.visible = false;
     this.stage.scene.add(this.aiArrow);
     this.debris = new Debris(this.stage.scene, this.world, this.field);
@@ -436,7 +436,7 @@ export class Game {
   private drive(driver: AiDriver, car: Car, dt: number): CarInput {
     const others = this.allCars.filter((c) => c !== car).map((c) => c.position);
     const decision = driver.update(dt, car, others);
-    if (decision.reset) car.resetUpright(this.field);
+    if (decision.reset) car.resetUpright(this.field, decision.resetTo);
     return decision.input;
   }
 

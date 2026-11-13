@@ -226,9 +226,9 @@ export class Obstacles {
     private readonly landmarks: LandmarkLayout,
   ) {}
 
-  /** Whether a tree, a boulder or a tor comes within `clearance` of (x, z). */
-  blocking(x: number, z: number, clearance: number): boolean {
-    return this.trees.blocking(x, z, clearance) !== null || this.rocks.blocking(x, z, clearance) !== null || this.landmarks.blocking(x, z, clearance);
+  /** Whether a tree, a boulder or a tor comes within `clearance` of (x, z); `except` a varde to leave out (one the AI means to hit). */
+  blocking(x: number, z: number, clearance: number, except?: Varde): boolean {
+    return this.trees.blocking(x, z, clearance) !== null || this.rocks.blocking(x, z, clearance) !== null || this.landmarks.blocking(x, z, clearance, except);
   }
 }
 

@@ -138,10 +138,15 @@ export class LandmarkLayout {
     return this.oaks.near(x, z, margin) ?? this.vardes.near(x, z, margin);
   }
 
-  /** Whether a standing varde comes within `clearance` of (x, z) (oaks are trees: see TreeLayout.blocking). */
-  blocking(x: number, z: number, clearance: number): boolean {
+  /** Whether a standing varde (other than `except`) comes within `clearance` of (x, z) (oaks are trees: see TreeLayout.blocking). */
+  blocking(x: number, z: number, clearance: number, except?: Varde): boolean {
     const l = this.vardes.near(x, z, clearance);
-    return l !== null && !this.fallen.has(l.key) && Math.hypot(l.x - x, l.z - z) < l.radius + clearance;
+    return l !== null && l.key !== except?.key && !this.fallen.has(l.key) && Math.hypot(l.x - x, l.z - z) < l.radius + clearance;
+  }
+
+  /** Whether the varde is still standing. */
+  standing(varde: Varde): boolean {
+    return !this.fallen.has(varde.key);
   }
 
   /** The standing vardes in the square from (x0, z0), `size` m across. */

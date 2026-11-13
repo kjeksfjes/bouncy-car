@@ -1172,6 +1172,11 @@ export class Car {
   /** What the ground under the grounded tyres is made of (stone 1 on near-vertical rock), for their sound. */
   readonly tyreGround: GroundMix = { snow: 1, grass: 0, dirt: 0, stone: 0 };
 
+  /** How well the tyres grip on the ground under them, as a multiple of the car's grip on snow (see tire.surfaceGrip). */
+  get grip(): number {
+    return this.surfaceGrip();
+  }
+
   /** How well the tyres grip on the ground under them, as a multiple of the car's grip (see tire.surfaceGrip). */
   private surfaceGrip(): number {
     const g = this.tyreGround;

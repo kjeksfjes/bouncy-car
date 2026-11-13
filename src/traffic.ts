@@ -130,6 +130,6 @@ export class Traffic {
     const car = this.createCar(at, yaw, paint);
     const speed = cruise * 0.8;
     car.body.setLinvel({ x: -Math.sin(yaw) * speed, y: 0, z: -Math.cos(yaw) * speed }, true);
-    this.active.push({ car, driver: new AiDriver(this.obstacles, cruise) });
+    this.active.push({ car, driver: new AiDriver(this.field, this.obstacles, cruise) });
   }
 }
