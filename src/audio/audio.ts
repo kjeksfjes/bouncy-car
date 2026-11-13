@@ -11,7 +11,7 @@ const SLOW_FLOOR = 300;
 
 const MIX = {
   master: 0.7,
-  engine: 0.2,
+  engine: 0.28,
   /** AI engines sit under the player's own. */
   aiEngine: 0.45,
   tyres: 0.3,
@@ -52,6 +52,29 @@ const ROCK = {
   ],
 };const ROCK_WINDOW = 0.1;
 
+/**
+ * The engine's exhaust sound after the pulses (see engineWorklet.ts), by ear: a muscle car is dark,
+ * so the rasp only comes through under full throttle and the muffler stays low until the revs climb.
+ */
+const ENGINE = {
+  /** The chest resonance (Hz) and its boost (dB): the low rumble. */
+  chestAt: 80,
+  chest: 8,
+  /** The body (Hz, dB): weight in the range small speakers can still play. */
+  bodyAt: 170,
+  body: 6,
+  /** The rasp's centre (Hz), its gain off throttle (dB) and how much full throttle adds. */
+  raspAt: 950,
+  raspShut: -8,
+  raspOpen: 10,
+  /** Into the saturation: more is grittier and louder, less is cleaner. */
+  drive: 0.7,
+  /** The muffler's cutoff (Hz) at idle, and how far revs (at the shift point) and full throttle open it. */
+  muffler: 260,
+  mufflerRevs: 1300,
+  mufflerLoad: 1400,
+};
+
 /** Simulated gearbox for engine pitch: upper speed (m/s) of each gear. */
 const GEAR_TOPS = [9, 17, 27, 40, 70];
 const IDLE_RPM = 750;
@@ -82,7 +105,7 @@ class CarVoice {
   readonly panner: PannerNode;
   private readonly engine: AudioWorkletNode;
   private readonly rasp: BiquadFilterNode;
-  private readonly muffler: BiquadFilterNode;
+  private readonly muffler: BiquadFilterNode[];
   private readonly engineGain: GainNode;
   /** Tyres rolling and sliding, by the ground under them (see tyres.ts). */
   private readonly tyreRoll: GrindChain;
@@ -111,18 +134,22 @@ class CarVoice {
     this.engine = new AudioWorkletNode(ctx, ENGINE_PROCESSOR, { numberOfInputs: 0, outputChannelCount: [2] });
     const split = new ChannelSplitterNode(ctx, { numberOfOutputs: 2 });
     this.engine.connect(split);
-    this.rasp = new BiquadFilterNode(ctx, { type: 'peaking', frequency: 750, Q: 1.2, gain: 0 });
-    this.muffler = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 600, Q: 0.8 });
+    this.rasp = new BiquadFilterNode(ctx, { type: 'peaking', frequency: ENGINE.raspAt, Q: 1.2, gain: 0 });
+    // Two low-passes in a row (24 dB/octave): a big muffler takes the fizz off steeply. Web Audio's
+    // low-pass Q is in dB; −3 dB is a flat (Butterworth) corner.
+    this.muffler = [0, 1].map(() => new BiquadFilterNode(ctx, { type: 'lowpass', frequency: 600, Q: -3 }));
     this.engineGain = new GainNode(ctx, { gain: 0 });
     split
       .connect(new BiquadFilterNode(ctx, { type: 'highpass', frequency: 30 }), 0)
       // Chest: the big, low exhaust resonance that makes a V8 rumble, and weight below it.
-      .connect(new BiquadFilterNode(ctx, { type: 'peaking', frequency: 95, Q: 1, gain: 10 }))
+      .connect(new BiquadFilterNode(ctx, { type: 'peaking', frequency: ENGINE.chestAt, Q: 0.9, gain: ENGINE.chest }))
       .connect(new BiquadFilterNode(ctx, { type: 'lowshelf', frequency: 180, gain: 4 }))
+      .connect(new BiquadFilterNode(ctx, { type: 'peaking', frequency: ENGINE.bodyAt, Q: 0.9, gain: ENGINE.body }))
       .connect(this.rasp)
-      .connect(new GainNode(ctx, { gain: 0.6 }))
+      .connect(new GainNode(ctx, { gain: ENGINE.drive }))
       .connect(new WaveShaperNode(ctx, { curve: softClip(), oversample: '2x' }))
-      .connect(this.muffler)
+      .connect(this.muffler[0])
+      .connect(this.muffler[1])
       .connect(this.engineGain)
       .connect(this.panner);
     // A failing engine's rod knock: mechanical, heard through the block rather than the exhaust.
@@ -164,8 +191,9 @@ class CarVoice {
     // Runs clean while alive; dying, it misfires, backfires and knocks as it stalls.
     this.engine.parameters.get('health')!.setTargetAtTime(car.engineAlive ? 1 : 0, now, 0.1);
     // Open throttle brings out the rasp; revs and throttle open the muffler up.
-    this.rasp.gain.setTargetAtTime(-4 + load * 10, now, 0.06);
-    this.muffler.frequency.setTargetAtTime((350 + revs * 1800 + load * 1400) * pitch, now, 0.05);
+    this.rasp.gain.setTargetAtTime(ENGINE.raspShut + load * ENGINE.raspOpen, now, 0.06);
+    const muffler = (ENGINE.muffler + revs * ENGINE.mufflerRevs + load * ENGINE.mufflerLoad) * pitch;
+    for (const filter of this.muffler) filter.frequency.setTargetAtTime(muffler, now, 0.05);
     this.engineGain.gain.setTargetAtTime(MIX.engine * this.level * alive * (0.7 + 0.3 * load), now, 0.08);
 
     this.tyres(dt, car, speed, pitch);
