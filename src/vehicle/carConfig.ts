@@ -116,6 +116,13 @@ export interface CarConfig {
     integrityPerDv: number;
     /** Below this integrity the engine dies. */
     engineDeathAt: number;
+    /**
+     * Landings (the ground hitting the underside from below) cost only `landingShare` of the
+     * integrity a crash that hard would, and never take integrity below `landingFloor`: they can
+     * finish off an engine that crashes have already brought close to dying, but not kill a sound one.
+     */
+    landingShare: number;
+    landingFloor: number;
     /** Glass panes: hit points, and the fraction of them left when a pane cracks. */
     glassHp: number;
     crackAt: number;
@@ -360,6 +367,9 @@ export const COUPE_70S: CarConfig = {
     bottomOutDamagePerDv: 6,
     integrityPerDv: 0.025,
     engineDeathAt: 0.12,
+    landingShare: 0.35,
+    // The HUD's integrity bar turns red below 25 %.
+    landingFloor: 0.25,
     glassHp: 45,
     crackAt: 0.6,
     // Tuned against probed bumper hits: severity ≈12.6 shatters the windshield, ≈9 cracks it, ≈6 leaves it.

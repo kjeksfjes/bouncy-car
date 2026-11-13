@@ -126,9 +126,12 @@ const _tyreMid = new THREE.Vector3();
 const _contactLocal = new THREE.Vector3();
 const _contactNormal = new THREE.Vector3();
 const _qInv = new THREE.Quaternion();
+const _bodyUp = new THREE.Vector3();
 const _hitWear = { chips: 1, scratches: 1 };
 /** A touching pair's points, for grinding: a box resting flat touches at its four corners, a few more on rough ground. */
 const MAX_GRIND_CONTACTS = 8;
+/** A ground hit counts as a landing when it comes from within ~45° of straight below the car (cos 45°). */
+const LANDING_UPRIGHT = 0.7;
 const _grindContacts = Array.from({ length: MAX_GRIND_CONTACTS }, () => new THREE.Vector3());
 const _grindNormal = new THREE.Vector3();
 const _grindCentre = new THREE.Vector3();
@@ -574,8 +577,6 @@ export class Car {
     const d = this.cfg.damage;
     for (const impact of this.pending.values()) {
       if (impact.dv < Math.min(d.toughness, d.roofToughness)) continue;
-      this.integrity = Math.max(0, this.integrity - Math.max(0, impact.dv - d.toughness) * d.integrityPerDv);
-
       const sum = new THREE.Vector3();
       const normal = new THREE.Vector3();
       let count = 0;
@@ -584,9 +585,15 @@ export class Car {
         normal.add(n);
         count++;
       });
+      if (count > 0) normal.normalize();
+      // A landing: the ground hits the underside (the contact normal points down out of the car).
+      // A pair that bounced apart within the step has no contacts left; then an upright car counts as landing.
+      const upright = _bodyUp.set(0, 1, 0).applyQuaternion(this.currQuat).y > LANDING_UPRIGHT;
+      const landing = surfaceOf(impact.other) === 'ground' && (count > 0 ? normal.y < -LANDING_UPRIGHT : upright);
+      this.loseIntegrity(Math.max(0, impact.dv - d.toughness) * d.integrityPerDv, landing);
+
       // The pair can separate within the step (bounce); then there's no point to dent.
       if (count === 0) continue;
-      normal.normalize();
       // The roof is the body's weak spot: a landing on it is spread over several steps, each
       // under the chassis's toughness, so hits from above on the cabin use a lower threshold.
       const threshold = impact.own === this.cabinCollider && normal.y > 0.5 ? d.roofToughness : d.toughness;
@@ -594,6 +601,16 @@ export class Car {
       this.applyImpact(sum.divideScalar(count), normal, impact.dv - threshold, impact.dv, surfaceOf(impact.other));
     }
     this.pending.clear();
+  }
+
+  /** Takes `loss` off the integrity; a landing's share of it, and only down to the landing floor (see CarConfig landingShare). */
+  private loseIntegrity(loss: number, landing: boolean): void {
+    const d = this.cfg.damage;
+    if (landing) {
+      loss *= d.landingShare;
+      if (this.integrity > d.landingFloor) loss = Math.min(loss, this.integrity - d.landingFloor);
+    }
+    this.integrity = Math.max(0, this.integrity - loss);
   }
 
   /**
