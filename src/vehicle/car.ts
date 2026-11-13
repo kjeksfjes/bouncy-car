@@ -37,6 +37,8 @@ export interface TyreState {
   readonly contact: THREE.Vector3;
   /** Sideways slip speed (m/s). */
   readonly slip: number;
+  /** Locked by the handbrake while on the ground: skidding along instead of rolling. */
+  readonly locked: boolean;
 }
 
 interface Wheel extends TyreState {
@@ -49,6 +51,7 @@ interface Wheel extends TyreState {
   /** Damage taken so far, for popping the hubcap. */
   knocks: number;
   grounded: boolean;
+  locked: boolean;
   compression: number;
   /** Current spring length, also drives the visual wheel position. */
   suspLen: number;
@@ -130,6 +133,8 @@ const _bodyUp = new THREE.Vector3();
 const _hitWear = { chips: 1, scratches: 1 };
 /** A touching pair's points, for grinding: a box resting flat touches at its four corners, a few more on rough ground. */
 const MAX_GRIND_CONTACTS = 8;
+/** Touching points kept per hit (see Car.hitPoints). */
+const MAX_HIT_POINTS = 8;
 /** A ground hit counts as a landing when it comes from within ~45° of straight below the car (cos 45°). */
 const LANDING_UPRIGHT = 0.7;
 const _grindContacts = Array.from({ length: MAX_GRIND_CONTACTS }, () => new THREE.Vector3());
@@ -303,6 +308,7 @@ export class Car {
           spinSpeed: 0,
           contact: new THREE.Vector3(),
           slip: 0,
+          locked: false,
           visual: this.model.wheels[i++],
         });
       }
@@ -392,6 +398,7 @@ export class Car {
 
       if (!hit) {
         wheel.grounded = false;
+        wheel.locked = false;
         wheel.compression = 0;
         // Let the wheel droop back to full extension smoothly.
         wheel.suspLen += (Su.restLength - wheel.suspLen) * Math.min(1, dt * 12);
@@ -464,6 +471,7 @@ export class Car {
       slipSum += Math.abs(vLat);
       wheel.contact.copy(_contact);
       wheel.slip = Math.abs(vLat);
+      wheel.locked = handbrake;
     }
 
     // --- Air control (also works when stuck on the roof: a handy self-righting tool).
@@ -585,9 +593,12 @@ export class Car {
       this.forEachContact(impact.own, impact.other, (local, n) => {
         sum.add(local);
         normal.add(n);
+        if (count < MAX_HIT_POINTS) this.hitPointPool[count].copy(local);
         count++;
       });
       if (count > 0) normal.normalize();
+      this.hitPointCount = Math.min(count, MAX_HIT_POINTS);
+      for (let i = 0; i < this.hitPointCount; i++) this.hitPointPool[i].applyQuaternion(this.currQuat).add(this.currPos);
       // A landing: the ground hits the underside (the contact normal points down out of the car).
       // A pair that bounced apart within the step has no contacts left; then an upright car counts as landing.
       const upright = _bodyUp.set(0, 1, 0).applyQuaternion(this.currQuat).y > LANDING_UPRIGHT;
@@ -1200,6 +1211,17 @@ export class Car {
     surface: 'ground' as ContactSurface,
   }));
   private grindCount = 0;
+
+  private readonly hitPointPool = Array.from({ length: MAX_HIT_POINTS }, () => new THREE.Vector3());
+  private hitPointCount = 0;
+
+  /**
+   * Where the body touches what it hit (world space), for the hit being reported to `events.impact`
+   * right now (its `at` is their middle). Shared objects, overwritten by the next hit.
+   */
+  get hitPoints(): readonly THREE.Vector3[] {
+    return this.hitPointPool.slice(0, this.hitPointCount);
+  }
 
   /**
    * Where the body slid along something hard in the last physics step (rock faces, stony ground,

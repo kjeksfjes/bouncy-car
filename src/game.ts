@@ -134,11 +134,13 @@ export class Game {
     this.heli = new HeliCamera(this.stage.camera, this.field, this.pointer);
     const ground = (x: number, z: number) => this.terrain.surfaceHeight(x, z);
     this.photo = new PhotoCamera(this.stage.camera, this.pointer, (ndc, out) => this.stage.surfaceAt(ndc, out), FEATURES.groundSection ? null : ground);
+    this.clods = new Clods(this.stage.scene, ground);
     this.juice = new Juice(
       this.stage.scene, this.field, this.trees, this.orbit, this.stage.camera,
       (car) => car === this.car,
+      ground,
+      this.clods,
     );
-    this.clods = new Clods(this.stage.scene, (x, z) => this.terrain.surfaceHeight(x, z));
     this.boulders = new Boulders(this.world, this.stage.scene, this.field, this.terrain, this.debris, (at, velocity, radius, ground) => {
       this.juice.uproot(at, velocity, radius, ground === 'rock');
       this.clods.burst(at, velocity, radius, ground);

@@ -1,9 +1,11 @@
 import * as THREE from 'three';
 import type { Car, CarEvents, ContactSurface, Grind } from '../vehicle/car';
 import type { GroundMix } from '../world/biome';
+import { SOD_AREA, type Clods } from '../world/clods';
 import { emptySample } from '../world/environment';
 import type { TerrainField } from '../world/terrainField';
 import type { TreeLayout } from '../world/trees';
+import { GroundScars } from './groundScars';
 import type { OrbitCamera } from './orbitCamera';
 import { Particles } from './particles';
 import { Sparks } from './sparks';
@@ -40,6 +42,44 @@ const JUICE = {
   /** Sparks on a hard hit: a base count plus more per m/s of severity, flung in a wide fan. */
   hitSparks: 15,
   hitSparksPerSeverity: 6,
+  /**
+   * Torn turf (see GroundScars). Only a tyre in a real slide tears the grass: its sideways slip,
+   * held over `tearHold` s (bumps and body roll only spike it), past `tearSlip[0]` m/s, and its
+   * slip angle past `tearAngle[0]`°, now and then; past both upper ends all the time. A wheel
+   * locked by the handbrake skids along instead: it tears from `lockedTear[0]` m/s (held the same
+   * way), all the time from `lockedTear[1]`. It leaves a rut `tyreScar` m wide.
+   */
+  tearSlip: [3.5, 7.5],
+  tearAngle: [12, 25],
+  lockedTear: [4, 8],
+  tearHold: 0.3,
+  tyreScar: 0.25,
+  /** Ground tears only where at least this share of it shows grass or dirt (see TerrainField.softShare). */
+  tearableFrom: 0.6,
+  /**
+   * A hit on grass harder than `gougeFrom` (m/s of severity) presses the body into it where it
+   * touches: a small gouge at each touching point, `gouge` m across plus `gougePerSeverity` per
+   * m/s of severity (up to `maxGouge`), stretched along the car's way by up to `gougeStretch` at
+   * `stretchSpeed` m/s.
+   */
+  gougeFrom: 4.5,
+  gouge: 0.1,
+  gougePerSeverity: 0.015,
+  maxGouge: 0.3,
+  gougeStretch: 0.8,
+  stretchSpeed: 15,
+  /** A body in contact reports a hit every physics step: a car's next gouge waits this long (s), unless it's moved on by its width. */
+  gougeGap: 0.25,
+  /**
+   * Landings that hit the ground faster than `landingGougeFrom` m/s (into it, square to its slope:
+   * running down a steep slope is fast downward too) gouge under each tyre, `landingGouge` +
+   * `landingGougePerSpeed` × that speed across.
+   */
+  landingGougeFrom: 7.5,
+  landingGouge: 0.1,
+  landingGougePerSpeed: 0.01,
+  /** Sods torn out of a tyre's rut and thrown: per new piece of it, × how hard it slides. (Every gouge throws out its own.) */
+  sodPerRut: 0.35,
 };
 
 const COLOR = {
@@ -64,6 +104,8 @@ const _n = new THREE.Vector3();
 const _across = new THREE.Vector3();
 const _mix: GroundMix = { snow: 0, grass: 0, dirt: 0, stone: 0 };
 const _env = emptySample();
+const _grassNormal = new THREE.Vector3();
+const _grassEnv = emptySample();
 type Ground = keyof GroundMix;
 
 /**
@@ -82,6 +124,13 @@ export class Juice implements CarEvents {
   private readonly carry = new WeakMap<object, number>();
   /** Emitter keys for a car's grinding contacts, by index (shared between cars: they only carry fractions). */
   private readonly grindKeys = Array.from({ length: 8 }, () => ({}));
+  private readonly scars: GroundScars;
+  /** Each car's last gouge: where, how wide, and when (see `time`). */
+  private readonly lastGouge = new WeakMap<Car, { at: THREE.Vector3; radius: number; time: number }>();
+  /** Each tyre's slip (m/s), slip angle (°) and locked skid (m/s), held over JUICE.tearHold. */
+  private readonly heldSlip = new WeakMap<object, { slip: number; angle: number; skid: number }>();
+  /** Seconds of game time so far. */
+  private time = 0;
 
   constructor(
     scene: THREE.Scene,
@@ -90,18 +139,28 @@ export class Juice implements CarEvents {
     private readonly orbit: OrbitCamera,
     private readonly camera: THREE.Camera,
     private readonly isPlayer: (car: Car) => boolean,
+    /** The drawn ground's height at (x, z) (see Terrain.surfaceHeight), for laying scars on it. */
+    surfaceHeight: (x: number, z: number) => number,
+    /** Lasting clods and sods, for the turf the car tears up. */
+    private readonly groundBits: Clods,
   ) {
+    this.scars = new GroundScars(scene, surfaceHeight, (x, z, out) =>
+      field.biome.colour(x, z, field.normal(x, z, _grassNormal), field.environment.at(x, z, _grassEnv), out),
+    );
     this.snow = new Particles(scene, field, { capacity: 2500, blending: THREE.NormalBlending, gravity: 0.25, drag: 2.5 });
     this.clods = new Particles(scene, field, { capacity: 1500, blending: THREE.NormalBlending, gravity: 1, drag: 0.6 });
     this.sparks = new Sparks(scene, field, 1500);
   }
 
   update(dt: number, cars: readonly Car[], halfHeight: number): void {
+    this.time += dt;
     for (const car of cars) {
       if (car.position.distanceTo(this.camera.position) > JUICE.effectRange) continue;
       this.tyreSpray(dt, car);
       this.scrape(dt, car);
+      this.tear(dt, car);
     }
+    this.scars.update();
     this.snow.update(dt, halfHeight);
     this.clods.update(dt, halfHeight);
     this.sparks.update(dt, halfHeight);
@@ -117,6 +176,7 @@ export class Juice implements CarEvents {
         if (surface !== 'metal') this.burstDust(at, car.velocity, 6, 1.5, COLOR.rockDust);
       } else {
         this.burstGround(at, car.velocity, 8 + Math.round(40 * k), 2 + 4 * k);
+        if (surface === 'ground' && severity > JUICE.gougeFrom && grassy(this.groundAt(at))) this.gouges(car, at, severity);
       }
       if (surface === 'tree') this.treeShower(at);
     }
@@ -152,6 +212,14 @@ export class Juice implements CarEvents {
       for (const tyre of car.tyres) {
         if (!tyre.attached || !tyre.grounded || this.isRock(tyre.contact)) continue;
         this.burstGround(tyre.contact, car.velocity, Math.min(25, 6 + Math.round(strength * 1.5)), 1 + strength * 0.25);
+      }
+      const J = JUICE;
+      const p = car.position;
+      const into = Math.max(0, -car.velocity.dot(this.field.normal(p.x, p.z, _n)));
+      if (into > J.landingGougeFrom && grassy(car.tyreGround)) {
+        for (const tyre of car.tyres) {
+          if (tyre.attached && tyre.grounded) this.hole(tyre.contact, car.velocity, J.landingGouge + J.landingGougePerSpeed * into, 1.3);
+        }
       }
     }
     if (!this.isPlayer(car)) return;
@@ -197,6 +265,74 @@ export class Juice implements CarEvents {
     if (car.scrapeSurface !== 'ground' || this.isHard(at)) return;
     const n = this.take(car, speed * 2 * dt);
     if (n > 0) this.burstGround(at, car.velocity, n, 1.5);
+  }
+
+  /**
+   * Tyres sliding hard on grass, or skidding locked by the handbrake, tear it up behind them,
+   * patchily at first and all the way at full slide.
+   */
+  private tear(dt: number, car: Car): void {
+    const J = JUICE;
+    const onGrass = grassy(car.tyreGround);
+    const hold = Math.min(1, dt / J.tearHold);
+    for (const tyre of car.tyres) {
+      let held = this.heldSlip.get(tyre);
+      if (!held) this.heldSlip.set(tyre, (held = { slip: 0, angle: 0, skid: 0 }));
+      const rolling = tyre.attached && tyre.grounded;
+      const angle = rolling ? THREE.MathUtils.radToDeg(Math.atan2(tyre.slip, Math.abs(car.forwardSpeed))) : 0;
+      held.slip += ((rolling ? tyre.slip : 0) - held.slip) * hold;
+      held.angle += (angle - held.angle) * hold;
+      held.skid += ((rolling && tyre.locked ? Math.hypot(car.forwardSpeed, tyre.slip) : 0) - held.skid) * hold;
+      if (onGrass && rolling) {
+        const sliding = Math.min(
+          THREE.MathUtils.smoothstep(held.slip, J.tearSlip[0], J.tearSlip[1]),
+          THREE.MathUtils.smoothstep(held.angle, J.tearAngle[0], J.tearAngle[1]),
+        );
+        const torn = Math.max(sliding, THREE.MathUtils.smoothstep(held.skid, J.lockedTear[0], J.lockedTear[1]));
+        // A patchy tear: streaks start and break off at random, holding longer the harder it slides;
+        // never onto rock or snow under this very tyre.
+        const tearing = torn > 0 && this.tearable(tyre.contact) && (torn >= 1 || (this.scars.streaking(tyre) ? Math.random() > (1 - torn) * 4 * dt : Math.random() < torn * 6 * dt));
+        if (this.scars.streak(tyre, tyre.contact, car.velocity, J.tyreScar, tearing) && Math.random() < J.sodPerRut * torn) {
+          this.groundBits.sods(tyre.contact, car.velocity, 1, 0.16 + 0.1 * Math.random());
+        }
+      } else this.scars.streak(tyre, tyre.contact, car.velocity, J.tyreScar, false);
+    }
+  }
+
+  /**
+   * A hit on grass presses the body into it: a small gouge where each corner or edge touched
+   * (see Car.hitPoints), stretched along the car's way, throwing out turf.
+   */
+  private gouges(car: Car, at: THREE.Vector3, severity: number): void {
+    const J = JUICE;
+    const radius = Math.min(J.maxGouge, J.gouge + J.gougePerSeverity * severity);
+    const last = this.lastGouge.get(car);
+    if (last && this.time - last.time < J.gougeGap && last.at.distanceTo(at) < last.radius) return;
+    this.lastGouge.set(car, { at: at.clone(), radius, time: this.time });
+    const velocity = car.velocity;
+    const speed = Math.hypot(velocity.x, velocity.z);
+    const stretch = 1 + J.gougeStretch * Math.min(1, speed / J.stretchSpeed);
+    const points = car.hitPoints;
+    const marked: THREE.Vector3[] = [];
+    for (const point of points.length > 0 ? points : [at]) {
+      // Points closer than a gouge's width make one gouge.
+      if (marked.some((m) => m.distanceTo(point) < radius * 1.5)) continue;
+      marked.push(point);
+      this.hole(point, velocity, radius * (0.8 + 0.4 * Math.random()), stretch * (0.8 + 0.4 * Math.random()));
+    }
+    this.groundBits.burst(at, velocity, radius, 'grass');
+  }
+
+  /** Whether the ground at `at` is grass or dirt the car can tear up: not snow, stone or rock face. */
+  private tearable(at: THREE.Vector3): boolean {
+    return this.field.softShare(at.x, at.z) > JUICE.tearableFrom;
+  }
+
+  /** A gouge, and the sod torn out of it thrown on: about as big as the hole it leaves. Only in grass or dirt. */
+  private hole(at: THREE.Vector3, velocity: THREE.Vector3, radius: number, stretch: number): void {
+    if (!this.tearable(at)) return;
+    this.scars.gouge(at, velocity, radius, stretch);
+    this.groundBits.sods(at, velocity, 1, Math.sqrt((Math.PI * radius * radius * stretch) / SOD_AREA), false);
   }
 
   /** Sparks streaming off one grinding contact, along the slide, with fractions carried per `key`. */
@@ -319,6 +455,12 @@ export class Juice implements CarEvents {
   private near(at: THREE.Vector3): boolean {
     return at.distanceTo(this.camera.position) < JUICE.effectRange;
   }
+}
+
+/** Mostly grass or dirt, not hard ground (stone counts 1 there on top of its cover): ground that tears. */
+function grassy(g: GroundMix): boolean {
+  const total = g.snow + g.grass + g.dirt + g.stone;
+  return total > 0 && g.stone < 0.5 && (g.grass + g.dirt) / total > 0.5;
 }
 
 /** A random ground material, weighted by the shared mix (set by Juice.groundAt). */

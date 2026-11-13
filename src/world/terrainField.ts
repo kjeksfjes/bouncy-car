@@ -238,6 +238,19 @@ export class TerrainField {
     return Math.max(mix.stone, this.biome.rockFace(n, env, mix.snow)) > HARD_GROUND.stone;
   }
 
+  /**
+   * How much of the ground at (x, z) shows grass or dirt (0..1): its cover's grass and dirt share,
+   * less any bare rock face showing on steep ground (see Biome.rockFace). Ground the car can tear up.
+   */
+  softShare(x: number, z: number): number {
+    const n = this.normal(x, z, _hardNormal, MESH_SLOPE);
+    const env = this.environment.at(x, z, _hardEnv);
+    const mix = this.biome.mix(x, z, n, env, _hardMix);
+    const total = mix.snow + mix.grass + mix.dirt + mix.stone;
+    if (total <= 0) return 0;
+    return ((mix.grass + mix.dirt) / total) * (1 - this.biome.rockFace(n, env, mix.snow));
+  }
+
   /** True where the terrain shows mostly bare rock face (see Biome.rockFace): steep ground, whatever its cover. */
   isRockFace(x: number, z: number): boolean {
     const n = this.normal(x, z, _hardNormal, MESH_SLOPE);
