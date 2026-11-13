@@ -405,7 +405,6 @@ export class Car {
         wheel.spinSpeed *= 0.99;
         continue;
       }
-      grounded++;
 
       // --- Suspension: spring + asymmetric damper + bump stop, along the car's up axis.
       const suspLen = Math.max(0, hit.timeOfImpact - radius);
@@ -417,8 +416,10 @@ export class Car {
         // Slamming down to the bump stops knocks the sump too.
         this.sumpDamage += bottomOut * cfg.damage.sumpBottomOutShare;
         this.damageWheel(wheel, bottomOut);
+        // Torn off by the landing: it isn't one of the grounded wheels any more.
         if (!wheel.attached) continue;
       }
+      grounded++;
       wheel.grounded = true;
       wheel.compression = compression;
       wheel.suspLen = suspLen;
