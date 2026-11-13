@@ -104,6 +104,8 @@ export class Game {
   /** Shows the AI's chosen heading while the autopilot drives. */
   private readonly aiArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, -1), new THREE.Vector3(), 6, 0x2b7de9, 1.2, 0.7);
   private autopilot = false;
+  /** The autopilot has asked for a new car (see drive). */
+  private autopilotWantsCar = false;
   private showAiHeading = false;
   private accumulator = 0;
   private lastTime = 0;
@@ -228,7 +230,8 @@ export class Game {
     const tip = this.input.consume('KeyF');
     if (!this.paused) {
       if (reset) this.car.resetUpright(this.field);
-      if (replace) this.replaceCar();
+      if (replace || this.autopilotWantsCar) this.replaceCar();
+      this.autopilotWantsCar = false;
       if (jumpBiome) this.jumpToNextBiome();
       else if (nextBiome) this.startNextBiome();
       if (autopilot) this.toggleAutopilot(this.input.shift);
@@ -437,6 +440,8 @@ export class Game {
     const others = this.allCars.filter((c) => c !== car).map((c) => c.position);
     const decision = driver.update(dt, car, others);
     if (decision.reset) car.resetUpright(this.field, decision.resetTo);
+    // The autopilot's wreck is replaced next frame, as N would (traffic wrecks stay where they lie).
+    if (decision.newCar && car === this.car) this.autopilotWantsCar = true;
     return decision.input;
   }
 

@@ -116,6 +116,13 @@ const AI = {
   escapeTime: 6,
   /** Upside down / on its side for this long → reset. */
   flippedTime: 1.5,
+  /**
+   * Broken (engine dead, or `brokenWheelsLost` wheels gone) and lying still (slower than
+   * `stillSpeed` m/s) for `brokenTime` s: ask for a new car.
+   */
+  brokenWheelsLost: 2,
+  stillSpeed: 1.5,
+  brokenTime: 5,
 };
 
 export interface AiDecision {
@@ -123,6 +130,8 @@ export interface AiDecision {
   /** The car should be put back on its wheels; where and facing which way, if not where it is. */
   reset: boolean;
   resetTo?: { x: number; z: number; yaw: number };
+  /** The car is wrecked and has come to rest: it wants a new one. */
+  newCar?: boolean;
 }
 
 const _fwd = new THREE.Vector3();
@@ -167,6 +176,8 @@ export class AiDriver {
   /** Seconds left of driving off any way it can. */
   private escape = 0;
   private flipped = 0;
+  /** How long the car has lain broken and still (s). */
+  private wrecked = 0;
 
   /** @param cruiseSpeed preferred speed on snow in m/s; varies per car so traffic spreads out */
   constructor(
@@ -186,6 +197,14 @@ export class AiDriver {
     const pos = car.position;
     const speed = car.forwardSpeed;
     const idle: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false };
+
+    // Wrecked and come to rest: ask for a new car (a car that limps on isn't still, so it keeps trying).
+    const broken = !car.engineAlive || car.wheelsLost >= AI.brokenWheelsLost;
+    this.wrecked = broken && car.velocity.length() < AI.stillSpeed ? this.wrecked + dt : 0;
+    if (this.wrecked > AI.brokenTime) {
+      this.wrecked = 0;
+      return { input: idle, reset: false, newCar: true };
+    }
 
     // Upside down or on its side and not getting anywhere: reset.
     this.flipped = _up.y < 0.3 && car.velocity.length() < 3 ? this.flipped + dt : 0;
