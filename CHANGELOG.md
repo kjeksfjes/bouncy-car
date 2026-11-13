@@ -3,6 +3,27 @@
 Releases are named plainly after what they bring (the first three after
 game-development milestones).
 
+## v0.7.0 – "Muscle Rumble and Torn Turf" (2026-11-13)
+
+A darker muscle-car V8 with a lumpy idle, tyres that grip by the ground
+under them, and grass that tears up under slides and hard hits.
+
+- **Engine sound:** the V8 fires each cylinder bank into its own
+  exhaust pipe, so it burbles unevenly like a cross-plane muscle car,
+  and a big cam makes the idle surge and stumble. Darker overall, and
+  a little louder in the mix.
+- **Grip by ground:** grass grips more than snow and rock most, blended
+  where grounds meet.
+- **Torn turf:** tyres sliding hard or skidding with the handbrake
+  locked cut ruts in grass, and hard hits gouge small holes where the
+  body touches. Each hole throws out its sod, which lands flat,
+  sometimes grass down. Only grass and dirt tear, never snow or rock.
+- **Tougher on landings:** landings cost an engine a third of what a
+  crash does and can't push it into the red on their own, and wheels
+  no longer come off on ordinary landings.
+- **Fixes:** icy, snow-covered slopes no longer spark and squeal like
+  bare rock.
+
 ## v0.6.0 – "Photo Mode and Engine Bay" (2026-11-12)
 
 Pause and frame the wreck with a full photo mode, open the hood to a
