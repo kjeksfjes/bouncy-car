@@ -367,6 +367,8 @@ export class Car {
 
     const Su = cfg.suspension;
     const Ti = cfg.tire;
+    // From the ground sampled last step (see sampleTyreGround), a step behind: it changes slowly.
+    const surfaceGrip = this.surfaceGrip();
     const radius = cfg.wheels.radius;
     const mEff = cfg.mass / 4;
     _down.copy(_up).negate();
@@ -435,7 +437,7 @@ export class Car {
       const stopLong = (Math.abs(vLong) * mEff) / dt; // force that would stop rolling this step
 
       const handbrake = input.handbrake && !wheel.front;
-      let grip = wheel.front ? Ti.gripFront : Ti.gripRear;
+      let grip = (wheel.front ? Ti.gripFront : Ti.gripRear) * surfaceGrip;
       if (handbrake) grip *= Ti.handbrakeRearGrip;
 
       let fLat = (-vLat * mEff * grip) / dt;
@@ -444,7 +446,7 @@ export class Car {
       if (handbrake) fLong -= Math.sign(vLong) * Math.min(E.handbrakeForce / 2, stopLong);
       fLong -= Math.sign(vLong) * Math.min(Ti.rollingResistance * load, stopLong);
 
-      const maxF = Ti.mu * load;
+      const maxF = Ti.mu * surfaceGrip * load;
       const total = Math.hypot(fLat, fLong);
       if (total > maxF) {
         const k = maxF / total;
@@ -1154,6 +1156,16 @@ export class Car {
 
   /** What the ground under the grounded tyres is made of (stone 1 on near-vertical rock), for their sound. */
   readonly tyreGround: GroundMix = { snow: 1, grass: 0, dirt: 0, stone: 0 };
+
+  /** How well the tyres grip on the ground under them, as a multiple of the car's grip (see tire.surfaceGrip). */
+  private surfaceGrip(): number {
+    const g = this.tyreGround;
+    const s = this.cfg.tire.surfaceGrip;
+    // Hard ground sets stone to 1 on top of its cover, so the mix can add up to more than 1.
+    const total = g.snow + g.grass + g.dirt + g.stone;
+    if (total <= 0) return s.snow;
+    return (g.snow * s.snow + g.grass * s.grass + g.dirt * s.dirt + g.stone * s.stone) / total;
+  }
 
   private sampleTyreGround(): void {
     _tyreMid.set(0, 0, 0);

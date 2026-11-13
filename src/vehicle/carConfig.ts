@@ -53,6 +53,11 @@ export interface CarConfig {
     rollingResistance: number;
     /** 0 = tyre forces act at the CoM height (no roll), 1 = at the contact patch (full roll). */
     rollInfluence: number;
+    /**
+     * Grip on each ground, as a multiple of the grip and mu above (snow is 1); blended by what's
+     * under the tyres (see Car.tyreGround).
+     */
+    surfaceGrip: { snow: number; grass: number; dirt: number; stone: number };
   };
 
   engine: {
@@ -325,6 +330,9 @@ export const COUPE_70S: CarConfig = {
     handbrakeRearGrip: 0.12,
     rollingResistance: 0.015,
     rollInfluence: 0.45,
+    // By feel: snow stays the arcade baseline (real packed snow would be far slipperier), and the
+    // bare grounds bite harder, as their real friction does (roughly grass < dirt < dry rock).
+    surfaceGrip: { snow: 1, grass: 1.2, dirt: 1.27, stone: 1.35 },
   },
 
   engine: {
