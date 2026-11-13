@@ -125,6 +125,7 @@ export interface CarConfig {
      * Landings (the ground hitting the underside from below) cost only `landingShare` of the
      * integrity a crash that hard would, and never take integrity below `landingFloor`: they can
      * finish off an engine that crashes have already brought close to dying, but not kill a sound one.
+     * The body's landing knocks the wheels by the same share (they also take bottoming out).
      */
     landingShare: number;
     landingFloor: number;

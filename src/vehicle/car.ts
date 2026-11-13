@@ -600,7 +600,7 @@ export class Car {
       // under the chassis's toughness, so hits from above on the cabin use a lower threshold.
       const threshold = impact.own === this.cabinCollider && normal.y > 0.5 ? d.roofToughness : d.toughness;
       if (impact.dv < threshold) continue;
-      this.applyImpact(sum.divideScalar(count), normal, impact.dv - threshold, impact.dv, surfaceOf(impact.other));
+      this.applyImpact(sum.divideScalar(count), normal, impact.dv - threshold, impact.dv, surfaceOf(impact.other), landing);
     }
     this.pending.clear();
   }
@@ -715,8 +715,9 @@ export class Car {
   /**
    * @param normal contact normal pointing out of the car (car-local)
    * @param severity Δv over the toughness threshold; `dv` is the whole Δv
+   * @param landing the ground hit the underside (see CarConfig landingShare)
    */
-  private applyImpact(local: THREE.Vector3, normal: THREE.Vector3, severity: number, dv: number, surface: ContactSurface): void {
+  private applyImpact(local: THREE.Vector3, normal: THREE.Vector3, severity: number, dv: number, surface: ContactSurface, landing: boolean): void {
     const d = this.cfg.damage;
     this.events?.impact(this, this.localToWorld(local), severity, surface);
 
@@ -809,11 +810,14 @@ export class Car {
       if (piece.hp <= 0) this.shatter(piece);
       else if (!piece.glass.cracked && piece.hp < d.glassHp * d.crackAt) this.crack(piece, local);
     }
+    // A landing already knocks the wheels as they bottom out (see bottomOutSpeed), so the body
+    // hitting the ground beside them only adds a share of a crash's knock.
+    const wheelShare = landing ? d.landingShare : 1;
     for (const wheel of this.wheels) {
       if (!wheel.attached) continue;
       _tmp.copy(wheel.anchor).setY(wheel.anchor.y - wheel.suspLen);
       const dist = _tmp.distanceTo(local);
-      if (dist < 1) this.damageWheel(wheel, severity * d.partDamagePerDv * (1 - dist));
+      if (dist < 1) this.damageWheel(wheel, severity * d.partDamagePerDv * (1 - dist) * wheelShare);
     }
   }
 
