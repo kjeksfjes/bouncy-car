@@ -37,13 +37,36 @@ export const SCARS = {
   wall: 0.03,
   lip: 0.4,
   minLip: 0.08,
+  /**
+   * A rut wanders along its length (gentle waves, in m of rut, random per rut): its width by up to
+   * `widthWander` (±, share), each lip's height by up to `depthWander` (sinking almost flat where
+   * the turf tore right off), each point by `rutRagged` (±, share). It narrows in over `taper` m
+   * where it starts and ends in a point that far on.
+   */
+  widthWander: 0.35,
+  depthWander: 0.6,
+  rutRagged: 0.15,
+  taper: 0.6,
+  /** A rut's floor shades smoothly between the soils (0 light .. 1 dark) round `floorShade`, ± `floorWander`. */
+  floorShade: 0.35,
+  floorWander: 0.25,
+  /** Turf lips are this much darker than the grass (upturned, its soil showing through): from `turfShade[0]` to `[1]`. */
+  turfShade: [0.78, 0.92],
 };
 
-/** One cross-section of a streak: the floor's edges, the lip tops and where the lips meet the ground, left to right. */
+/** One cross-section of a rut: the lips' feet and tops and the floor's edges, left to right. */
 interface Station {
   at: THREE.Vector3;
+  dir: THREE.Vector3;
   points: THREE.Vector3[];
   turf: THREE.Color;
+}
+
+/** A rut under way: its last cross-section, how long it is so far (m), and its own waves' phases. */
+interface Rut {
+  last: Station;
+  run: number;
+  phases: number[];
 }
 
 const _dir = new THREE.Vector3();
@@ -72,7 +95,7 @@ export class GroundScars {
   /** Triangles written since the last flush (from `dirtyFrom`, wrapping), to upload. */
   private dirtyFrom = 0;
   private dirty = 0;
-  private readonly streaks = new WeakMap<object, Station>();
+  private readonly ruts = new WeakMap<object, Rut>();
 
   /**
    * @param ground the drawn ground's height at (x, z) (see Terrain.surfaceHeight)
@@ -161,48 +184,76 @@ export class GroundScars {
    */
   streak(key: object, at: THREE.Vector3, along: THREE.Vector3, width: number, tearing: boolean): boolean {
     const S = SCARS;
-    const last = this.streaks.get(key);
+    let rut = this.ruts.get(key);
     if (!tearing) {
-      if (last) this.streaks.delete(key);
+      if (rut) this.endRut(key, rut);
       return false;
     }
-    if (last && last.at.distanceTo(at) < S.segment) return false;
+    const step = rut ? rut.last.at.distanceTo(at) : 0;
+    if (rut && step < S.segment) return false;
     _dir.set(along.x, 0, along.z);
     if (_dir.lengthSq() < 1e-6) return false;
     _dir.normalize();
-    _side.crossVectors(UP, _dir);
-    const half = (width / 2) * (1 + (Math.random() - 0.5) * S.ragged);
-    const depth = S.rutDepth;
-    const lip = Math.max(S.minLip, half * S.lip);
+    // A jump (the tyre left the ground, the car went out of range): end it there and start afresh.
+    if (rut && step > S.gap) {
+      this.endRut(key, rut);
+      rut = undefined;
+    }
+    const run = rut ? rut.run + step : 0;
+    const phases = rut?.phases ?? Array.from({ length: 7 }, () => Math.random() * Math.PI * 2);
+    const wave = (k: number, f: number) => Math.sin(run * f + phases[k]);
+    const taper = Math.min(1, run / S.taper);
+    const half = (width / 2) * (1 + S.widthWander * (0.7 * wave(0, 1.7) + 0.3 * wave(1, 4.3))) * taper;
+    const lipHeight = (k: number) => S.rutDepth * Math.max(0.1, 1 + S.depthWander * (0.6 * wave(k, 1.3) + 0.4 * wave(k + 1, 3.1))) * taper;
+    const lip = Math.max(S.minLip, half * S.lip) * taper;
+    const ragged = () => 1 + (Math.random() - 0.5) * 2 * S.rutRagged;
     // Left lip's foot, its top, the floor's edges, the right lip's top and foot.
     const offsets: [number, number][] = [
-      [half + S.wall + lip, -S.lift],
-      [half + S.wall + lip * 0.3, depth],
-      [half, 0],
-      [-half, 0],
-      [-half - S.wall - lip * 0.3, depth],
-      [-half - S.wall - lip, -S.lift],
+      [(half + S.wall * taper + lip) * ragged(), -S.lift],
+      [(half + S.wall * taper + lip * 0.3) * ragged(), lipHeight(2)],
+      [half * ragged(), 0],
+      [-half * ragged(), 0],
+      [-(half + S.wall * taper + lip * 0.3) * ragged(), lipHeight(4)],
+      [-(half + S.wall * taper + lip) * ragged(), -S.lift],
     ];
+    _side.crossVectors(UP, _dir);
     const station: Station = {
       at: at.clone(),
+      dir: _dir.clone(),
       points: offsets.map(([out, up]) => this.onGround(at.clone().addScaledVector(_side, out), up)),
       turf: this.grassColour(at.x, at.z, new THREE.Color()),
     };
-    this.streaks.set(key, station);
-    if (!last || last.at.distanceTo(at) > S.gap) return false;
-    const [a, b, c, d, e, f] = last.points;
+    this.ruts.set(key, { last: station, run, phases });
+    if (!rut) return false;
+    const [a, b, c, d, e, f] = rut.last.points;
     const [A, B, C, D, E, F] = station.points;
-    this.quad(a, b, B, A, this.turf(last.turf));
-    this.quad(b, c, C, B, this.soil(1));
-    this.quad(c, d, D, C, this.soil(0.5));
-    this.quad(d, e, E, D, this.soil(1));
-    this.quad(e, f, F, E, this.turf(last.turf));
+    const turf = rut.last.turf;
+    this.quad(a, b, B, A, this.turf(turf));
+    this.quad(b, c, C, B, this.soilShade(0.8 + 0.1 * wave(6, 2.3)));
+    this.quad(c, d, D, C, this.soilShade(S.floorShade + S.floorWander * wave(6, 0.9) + 0.05 * Math.random()));
+    this.quad(d, e, E, D, this.soilShade(0.8 - 0.1 * wave(6, 2.3)));
+    this.quad(e, f, F, E, this.turf(turf));
     return true;
   }
 
   /** Whether the rut `key` is under way. */
   streaking(key: object): boolean {
-    return this.streaks.has(key);
+    return this.ruts.has(key);
+  }
+
+  /** Ends a rut in a point a taper's length on, where the tyre lifted out of it. */
+  private endRut(key: object, rut: Rut): void {
+    this.ruts.delete(key);
+    const { at, dir, points, turf } = rut.last;
+    // A rut that never got past its start has nothing to close.
+    if (rut.run === 0) return;
+    const tip = this.onGround(at.clone().addScaledVector(dir, SCARS.taper * 0.5), -SCARS.lift);
+    const [a, b, c, d, e, f] = points;
+    this.triangle(a, b, tip, this.turf(turf));
+    this.triangle(b, c, tip, this.soilShade(0.8));
+    this.triangle(c, d, tip, this.soilShade(SCARS.floorShade));
+    this.triangle(d, e, tip, this.soilShade(0.8));
+    this.triangle(e, f, tip, this.turf(turf));
   }
 
   /** Uploads what was written since the last call. Call once a frame. */
@@ -236,9 +287,15 @@ export class GroundScars {
     return _colour.copy(IMPRINT.soil).lerp(IMPRINT.soilDark, Math.random() < dark ? 0.5 + 0.5 * Math.random() : 0.3 * Math.random());
   }
 
-  /** The grass colour, a touch darker or lighter so the lip's faces don't read as one flat sheet. */
+  /** A soil colour `t` of the way from the light soil to the dark. */
+  private soilShade(t: number): THREE.Color {
+    return _colour.copy(IMPRINT.soil).lerp(IMPRINT.soilDark, THREE.MathUtils.clamp(t, 0, 1));
+  }
+
+  /** Upturned turf: the grass colour a little darker, varying so the lip's faces don't read as one flat sheet. */
   private turf(grass: THREE.Color): THREE.Color {
-    return _colour.copy(grass).multiplyScalar(0.85 + Math.random() * 0.15);
+    const [dark, light] = SCARS.turfShade;
+    return _colour.copy(grass).multiplyScalar(dark + Math.random() * (light - dark));
   }
 
   private quad(a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, d: THREE.Vector3, colour: THREE.Color): void {
