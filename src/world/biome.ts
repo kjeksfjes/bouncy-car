@@ -538,8 +538,19 @@ export class Biome {
       if (snow > 0) out.lerp(_bare, 1 - snow);
       else out.copy(_bare);
     }
-    const rockFrom = S.rockFrom + (snow > 0 ? S.scouredRock * convex : 0);
-    return out.lerp(GROUND.rock, smoothstep(rockFrom, S.rockTo, normal.y));
+    return out.lerp(GROUND.rock, this.rockFace(normal, env, snow));
+  }
+
+  /**
+   * How much bare rock face shows on ground this steep (0..1), whatever covers the flatter ground
+   * around it: the terrain's colouring, and what the car's tyres and body treat as hard (see
+   * TerrainField.isHard).
+   * @param snow the snow cover there (see snowCover): wind-scoured snowy crests bare their rock sooner
+   */
+  rockFace(normal: THREE.Vector3, env: EnvSample, snow: number): number {
+    const S = SNOW_SURFACE;
+    const rockFrom = S.rockFrom + (snow > 0 ? S.scouredRock * Math.max(0, env.curvature) : 0);
+    return smoothstep(rockFrom, S.rockTo, normal.y);
   }
 
   /** 0 in grassy .. 1 in rocky country (see COVER). */

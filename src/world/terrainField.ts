@@ -3,7 +3,7 @@ import type { NoiseFunction2D } from 'simplex-noise';
 import { SUN_DIR } from '../render/stage';
 import { Biome, treeSuitability, type GroundMix, type Stand } from './biome';
 import type { EnvSample } from './environment';
-import { emptySample, Environment } from './environment';
+import { emptySample, Environment, GRID_STEP } from './environment';
 import { DescentFeatures, type TerrainPreset } from './features';
 import { Landform } from './landform';
 import { LandmarkLayout } from './landmarks';
@@ -102,10 +102,15 @@ export interface SurfaceLayers {
 }
 
 /**
- * Hard ground, which metal sparks against and the paint scratches on: terrain steeper than
- * `rockBelow` (normal Y; matches the terrain colouring), or past `stone` share of stone.
+ * Hard ground, which metal sparks against and the paint scratches on: past `stone` share of stone
+ * or bare rock face (see TerrainField.isHard).
  */
-export const HARD_GROUND = { rockBelow: 0.7, stone: 0.5 };
+export const HARD_GROUND = { stone: 0.5 };
+/**
+ * Half the span (m) hard ground reads its slope over: a terrain mesh cell, the scale the ground is
+ * coloured and collided at, so a bump finer than the mesh doesn't count as a rock face.
+ */
+const MESH_SLOPE = GRID_STEP / 2;
 
 const _surface: SurfaceLayers = { moguls: 0, kickers: 0 };
 const _hardNormal = new THREE.Vector3();
@@ -225,11 +230,19 @@ export class TerrainField {
     return landform + layers.moguls + layers.kickers + this.features.height(x, z);
   }
 
-  /** True on hard ground (see HARD_GROUND): near-vertical rock, or mostly stone. */
+  /** True on hard ground (see HARD_GROUND): mostly stone, or where the terrain shows mostly bare rock face. */
   isHard(x: number, z: number): boolean {
-    const n = this.normal(x, z, _hardNormal);
-    if (n.y < HARD_GROUND.rockBelow) return true;
-    return this.groundMix(x, z, n).stone > HARD_GROUND.stone;
+    const n = this.normal(x, z, _hardNormal, MESH_SLOPE);
+    const env = this.environment.at(x, z, _hardEnv);
+    const mix = this.biome.mix(x, z, n, env, _hardMix);
+    return Math.max(mix.stone, this.biome.rockFace(n, env, mix.snow)) > HARD_GROUND.stone;
+  }
+
+  /** True where the terrain shows mostly bare rock face (see Biome.rockFace): steep ground, whatever its cover. */
+  isRockFace(x: number, z: number): boolean {
+    const n = this.normal(x, z, _hardNormal, MESH_SLOPE);
+    const env = this.environment.at(x, z, _hardEnv);
+    return this.biome.rockFace(n, env, this.biome.snowCover(x, z, n, env)) > HARD_GROUND.stone;
   }
 
   /**
@@ -240,9 +253,11 @@ export class TerrainField {
     return this.biome.mix(x, z, normal, this.environment.at(x, z, _hardEnv), _hardMix);
   }
 
-  /** Surface normal via central differences. */
-  normal(x: number, z: number, out = new THREE.Vector3()): THREE.Vector3 {
-    const e = 0.5;
+  /**
+   * Surface normal via central differences.
+   * @param e half the span (m) the slope is measured over
+   */
+  normal(x: number, z: number, out = new THREE.Vector3(), e = 0.5): THREE.Vector3 {
     const dx = this.height(x + e, z) - this.height(x - e, z);
     const dz = this.height(x, z + e) - this.height(x, z - e);
     return out.set(-dx, 2 * e, -dz).normalize();

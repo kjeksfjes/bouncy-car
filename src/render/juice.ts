@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Car, CarEvents, ContactSurface, Grind } from '../vehicle/car';
 import type { GroundMix } from '../world/biome';
 import { emptySample } from '../world/environment';
-import { HARD_GROUND, type TerrainField } from '../world/terrainField';
+import type { TerrainField } from '../world/terrainField';
 import type { TreeLayout } from '../world/trees';
 import type { OrbitCamera } from './orbitCamera';
 import { Particles } from './particles';
@@ -303,7 +303,7 @@ export class Juice implements CarEvents {
   }
 
   private isRock(at: THREE.Vector3): boolean {
-    return this.field.normal(at.x, at.z, _n).y < HARD_GROUND.rockBelow;
+    return this.field.isRockFace(at.x, at.z);
   }
 
   /** Hard ground that metal sparks against (see TerrainField.isHard). */
