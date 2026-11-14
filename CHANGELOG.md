@@ -3,6 +3,34 @@
 Releases are named plainly after what they bring (the first three after
 game-development milestones).
 
+## v0.8.0 – "Smarter Autopilot, Clearer View" (2026-11-14)
+
+An autopilot that plans its way down the mountain, hunts cairns and
+works itself loose when stuck, and a car you can always see: through
+the trees that hide it, and as a silhouette against the sun.
+
+- **Autopilot route:** the AI plans far ahead for the open way through
+  or round forest, off rock faces and tipping slopes, sets its speed by
+  the grip, and goes for a cairn ahead to knock it over.
+- **Getting loose:** when stuck, the AI backs out and drives away round
+  trunks and steep rock instead of pushing on, avoids the heading that
+  got it stuck, and picks its way to open ground in dense forest.
+  Resets put a car on the nearest spot clear of trunks, and slippery
+  bark keeps cars from hanging on trees.
+- **New car when wrecked:** a broken autopilot car that has lain still
+  for a few seconds is swapped for a new one, as N would.
+- **See through trees:** when trees hide most of the car, they dissolve
+  in front of it. A tree covering only a corner or a side stays whole,
+  and photo mode always shows trees whole.
+- **Backlight:** undersides catch the ground's light, bright on snow
+  and darker on grass, and looking into the sun darkens the land and
+  the car toward a silhouette against the sky.
+- **Photo mode:** a right-drag turns the camera the way the cursor
+  goes, and faster.
+- **Brakes:** much stronger; on snow they now use all the grip there is.
+- **Fixes:** a wheel torn off on landing no longer counts as touching
+  the ground (it could break the tyre grip reading).
+
 ## v0.7.0 – "Muscle Rumble and Torn Turf" (2026-11-13)
 
 A darker muscle-car V8 with a lumpy idle, tyres that grip by the ground
