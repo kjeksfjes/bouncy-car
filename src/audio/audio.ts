@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Car, CarEvents, ContactSurface } from '../vehicle/car';
+import { caw, wingFlutter } from './birdSounds';
 import { ENGINE_PROCESSOR, loadEngineWorklet } from './engineWorklet';
 import { DragChain, GrindChain, SCRAPE, blendDrag, blendGrind, scrapeGrains, surfaceProfile, type GrindSound } from './scrape';
 import { Squeal, TYRE_ROLL, TYRE_SLIDE, loadLoudness, slideWildness, wilder } from './tyres';
@@ -25,7 +26,17 @@ const MIX = {
   thud: 0.8,
   /** Rocks: knocked loose, clacking on each other, landing. */
   rock: 0.7,
+  /** Rooks: a group's wingbeats lifting off, and their caws. */
+  wings: 0.5,
+  caw: 0.38,
 };
+
+/**
+ * Rooks lifting off: one caw, plus one for every `cawPerBirds` birds, up to `cawsMax`, spread over the
+ * first `cawSpread` s. At most `cawVoices` caws start within `cawWindow` s, so a big flock doesn't
+ * pile up a choir.
+ */
+const ROOKS = { cawPerBirds: 4, cawsMax: 4, cawSpread: 1.2, cawVoices: 3, cawWindow: 0.6 };
 
 /** At most this many rock clacks and thuds start within ROCK_WINDOW s: a collapsing heap would otherwise pile up voices. */
 const ROCK_VOICES = 6;
@@ -341,6 +352,16 @@ export class GameAudio implements CarEvents {
   rockHit(at: THREE.Vector3, k: number, size: number, stone: boolean): void {
     this.engine?.rockHit(at, k, size, stone);
   }
+
+  /** `count` rooks lifting off together at `at`: their wingbeats and a few alarm caws. */
+  birdsUp(at: THREE.Vector3, count: number): void {
+    this.engine?.birdsUp(at, count);
+  }
+
+  /** One rook calling at `at`. */
+  birdCall(at: THREE.Vector3): void {
+    this.engine?.birdCall(at);
+  }
 }
 
 class AudioEngine {
@@ -367,6 +388,8 @@ class AudioEngine {
   private readonly slowFilter: BiquadFilterNode;
   /** When the latest rock clacks and thuds started (see ROCK_VOICES). */
   private rockTimes: number[] = [];
+  /** When the latest caws start (see ROOKS). */
+  private cawTimes: number[] = [];
 
   constructor() {
     loadEngineWorklet(this.ctx).then(
@@ -491,6 +514,22 @@ class AudioEngine {
     this.noiseBurst(out, 'bandpass', 1000 - 400 * s, 1.2, 0.7, 0.07);
     this.noiseBurst(out, 'highpass', 3000, 0.8, 0.35, 0.05);
     this.rockHit(at, 1, size * 0.6, true);
+  }
+
+  birdsUp(at: THREE.Vector3, count: number): void {
+    const R = ROOKS;
+    wingFlutter(this.ctx, this.oneShotOut(at, MIX.wings), this.noise, count, this.pitch);
+    const caws = Math.min(R.cawsMax, 1 + Math.floor(count / R.cawPerBirds));
+    for (let i = 0; i < caws; i++) this.birdCall(at, Math.random() * R.cawSpread);
+  }
+
+  birdCall(at: THREE.Vector3, delay = 0): void {
+    const R = ROOKS;
+    const start = this.ctx.currentTime + delay / this.pitch;
+    this.cawTimes = this.cawTimes.filter((t) => Math.abs(start - t) < R.cawWindow);
+    if (this.cawTimes.length >= R.cawVoices) return;
+    this.cawTimes.push(start);
+    caw(this.ctx, this.oneShotOut(at, MIX.caw), this.pitch, delay / this.pitch);
   }
 
   rockHit(at: THREE.Vector3, k: number, size: number, stone: boolean): void {

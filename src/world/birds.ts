@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { Car, ContactSurface } from '../vehicle/car';
+import { FOOTPRINT } from '../vehicle/clearPose';
 import type { GroundMix } from './biome';
 import { emptySample } from './environment';
 import { hash2 } from './noise';
@@ -21,7 +22,8 @@ const LOOK = { body: '#15161b', face: '#a8a49c', wing: '#121317', legs: '#2a2a2e
  * wandering off it by up to `wander` rad/s. Wings: `climbBeat` while climbing, `cruiseBeat` after
  * (beats/s and amplitude in rad), cruising in bouts of flapping (`flapFor` s) and gliding
  * (`glideFor` s) with the wings held at `glideDihedral` rad. It keeps `clearance` m above the
- * ground, and is gone once `despawn` m from the camera or `maxAge` s after taking off.
+ * ground, and is gone once `despawn` m from the camera and `receding` m further than it has come
+ * (so a flock crossing the sky can fly in from further off), or `maxAge` s after taking off.
  */
 const FLIGHT = {
   takeOffSpeed: 6,
@@ -38,22 +40,22 @@ const FLIGHT = {
   glideDihedral: 0.12,
   clearance: 2,
   despawn: 220,
+  receding: 20,
   maxAge: 45,
 };
 
 /**
- * Rookeries: rooks live where the country is green, in tall trees by open ground. A broadleaf tree
- * (never a snowy one) at least `minScale` big holds one by `chance`, with `birds` (min..max) in it;
- * a great oak always does, with `oakBirds`. A hit of at least `hitFrom` (severity: Δv in m/s over
- * the car's toughness) sends them all up, each leaving the crown within `stagger` s, and that tree
- * stays empty.
+ * Rookeries: rooks live where the country is green, in grown trees. A tree of each kind at least
+ * `minScale` big holds one by `chance`, with `birds` (min..max) in it: broadleaf trees most often,
+ * conifers less (rooks nest in them less), a spruce only a few birds; never a snowy one. A great oak
+ * always does, with `oakBirds`. Any touch of a car on the tree (a bounce or a scrape as much as a
+ * crash) sends them all up, each leaving the crown within `stagger` s, and that tree stays empty.
  */
 const ROOKERY = {
-  chance: 0.35,
-  minScale: 1.1,
-  birds: [3, 8] as const,
+  broadleaf: { chance: 0.6, minScale: 0.9, birds: [3, 8] as const },
+  pine: { chance: 0.3, minScale: 1, birds: [3, 8] as const },
+  spruce: { chance: 0.3, minScale: 0.9, birds: [1, 3] as const },
   oakBirds: [6, 12] as const,
-  hitFrom: 1,
   stagger: 0.6,
 };
 
@@ -87,11 +89,41 @@ const FLOCKS = {
   every: 0.5,
 };
 
+/**
+ * Flocks crossing the sky: every `gap` (min..max) s, while the ground under the player is at least
+ * `minGrass` grass, a loose flock of `birds` (min..max) passes over. It starts `start` m off to one
+ * side (out of view, as the camera looks downhill) of where the player will be by the time it has
+ * flown across, at its current speed, give or take `ahead` (min..max) m along the slope, and flies
+ * across `height` (min..max) m above the ground, its birds spread up to `cloud` m along, across and
+ * up from its middle. They share one wander, so the flock turns as one.
+ */
+const SKY = {
+  gap: [25, 60] as const,
+  minGrass: 0.3,
+  birds: [6, 20] as const,
+  start: 190,
+  ahead: [-20, 80] as const,
+  height: [30, 60] as const,
+  cloud: { along: 20, across: 15, up: 6 },
+};
+
 /** The body's centre above the ground standing (m), and the folded wings' length as a share of open. */
 const STANCE = { height: 0.13, fold: 0.62 };
 
 /** Most birds at once, on the ground and in the air. */
 const CAPACITY = 192;
+
+/** A car touches a tree when one of its body's circles (FOOTPRINT) comes within this much more than touching (m). */
+const TOUCH_MARGIN = 0.15;
+
+/** A rook in the air within `reach` m of the camera calls now and then: `perSecond` on average. */
+const CALLS = { reach: 120, perSecond: 0.04 };
+
+/** What the birds make heard: a group lifting off together (wingbeats and alarm calls), and one calling. */
+export interface BirdSounds {
+  up(at: THREE.Vector3, count: number): void;
+  call(at: THREE.Vector3): void;
+}
 
 type GroundAction = 'walk' | 'peck' | 'look';
 
@@ -118,8 +150,9 @@ interface Bird {
   bank: number;
   /** Seconds still hidden in the crown before it leaves (rookery birds). */
   delay: number;
-  /** Seconds since it took off. */
+  /** Seconds since it took off, and the nearest it has come to the camera since (m). */
   age: number;
+  nearest: number;
   /** On the ground: what it's doing and for how much longer, and its flock. */
   action: GroundAction;
   actionLeft: number;
@@ -146,6 +179,7 @@ const _flap = new THREE.Matrix4();
 const _fold = new THREE.Matrix4();
 const _foldScale = new THREE.Matrix4().makeScale(STANCE.fold, 1, 1);
 const _want = new THREE.Vector3();
+const _touch = new THREE.Vector3();
 const _n = new THREE.Vector3();
 const _env = emptySample();
 const _mix: GroundMix = { snow: 0, grass: 0, dirt: 0, stone: 0 };
@@ -170,6 +204,11 @@ export class Birds {
   private readonly flown = new Set<string>();
   private readonly barren = new Set<string>();
   private lookOver = 0;
+  /** Seconds to the next flock across the sky. */
+  private skyIn = between(SKY.gap, Math.random());
+  /** The player's ground velocity (m/s), from its last position, for aiming a flock across its way. */
+  private readonly playerVel = new THREE.Vector3();
+  private readonly lastPlayer = new THREE.Vector3(NaN, 0, 0);
   private readonly body: THREE.InstancedMesh;
   private readonly wingR: THREE.InstancedMesh;
   private readonly wingL: THREE.InstancedMesh;
@@ -183,6 +222,7 @@ export class Birds {
     private readonly field: TerrainField,
     private readonly trees: TreeLayout,
     private readonly groundAt: (x: number, z: number) => number,
+    private readonly sounds: BirdSounds,
   ) {
     const material = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.55, metalness: 0.15 });
     const mesh = (geometry: THREE.BufferGeometry) => {
@@ -201,20 +241,23 @@ export class Birds {
   }
 
   /**
-   * A car's hit (see CarEvents.impact): a hard enough knock on a rookery tree sends its rooks up,
-   * and any crash near a flock sets it off.
+   * A car's hit (see CarEvents.impact): on a rookery tree it sends the rooks up, and any crash near a
+   * flock sets it off. (Gentler touches on a tree come in through the cars' contacts: see update.)
    */
-  impact(car: Car, at: THREE.Vector3, severity: number, surface: ContactSurface): void {
+  impact(car: Car, at: THREE.Vector3, _severity: number, surface: ContactSurface): void {
     for (const flock of this.flocks.values()) {
       if (!flock.startled && flock.centre.distanceTo(at) < FLOCKS.crash) this.startle(flock, at);
     }
-    if (surface !== 'tree' || severity < ROOKERY.hitFrom) return;
-    const tree = this.trees.blocking(at.x, at.z, 2);
-    if (!tree) return;
+    const tree = surface === 'tree' ? this.trees.blocking(at.x, at.z, 2) : null;
+    if (tree) this.shakeTree(car.position, tree);
+  }
+
+  /** A car at `from` touching `tree`: if it's a rookery, its rooks fly up, away from the car. */
+  private shakeTree(from: THREE.Vector3, tree: Tree): void {
     const count = this.rookery(tree);
     if (count === 0) return;
     this.emptied.add(treeKey(tree));
-    const away = yawTo(tree.x - car.position.x, tree.z - car.position.z);
+    const away = yawTo(tree.x - from.x, tree.z - from.z);
     const crownY = tree.y + (tree.oak ? 10 : 3.5) * tree.scale;
     const crownR = (tree.oak ? 4.5 : 1.4) * tree.scale;
     for (let i = 0; i < count && this.birds.length < CAPACITY; i++) {
@@ -225,25 +268,44 @@ export class Birds {
       this.takeOff(b, away + (Math.random() * 2 - 1) * FLIGHT.spread);
       this.birds.push(b);
     }
+    this.sounds.up(new THREE.Vector3(tree.x, crownY, tree.z), count);
   }
 
   /**
    * @param dt game time (s): birds freeze when paused and slow down in slow motion
    * @param eye the camera's position: flying birds far from it are gone
    * @param player the player's car, round which the flocks are
-   * @param cars every car's position (the player's included), which startle the flocks
+   * @param cars every car (the player's included): they startle the flocks, and shake the trees they touch
    */
-  update(dt: number, eye: THREE.Vector3, player: THREE.Vector3, cars: readonly THREE.Vector3[]): void {
+  update(dt: number, eye: THREE.Vector3, player: THREE.Vector3, cars: readonly Car[]): void {
+    // Any touch on a tree, however gentle (impacts only report hits over the car's toughness).
+    for (const car of cars) {
+      const q = car.model.root.quaternion;
+      for (const local of FOOTPRINT.circles) {
+        _touch.set(0, 0, local).applyQuaternion(q).add(car.position);
+        const tree = this.trees.blocking(_touch.x, _touch.z, FOOTPRINT.clearance + TOUCH_MARGIN);
+        if (tree) this.shakeTree(car.position, tree);
+      }
+    }
     if ((this.lookOver -= dt) <= 0) {
       this.lookOver = FLOCKS.every;
       this.placeFlocks(player);
     }
+    if (dt > 0 && Number.isFinite(this.lastPlayer.x)) {
+      _want.subVectors(player, this.lastPlayer).divideScalar(dt).setY(0);
+      this.playerVel.lerp(_want, 1 - Math.exp(-2 * dt));
+    }
+    this.lastPlayer.copy(player);
+    if ((this.skyIn -= dt) <= 0) {
+      this.skyIn = between(SKY.gap, Math.random());
+      if (this.grass(player.x, player.z) >= SKY.minGrass) this.crossSky(player);
+    }
     for (const flock of this.flocks.values()) {
       if (flock.startled) continue;
       for (const b of flock.birds) {
-        const near = cars.find((c) => c.distanceTo(b.pos) < FLOCKS.startle);
+        const near = cars.find((c) => c.position.distanceTo(b.pos) < FLOCKS.startle);
         if (near) {
-          this.startle(flock, near);
+          this.startle(flock, near.position);
           break;
         }
       }
@@ -261,12 +323,15 @@ export class Birds {
         continue;
       }
       b.age += dt;
-      if (b.age > FLIGHT.maxAge || b.pos.distanceTo(eye) > FLIGHT.despawn) {
+      const distance = b.pos.distanceTo(eye);
+      b.nearest = Math.min(b.nearest, distance);
+      if (b.age > FLIGHT.maxAge || (distance > FLIGHT.despawn && distance > b.nearest + FLIGHT.receding)) {
         this.birds[i] = this.birds[this.birds.length - 1];
         this.birds.pop();
         continue;
       }
       this.fly(dt, b);
+      if (distance < CALLS.reach && Math.random() < CALLS.perSecond * dt) this.sounds.call(b.pos);
     }
     this.draw();
   }
@@ -330,6 +395,7 @@ export class Birds {
     flock.startled = true;
     this.flown.add(flock.key);
     this.flocks.delete(flock.key);
+    this.sounds.up(flock.centre, flock.birds.length);
     let first = Infinity;
     for (const b of flock.birds) first = Math.min(first, b.pos.distanceTo(from));
     for (const b of flock.birds) {
@@ -348,6 +414,44 @@ export class Birds {
     b.flapping = true;
     b.flap = 1;
     b.age = 0;
+  }
+
+  /** Sends a loose flock across the sky ahead of the player, from one side to the other (see SKY). */
+  private crossSky(player: THREE.Vector3): void {
+    const S = SKY;
+    const count = Math.round(between(S.birds, Math.random()));
+    if (this.birds.length + count > CAPACITY) return;
+    // From the left (−x) or the right, across the slope with some slant, a little way downhill.
+    const side = Math.random() < 0.5 ? -1 : 1;
+    const heading = yawTo(-side, 0) + (Math.random() * 2 - 1) * 0.4;
+    // Where the player will be by the time the flock is over its way.
+    const meet = S.start / FLIGHT.speed;
+    const x0 = player.x + this.playerVel.x * meet + side * S.start;
+    const z0 = player.z + this.playerVel.z * meet - between(S.ahead, Math.random());
+    const height = between(S.height, Math.random());
+    const seed = Math.random() * 100;
+    const along = new THREE.Vector3(-Math.sin(heading), 0, -Math.cos(heading));
+    for (let i = 0; i < count; i++) {
+      const a = (Math.random() * 2 - 1) * S.cloud.along;
+      const c = (Math.random() * 2 - 1) * S.cloud.across;
+      const x = x0 + along.x * a - along.z * c;
+      const z = z0 + along.z * a + along.x * c;
+      const b = newBird(new THREE.Vector3(x, this.field.height(x, z) + height + (Math.random() * 2 - 1) * S.cloud.up, z));
+      this.takeOff(b, heading);
+      b.vel.copy(along).multiplyScalar(FLIGHT.speed);
+      b.climbing = false;
+      b.height = height;
+      b.seed = seed + Math.random() * 0.3;
+      b.flapping = Math.random() < 0.6;
+      b.switchIn = Math.random() * 2;
+      this.birds.push(b);
+    }
+  }
+
+  /** How much of the ground at (x, z) is grass (0..1). */
+  private grass(x: number, z: number): number {
+    const normal = this.field.normal(x, z, _n);
+    return this.field.biome.mix(x, z, normal, this.field.environment.at(x, z, _env), _mix).grass;
   }
 
   /** Puts down the flocks of the cells within reach of the player, and lifts those beyond it. */
@@ -387,9 +491,8 @@ export class Birds {
     if (hash2(cx, cz, 80) >= F.chance) return null;
     const x = (cx + 0.15 + 0.7 * hash2(cx, cz, 81)) * F.cell;
     const z = (cz + 0.15 + 0.7 * hash2(cx, cz, 83)) * F.cell;
-    const normal = this.field.normal(x, z, _n);
-    if (normal.y < F.minGroundUp) return null;
-    if (this.field.biome.mix(x, z, normal, this.field.environment.at(x, z, _env), _mix).grass < F.minGrass) return null;
+    if (this.field.normal(x, z, _n).y < F.minGroundUp) return null;
+    if (this.grass(x, z) < F.minGrass) return null;
     if (this.trees.blocking(x, z, F.treeClear)) return null;
     return { x, z };
   }
@@ -420,8 +523,9 @@ export class Birds {
     const ix = Math.round(tree.x * 10);
     const iz = Math.round(tree.z * 10);
     if (tree.oak) return Math.round(between(R.oakBirds, hash2(ix, iz, 71)));
-    if (tree.species !== 'broadleaf' || tree.snowy || tree.scale < R.minScale || hash2(ix, iz, 70) >= R.chance) return 0;
-    return Math.round(between(R.birds, hash2(ix, iz, 72)));
+    const kind = R[tree.species];
+    if (tree.snowy || tree.scale < kind.minScale || hash2(ix, iz, 70) >= kind.chance) return 0;
+    return Math.round(between(kind.birds, hash2(ix, iz, 72)));
   }
 
   private draw(): void {
@@ -479,6 +583,7 @@ function newBird(pos: THREE.Vector3): Bird {
     bank: 0,
     delay: 0,
     age: 0,
+    nearest: Infinity,
     action: 'look',
     actionLeft: 0,
     flock: null,
