@@ -1,11 +1,15 @@
 import { DEV_FROM_URL } from './constants';
 import type { Car } from './vehicle/car';
 
-const AIR_POPUP_SECONDS = 1.6;
 /** How long photo mode shows the slow-motion badge after a change (ms). */
 const SLOW_FLASH_MS = 1500;
-/** The gap between the inspection legend and photo mode's controls beside it (px). */
-const CARD_GAP = 12;
+/**
+ * Where H's hiding each card is remembered, for the next time the game is played (this browser
+ * only): the driving card, the dev card (so it shows on entering dev mode until hidden there) and
+ * photo mode's.
+ */
+const HIDDEN_KEY = { play: 'bouncy-car:controls-hidden', dev: 'bouncy-car:dev-controls-hidden', photo: 'bouncy-car:photo-controls-hidden' };
+type Card = keyof typeof HIDDEN_KEY;
 
 /**
  * Whether the keyboard is a Mac's: the legend's keys go by their Mac symbols there, by name
@@ -15,12 +19,11 @@ const KEYS = import.meta.env.DEV ? new URLSearchParams(location.search).get('key
 const MAC = KEYS ? KEYS === 'mac' : /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const SHIFT = MAC ? '⇧' : 'Shift';
 
-/** Minimal DOM overlay: speed, integrity, airtime popups. */
+/** Minimal DOM overlay: speed, integrity, status, and the controls cards. */
 export class Hud {
   private readonly speed = document.getElementById('speed')!;
   private readonly integrity = document.getElementById('integrity')!;
   private readonly status = document.getElementById('status')!;
-  private readonly air = document.getElementById('air')!;
   private readonly autopilot = document.getElementById('autopilot')!;
   private readonly paused = document.getElementById('paused')!;
   private readonly slow = document.getElementById('slow')!;
@@ -28,21 +31,21 @@ export class Hud {
   private readonly inspect = document.getElementById('inspect')!;
   private readonly where = document.getElementById('where')!;
   private readonly legend = document.getElementById('legend')!;
-  private readonly legendHow = document.getElementById('legend-how')!;
   private readonly legendEsc = document.getElementById('legend-esc')!;
   private readonly devLegend = document.getElementById('dev-legend')!;
-  private isPaused = false;
+  private readonly playLegend = document.getElementById('play-legend')!;
+  private readonly goto = document.getElementById('goto') as HTMLFormElement;
   private devMode = DEV_FROM_URL;
-  /** The 2D map is open (over the middle of the screen): photo mode's controls make way for it. */
-  private mapOpen = false;
   private photo = false;
   private slowMotion = false;
-  /** H hides the controls cards (photo mode's, and the dev shortcuts) until pressed again. */
-  private legendHidden = false;
+  /** H hides the card in front of you until pressed again, each on its own (see toggleLegend). */
+  private readonly hidden: Record<Card, boolean> = {
+    play: readHidden(HIDDEN_KEY.play),
+    dev: readHidden(HIDDEN_KEY.dev),
+    photo: readHidden(HIDDEN_KEY.photo),
+  };
   private toastTimer: number | undefined;
   private slowFlashTimer: number | undefined;
-  private seenJumps = 0;
-  private airTimer = 0;
 
   constructor() {
     for (const key of document.querySelectorAll('.legend kbd[data-key="shift"]')) key.textContent = SHIFT;
@@ -74,12 +77,6 @@ export class Hud {
     if (label !== null && this.slow.textContent !== `SLOW ${label}`) this.slow.textContent = `SLOW ${label}`;
   }
 
-  /** Dev: the 2D map opened or closed. */
-  setMapOpen(open: boolean): void {
-    this.mapOpen = open;
-    this.showLegend();
-  }
-
   /** Shows the inspection view's legend, or hides it with null. */
   setInspect(legend: { title: string; entries: { colour: string; label: string }[] } | null): void {
     this.inspect.classList.toggle('visible', legend !== null);
@@ -106,6 +103,44 @@ export class Hud {
     this.showLegend();
   }
 
+  /**
+   * Dev: asks where to go, starting from `start` m downhill and `x` m across (where the car is), and
+   * hands the answer to `go`. Enter goes; Esc, J again or clicking away cancels.
+   */
+  askWhere(start: number, x: number, go: (start: number, x: number) => void): void {
+    const form = this.goto;
+    const field = (name: string) => form.elements.namedItem(name) as HTMLInputElement;
+    field('start').value = String(start);
+    field('x').value = String(x);
+    form.hidden = false;
+    field('start').select();
+    const close = () => {
+      form.hidden = true;
+      form.onsubmit = form.onkeydown = form.onfocusout = null;
+      (document.activeElement as HTMLElement | null)?.blur();
+    };
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      const s = Number(field('start').value);
+      const across = Number(field('x').value);
+      close();
+      if (Number.isFinite(s) && Number.isFinite(across)) go(s, across);
+    };
+    form.onfocusout = (e: FocusEvent) => {
+      if (!form.contains(e.relatedTarget as Node | null)) close();
+    };
+    form.onkeydown = (e) => {
+      // A form with two fields and no button doesn't submit on Enter by itself.
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        form.requestSubmit();
+      } else if (e.key === 'Escape' || e.code === 'KeyJ') {
+        e.preventDefault();
+        close();
+      }
+    };
+  }
+
   /** Dev: where the car is (see Game.describeWhere). */
   setWhere(text: string): void {
     this.where.hidden = false;
@@ -114,8 +149,6 @@ export class Hud {
 
   setPaused(paused: boolean): void {
     this.paused.classList.toggle('visible', paused);
-    this.isPaused = paused;
-    this.showLegend();
   }
 
   /** Photo mode hides all the UI but its controls (and an error report). */
@@ -125,28 +158,36 @@ export class Hud {
     this.showLegend();
   }
 
-  /** H: hides or shows the controls cards. */
+  /**
+   * H: hides or shows the card in front of you, and remembers it: photo mode's in photo mode, else
+   * the dev card in dev mode or the driving card.
+   */
   toggleLegend(): void {
-    this.legendHidden = !this.legendHidden;
+    const card: Card = this.photo ? 'photo' : this.devMode ? 'dev' : 'play';
+    this.hidden[card] = !this.hidden[card];
+    try {
+      localStorage.setItem(HIDDEN_KEY[card], this.hidden[card] ? '1' : '0');
+    } catch {
+      // Storage can be off (private windows, blocked site data): it's only forgotten on reload.
+    }
     this.showLegend();
   }
 
   /**
-   * Photo mode's controls show while paused: how to get into it from the pause, or out of it again
-   * (Esc plays on in slow motion, see Game.tick). The dev shortcuts show throughout in dev mode, but
-   * not in photo mode.
+   * One card at a time in the bottom left corner: the driving card (which tells how to get into photo
+   * mode), or in photo mode only its own controls, with how to get out again (Esc plays on in slow
+   * motion, see Game.tick). In dev mode the dev shortcuts show on the right instead of the driving
+   * card (but not in photo mode), and the inspection legend has the corner. Each card stays hidden
+   * once H hid it.
    */
   private showLegend(): void {
-    this.legend.classList.toggle('visible', (this.isPaused || this.photo) && !this.legendHidden && !this.mapOpen);
-    this.devLegend.classList.toggle('visible', this.devMode && !this.legendHidden);
-    this.legendHow.textContent = this.photo ? 'The camera is yours' : `Right-drag or ${SHIFT}-drag to start`;
-    this.legendEsc.textContent = !this.photo ? 'resume' : this.slowMotion ? 'play and pause' : 'back to the pause';
-    // The inspection legend shares the corner: it moves aside while photo mode's controls show.
-    const beside = this.legend.classList.contains('visible');
-    this.inspect.style.left = beside ? `${this.legend.offsetLeft + this.legend.offsetWidth + CARD_GAP}px` : '';
+    this.playLegend.classList.toggle('visible', !this.devMode && !this.photo && !this.hidden.play);
+    this.legend.classList.toggle('visible', this.photo && !this.hidden.photo);
+    this.devLegend.classList.toggle('visible', this.devMode && !this.hidden.dev);
+    this.legendEsc.textContent = this.slowMotion ? 'play and pause' : 'back to the pause';
   }
 
-  update(dt: number, car: Car, autopilot: boolean): void {
+  update(car: Car, autopilot: boolean): void {
     this.autopilot.classList.toggle('visible', autopilot);
     this.speed.textContent = Math.round(Math.abs(car.forwardSpeed) * 3.6).toString();
     const pct = Math.round(car.integrity * 100);
@@ -157,23 +198,14 @@ export class Hud {
     if (!car.engineAlive) notes.push('Engine dead – press N for a new car');
     if (car.wheelsLost > 0) notes.push(`${car.wheelsLost} wheel${car.wheelsLost > 1 ? 's' : ''} lost`);
     this.status.textContent = notes.join(' · ');
-
-    if (car.jumpCount !== this.seenJumps) {
-      this.seenJumps = car.jumpCount;
-      this.airTimer = AIR_POPUP_SECONDS;
-      this.air.textContent = `AIR ${car.lastJumpAirTime.toFixed(1)}s`;
-    }
-    if (car.airTime > 0.6) {
-      this.airTimer = AIR_POPUP_SECONDS;
-      this.air.textContent = `AIR ${car.airTime.toFixed(1)}s`;
-    }
-    this.airTimer -= dt;
-    this.air.classList.toggle('visible', this.airTimer > 0);
   }
+}
 
-  /** New car: forget the previous car's jump counter. */
-  reset(): void {
-    this.seenJumps = 0;
-    this.airTimer = 0;
+/** Whether the controls cards were hidden last time, under `key` (see HIDDEN_KEY). */
+function readHidden(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === '1';
+  } catch {
+    return false;
   }
 }

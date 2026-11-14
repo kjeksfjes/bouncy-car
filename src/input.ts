@@ -13,6 +13,8 @@ export class Input {
 
   constructor() {
     window.addEventListener('keydown', (e) => {
+      // Typing into a form field (the dev Go to form) isn't playing.
+      if (e.target instanceof HTMLInputElement) return;
       if (BLOCKED.has(e.code)) e.preventDefault();
       if (!e.repeat) {
         this.pressed.add(e.code);

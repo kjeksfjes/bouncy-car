@@ -265,7 +265,7 @@ export class Game {
       if (jumpBiome) this.jumpToNextBiome();
       else if (nextBiome) this.startNextBiome();
       if (autopilot) this.toggleAutopilot(this.input.shift);
-      if (tip) this.car.tipOver(135);
+      if (tip) this.car.blast();
     }
     // Dev: Shift+M silences the engines, to hear the rest better (it also presses M, so it goes first).
     const engines = this.devMode && this.input.consume('shift:KeyM');
@@ -285,6 +285,20 @@ export class Game {
       if (flat) this.toggleMapOverlay();
       else if (above && !this.photoMode) this.setMapView(!this.mapView);
       this.mapOverlay?.update({ position: this.car.position, quaternion: this.car.model.root.quaternion }, this.paused, this.terrain.loadedChunks());
+    }
+    // Dev: go to a distance downhill and across (J), asked for in a small form.
+    if (this.devMode && this.input.consume('KeyJ')) {
+      const { x, z } = this.car.position;
+      this.hud.askWhere(Math.round(-z), Math.round(x), (start, across) => {
+        this.placeCar(across, start);
+        this.hud.toast(`start=${start} x=${across}`);
+        // The address follows, so a reload starts there (see main.ts).
+        const url = new URL(location.href);
+        url.searchParams.set('start', String(start));
+        url.searchParams.set('x', String(across));
+        // URLSearchParams writes a bare ?dev as ?dev=; keep it as typed.
+        history.replaceState(null, '', url.href.replace(/([?&]dev)=(?=&|$)/, '$1'));
+      });
     }
     // Dev: a rook flock in front of the car to drive into (G), or set off right away (Shift+G).
     if (this.devMode) {
@@ -382,7 +396,7 @@ export class Game {
     const live = this.allCars;
     this.juice.update(gt, live, this.stage.renderer.getDrawingBufferSize(this.bufferSize).y / 2);
     this.audio.update(gt, this.stage.camera, live);
-    this.hud.update(gt, this.car, this.autopilot);
+    this.hud.update(this.car, this.autopilot);
     if (this.devMode) this.hud.setWhere(this.describeWhere());
     // The first frame compiles what a crash first shows (glass shards and their transmission pass,
     // cracked panes, light wires), so the first crash doesn't stall on it.
@@ -484,13 +498,11 @@ export class Game {
       this.mapOverlay = null;
       // The legend goes back to the world's inspection view.
       this.hud.setInspect(this.inspectMode && INSPECT_LEGENDS[this.inspectMode]);
-      this.hud.setMapOpen(false);
       return;
     }
     const at = this.mapView ? this.map.centre : this.car.position;
     // It starts in the world's inspection view; I and Shift+I then change only the map's.
     this.mapOverlay = new MapOverlay(this.field, this.trees, this.rocks, { x: at.x, z: at.z }, this.inspectMode);
-    this.hud.setMapOpen(true);
   }
 
   /** Where the terrain is kept loaded: round the player's car, and less round the traffic. */
@@ -607,13 +619,20 @@ export class Game {
         }
       }
     }
-    const to = new THREE.Vector3(t.x, this.field.height(t.x, -target), -target);
+    this.placeCar(t.x, target);
+    this.hud.toast(next.name);
+  }
+
+  /**
+   * Puts the car `start` m downhill from the top and `x` m across, upright and facing downhill,
+   * keeping its damage, with the terrain there built first.
+   */
+  private placeCar(x: number, start: number): void {
+    const to = new THREE.Vector3(x, this.field.height(x, -start), -start);
     this.terrain.update([{ position: to, radius: LOAD_RADIUS }], INITIAL_CHUNKS);
     this.car.resetUpright(this.field, { x: to.x, z: to.z, yaw: 0 });
     this.lastSafe.copy(to);
     (this.cameraMode === 'orbit' ? this.orbit : this.heli).reset();
-    this.hud.reset();
-    this.hud.toast(next.name);
   }
 
   /**
@@ -633,7 +652,6 @@ export class Game {
     const yaw = Math.atan2(-fwd.x, -fwd.z);
     this.car.dispose();
     this.car = this.newCar(new THREE.Vector3(t.x, this.field.height(t.x, t.z) + 2, t.z), yaw);
-    this.hud.reset();
   }
 }
 

@@ -106,6 +106,13 @@ interface PendingImpact {
 }
 
 const UP = new THREE.Vector3(0, 1, 0);
+/**
+ * The dev blast (Car.blast): an impulse worth `kick` m/s of the car's mass (± `vary`), up and slanting
+ * `slant` away from the blast, at a point `side` m out to the car's left or right and `low` m under
+ * its centre of mass, up to `along` m fore or aft (at random). Off centre, it both throws and rolls the car.
+ */
+const BLAST = { kick: 6, slant: 0.15, side: 0.5, low: 0.3, along: 0.8, vary: 0.15 };
+
 const _q = new THREE.Quaternion();
 const _p = new THREE.Vector3();
 const _up = new THREE.Vector3();
@@ -197,9 +204,6 @@ export class Car {
   integrity = 1;
   airTime = 0;
   groundedWheels = 0;
-  /** Increments on every landing after a real jump; HUD watches it. */
-  jumpCount = 0;
-  lastJumpAirTime = 0;
   forwardSpeed = 0;
   /** Controls applied in the last physics step. */
   lastInput: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false };
@@ -491,10 +495,6 @@ export class Car {
       if (!this.bodyTouching && (A.leveling === 'auto' || holdLevel)) this.addAirLeveling(_imp, dt);
       this.body.applyTorqueImpulse(_imp, true);
     } else {
-      if (this.airTime > 0.6) {
-        this.lastJumpAirTime = this.airTime;
-        this.jumpCount++;
-      }
       if (this.airTime > 0.25) this.events?.land(this, _p.clone(), Math.max(0, -_lin.y));
       this.airTime = 0;
     }
@@ -1036,21 +1036,34 @@ export class Car {
     this.model.root.updateMatrixWorld(true);
   }
 
+  /** Which side the next dev blast goes off under: −1 left, 1 right (they take turns). */
+  private blastSide = -1;
+
   /**
-   * Throws the car up and over (dev key F, for testing scrapes and crashes), keeping its speed: a kick
-   * of `lift` m/s up and `push` m/s toward the side it rolls to, spinning about its length fast enough
-   * to roll `degrees` (to the right) by the time it would land on level ground. Physics does the rest,
-   * so it lands on its side, its roof or rolls on.
+   * Dev key F: a sudden blast under the car, as if from a small invisible charge (see BLAST), under
+   * its left and right sides by turns. It pushes at one point, so it's thrown up and rolled over by
+   * the blast itself, and spins a little differently every time; physics does the rest.
    */
-  tipOver(degrees: number, lift = 5, push = 1.5): void {
-    const air = (2 * lift) / GRAVITY;
-    const spin = THREE.MathUtils.degToRad(degrees) / air;
-    _fwd.set(0, 0, -1).applyQuaternion(this.currQuat);
-    // Rolling about the forward axis by a positive angle drops the right side: push that way.
-    _tmp.set(1, 0, 0).applyQuaternion(this.currQuat).setY(0).normalize();
-    const v = this.body.linvel();
-    this.body.setLinvel({ x: v.x + _tmp.x * push, y: Math.max(v.y, 0) + lift, z: v.z + _tmp.z * push }, true);
-    this.body.setAngvel({ x: _fwd.x * spin, y: _fwd.y * spin, z: _fwd.z * spin }, true);
+  blast(): void {
+    const B = BLAST;
+    const side = this.blastSide;
+    this.blastSide = -side;
+    const q = this.currQuat;
+    const com = this.body.worldCom();
+    _right.set(1, 0, 0).applyQuaternion(q);
+    _up.set(0, 1, 0).applyQuaternion(q);
+    _fwd.set(0, 0, -1).applyQuaternion(q);
+    // Under a sill, somewhere along the car.
+    _pt.set(com.x, com.y, com.z)
+      .addScaledVector(_right, side * B.side)
+      .addScaledVector(_up, -B.low)
+      .addScaledVector(_fwd, (Math.random() * 2 - 1) * B.along);
+    // Straight up, slanting off toward the other side (level, however the car lies).
+    _tmp.copy(_right).multiplyScalar(-side).setY(0);
+    if (_tmp.lengthSq() > 1e-4) _tmp.normalize();
+    _imp.set(0, 1, 0).addScaledVector(_tmp, B.slant).normalize();
+    const strength = this.body.mass() * B.kick * (1 + (Math.random() * 2 - 1) * B.vary);
+    this.body.applyImpulseAtPoint(_imp.multiplyScalar(strength), _pt, true);
   }
 
   /**

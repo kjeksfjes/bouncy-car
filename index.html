@@ -23,11 +23,6 @@
       #hud.photo > :not(#error) { display: none; }
       #hud.photo > #slow.visible.flash { display: block; }
       #hud.photo > #legend { display: block; }
-      .hint {
-        position: absolute; top: 16px; left: 16px; padding: 8px 12px; border-radius: 8px;
-        background: var(--panel); font-weight: 500; font-size: 13px;
-      }
-      .hint kbd { font: inherit; font-weight: 700; }
       .panel {
         position: absolute; right: 16px; bottom: 16px; min-width: 200px; padding: 12px 14px;
         border-radius: 10px; background: var(--panel);
@@ -40,12 +35,6 @@
       #integrity[data-level='bad'] { background: var(--bad); }
       #status { margin-top: 6px; font-size: 12px; min-height: 1em; }
       #where { margin-top: 4px; font-size: 11px; opacity: 0.7; font-variant-numeric: tabular-nums; user-select: text; }
-      #air {
-        position: absolute; top: 18%; left: 50%; transform: translateX(-50%) scale(0.9);
-        font-size: 40px; font-weight: 900; letter-spacing: 0.04em; color: #fff;
-        text-shadow: 0 2px 12px rgb(0 30 60 / 0.45); opacity: 0; transition: opacity 0.25s, transform 0.25s;
-      }
-      #air.visible { opacity: 1; transform: translateX(-50%) scale(1); }
       #autopilot {
         position: absolute; top: 16px; right: 16px; padding: 6px 12px; border-radius: 8px;
         background: #2b7de9; color: #fff; font-weight: 800; letter-spacing: 0.08em; display: none;
@@ -71,7 +60,7 @@
       #paused.visible { display: block; }
       #inspect {
         position: absolute; left: 16px; bottom: 16px; padding: 10px 12px; border-radius: 10px;
-        background: var(--panel); font-size: 12px; display: none; transition: left 0.25s; z-index: 1;
+        background: var(--panel); font-size: 12px; display: none; z-index: 1;
       }
       #inspect.visible { display: block; }
       #inspect strong { display: block; margin-bottom: 6px; font-size: 13px; }
@@ -102,6 +91,24 @@
       .legend footer { margin-top: 9px; padding-top: 7px; border-top: 1px solid var(--line); font-size: 12px; color: rgb(255 255 255 / 0.6); }
       #dev-legend { left: auto; right: 16px; bottom: auto; top: 50%; transform: translateY(calc(-50% + 6px)); }
       #dev-legend.visible { transform: translateY(-50%); }
+      .legend dd kbd { margin: 0 1px; }
+      /* A key worth knowing about, set apart in its card. */
+      .legend .feature {
+        display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 8px 10px; border-radius: 8px;
+        background: rgb(255 255 255 / 0.12); border: 1px solid var(--line);
+      }
+      .legend .feature > kbd { font-size: 13px; padding: 3px 8px; }
+      .legend .feature strong { display: block; font-weight: 700; color: #fff; }
+      .legend .feature small { display: block; margin-top: 2px; font-size: 12px; color: rgb(255 255 255 / 0.65); }
+      .legend .feature small kbd { min-width: 0; padding: 0 4px; font-size: 10px; line-height: 14px; }
+      /* Dev: the Go to form, top middle. */
+      #goto { left: 50%; bottom: auto; top: 72px; transform: translateX(-50%); opacity: 1; pointer-events: auto; z-index: 2; }
+      #goto[hidden] { display: none; }
+      #goto label { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 8px; }
+      #goto input {
+        width: 90px; padding: 3px 6px; border-radius: 5px; border: 1px solid var(--line); background: rgb(255 255 255 / 0.12);
+        color: #fff; font: 600 13px/1.2 Barlow, system-ui, sans-serif; text-align: right;
+      }
       /* Dev 2D map: a square over the middle of the screen. */
       #map2d {
         position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
@@ -140,11 +147,29 @@
     <div id="app"></div>
     <div id="loading">Building mountain…</div>
     <div id="hud">
-      <div class="hint">
-        <kbd>W</kbd>/<kbd>S</kbd> drive · <kbd>A</kbd>/<kbd>D</kbd> steer · <kbd>Space</kbd> handbrake ·
-        <kbd>R</kbd> reset · <kbd>N</kbd> new car · <kbd>B</kbd> next biome ahead (<kbd>Shift</kbd>+<kbd>B</kbd> go there) · <kbd>C</kbd> camera · drag to orbit, scroll to zoom · <kbd>P</kbd> autopilot (<kbd>Shift</kbd>+<kbd>P</kbd> with heading) · <kbd>T</kbd> slow motion (<kbd>'</kbd> speed) · <kbd>M</kbd> mute · <kbd>Esc</kbd> pause
+      <div id="play-legend" class="legend" aria-label="Driving controls">
+        <header>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2"/><path d="M3.5 10.5 10 12M20.5 10.5 14 12M12 14v7"/></svg>
+          <h2>Driving</h2>
+        </header>
+        <dl>
+          <dt><kbd>W</kbd><kbd>S</kbd></dt><dd>Throttle, brake and reverse</dd>
+          <dt><kbd>A</kbd><kbd>D</kbd></dt><dd>Steer (or the arrow keys)</dd>
+          <dt><kbd>Space</kbd></dt><dd>Handbrake</dd>
+          <dt>In the air</dt><dd><kbd>S</kbd> levels, <kbd>A</kbd><kbd>D</kbd> roll</dd>
+          <dt><kbd>R</kbd> <kbd>N</kbd></dt><dd>Reset upright · New car</dd>
+          <dt><kbd>B</kbd></dt><dd>Next biome ahead (<kbd data-key="shift">⇧</kbd><kbd>B</kbd> go there)</dd>
+          <dt><kbd>C</kbd></dt><dd>Camera (drag orbits, scroll zooms)</dd>
+          <dt><kbd>P</kbd></dt><dd>Autopilot (<kbd data-key="shift">⇧</kbd><kbd>P</kbd> with heading)</dd>
+          <dt><kbd>T</kbd></dt><dd>Slow motion (<kbd>'</kbd> its speed)</dd>
+          <dt><kbd>M</kbd></dt><dd>Mute</dd>
+        </dl>
+        <div class="feature">
+          <kbd>Esc</kbd>
+          <div><strong>Pause and photo mode</strong><small>Paused, right-drag or <kbd data-key="shift">⇧</kbd>-drag to start it</small></div>
+        </div>
+        <footer><kbd>H</kbd> hide controls</footer>
       </div>
-      <div id="air"></div>
       <div id="autopilot">AUTOPILOT</div>
       <div id="slow"></div>
       <div id="toast"></div>
@@ -155,7 +180,7 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></svg>
           <h2>Photo mode</h2>
         </header>
-        <p class="how" id="legend-how"></p>
+        <p class="how">The camera is yours</p>
         <dl>
           <dt>Drag</dt><dd>Orbit round the point</dd>
           <dt>Right-drag</dt><dd>Turn the camera</dd>
@@ -181,10 +206,17 @@
           <dt><kbd>G</kbd></dt><dd>Rook flock ahead, to drive into</dd>
           <dt><kbd data-key="shift">⇧</kbd><kbd>G</kbd></dt><dd>Rook flock, startled now</dd>
           <dt><kbd data-key="shift">⇧</kbd><kbd>M</kbd></dt><dd>Engine sound off and on</dd>
-          <dt><kbd>F</kbd></dt><dd>Throw the car over</dd>
+          <dt><kbd>F</kbd></dt><dd>Blast the car over</dd>
+          <dt><kbd>J</kbd></dt><dd>Go to a distance and across</dd>
         </dl>
         <footer><kbd>H</kbd> hide controls · type <kbd>dev</kbd> to leave</footer>
       </div>
+      <form id="goto" class="legend" aria-label="Go to" hidden>
+        <header><h2>Go to</h2></header>
+        <label>Downhill from the top (m) <input name="start" type="number" step="1" required /></label>
+        <label>Across, + is right (m) <input name="x" type="number" step="1" required /></label>
+        <footer><kbd>Enter</kbd> go · <kbd>Esc</kbd> cancel</footer>
+      </form>
       <div id="error" hidden></div>
       <div class="panel">
         <div class="speed"><span id="speed">0</span> <small>km/h</small></div>
