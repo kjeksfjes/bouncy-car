@@ -10,8 +10,19 @@ export class Input {
   private readonly pressed = new Set<string>();
   /** The last few characters typed, and when (ms, event time). */
   private typing: { key: string; at: number }[] = [];
+  /**
+   * Which physical keys type which characters unshifted (see consumeShifted): from the browser's
+   * layout map where it has one (Chrome, Edge), and from each key as it's pressed.
+   */
+  private readonly charKeys = new Map<string, Set<string>>();
 
   constructor() {
+    const keyboard = (navigator as Navigator & { keyboard?: { getLayoutMap(): Promise<Map<string, string>> } }).keyboard;
+    keyboard
+      ?.getLayoutMap()
+      .then((layout) => layout.forEach((key, code) => this.learn(key, code)))
+      // Not allowed in some frames: the keys are learned as they're pressed instead.
+      .catch(() => {});
     window.addEventListener('keydown', (e) => {
       // Typing into a form field (the dev Go to form) isn't playing.
       if (e.target instanceof HTMLInputElement) return;
@@ -24,6 +35,7 @@ export class Input {
         // With Shift held at the press itself, so a quick Shift+key isn't lost if Shift is let go
         // before the frame reads it.
         if (e.shiftKey) this.pressed.add(`shift:${e.code}`);
+        else if (e.key.length === 1) this.learn(e.key, e.code);
         if (e.key.length === 1) this.typing = [...this.typing, { key: e.key.toLowerCase(), at: e.timeStamp }].slice(-16);
       }
       this.held.add(e.code);
@@ -68,6 +80,22 @@ export class Input {
       if (last.map((c) => c.key).join('') === word.slice(0, n) && last[n - 1].at - last[0].at <= TYPING_WINDOW) return true;
     }
     return false;
+  }
+
+  /**
+   * True once per press of Shift with the key that types `char` (which types something else with
+   * Shift, and sits in different places on different layouts). Until the browser's layout map has
+   * come, or that key has been pressed without Shift, it isn't known and this is false.
+   */
+  consumeShifted(char: string): boolean {
+    for (const code of this.charKeys.get(char) ?? []) if (this.consume(`shift:${code}`)) return true;
+    return false;
+  }
+
+  private learn(char: string, code: string): void {
+    let codes = this.charKeys.get(char);
+    if (!codes) this.charKeys.set(char, (codes = new Set()));
+    codes.add(code);
   }
 
   /** True once per key press: a key code (`KeyT`), a typed character as `char:'`, or `shift:KeyB` for Shift+B. */

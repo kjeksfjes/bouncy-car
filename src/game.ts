@@ -81,7 +81,7 @@ export class Game {
   private paused = false;
   /** Photo mode (while paused, from a right-drag, Shift+drag or Option+drag): a free camera and no UI. */
   private photoMode = false;
-  /** T toggles slow motion; ' picks its speed from SLOW_SPEEDS. timeScale eases toward it. */
+  /** T toggles slow motion; ' and Shift+' pick its speed from SLOW_SPEEDS. timeScale eases toward it. */
   private slowMotion = false;
   private slowLevel = 1;
   /** Dev: the terrain inspection view shown (I cycles), or null for the normal ground. */
@@ -232,9 +232,12 @@ export class Game {
       this.slowMotion = !this.slowMotion;
       if (this.slowMotion) this.hud.flashSlowMotion();
     }
-    if (this.input.consume("char:'")) {
-      // Cycles the slow-motion speed; from normal speed it first switches to the current one.
-      if (this.slowMotion) this.slowLevel = (this.slowLevel + 1) % SLOW_SPEEDS.length;
+    // ' slows slow motion down a step, Shift+' speeds it up one, stopping at the slowest and the
+    // fastest; from normal speed either first switches to the current one.
+    const faster = this.input.consumeShifted("'");
+    const slower = this.input.consume("char:'");
+    if (faster || slower) {
+      if (this.slowMotion) this.slowLevel = THREE.MathUtils.clamp(this.slowLevel + (faster ? -1 : 1), 0, SLOW_SPEEDS.length - 1);
       this.slowMotion = true;
       this.hud.flashSlowMotion();
     }

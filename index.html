@@ -88,6 +88,8 @@
         background: rgb(255 255 255 / 0.1); border: 1px solid var(--line); border-bottom-width: 2px;
       }
       .legend footer { margin-top: 9px; padding-top: 7px; border-top: 1px solid var(--line); font-size: 12px; color: rgb(255 255 255 / 0.6); }
+      .legend footer kbd { margin: 0 5px; }
+      .legend footer kbd:first-child { margin-left: 0; }
       #dev-legend { left: auto; right: 16px; bottom: auto; top: 50%; transform: translateY(calc(-50% + 6px)); }
       #dev-legend.visible { transform: translateY(-50%); }
       .legend hr { margin: 10px 0; border: 0; border-top: 1px solid var(--line); }
@@ -182,7 +184,8 @@
         <ul class="actions">
           <li>Camera<span class="how-to"><kbd>C</kbd></span><span class="aside">drag orbits, scroll zooms</span></li>
           <li>Slow motion<span class="how-to"><kbd>T</kbd></span></li>
-          <li class="sub">Change its speed<span class="how-to"><kbd>'</kbd></span></li>
+          <li class="sub">Slower<span class="how-to"><kbd>'</kbd></span></li>
+          <li class="sub">Faster<span class="how-to"><kbd data-key="shift">⇧</kbd><kbd>'</kbd></span></li>
           <li>Autopilot<span class="how-to"><kbd>P</kbd></span></li>
           <li class="sub">With its heading shown<span class="how-to"><kbd data-key="shift">⇧</kbd><kbd>P</kbd></span></li>
           <li>Reset upright<span class="how-to"><kbd>R</kbd></span></li>
