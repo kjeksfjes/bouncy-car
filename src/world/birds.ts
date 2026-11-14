@@ -96,15 +96,25 @@ const FLOCKS = {
  * flown across, at its current speed, give or take `ahead` (min..max) m along the slope, and flies
  * across `height` (min..max) m above the ground, its birds spread up to `cloud` m along, across and
  * up from its middle. They share one wander, so the flock turns as one.
+ *
+ * One crossing in `lone` is a lone bird or a pair (`loneBirds`, min..max) instead, `loneCloud` m
+ * apart at most. In a flock, about one bird in `strays` straggles: it starts up to `strayLag` m
+ * behind the rest, flies at `strayPace` (min..max) of their speed and wanders on its own.
  */
 const SKY = {
-  gap: [25, 60] as const,
+  gap: [15, 40] as const,
   minGrass: 0.3,
   birds: [6, 20] as const,
   start: 190,
   ahead: [-20, 80] as const,
   height: [30, 60] as const,
   cloud: { along: 20, across: 15, up: 6 },
+  lone: 0.35,
+  loneBirds: [1, 2] as const,
+  loneCloud: 4,
+  strays: 8,
+  strayLag: 25,
+  strayPace: [0.85, 0.95] as const,
 };
 
 /** The body's centre above the ground standing (m), and the folded wings' length as a share of open. */
@@ -145,6 +155,8 @@ interface Bird {
   heading: number;
   /** Its own phase for wandering off the heading. */
   seed: number;
+  /** Its share of the cruising speed (a straggler's is lower). */
+  pace: number;
   /** The height above the ground it climbs to and then holds (m). */
   height: number;
   climbing: boolean;
@@ -355,7 +367,7 @@ export class Birds {
     const above = b.pos.y - this.field.height(b.pos.x, b.pos.z);
     if (b.climbing && above > b.height) b.climbing = false;
     b.heading += Math.sin(b.age * 0.7 + b.seed) * F.wander * dt;
-    const speed = b.climbing ? THREE.MathUtils.lerp(F.takeOffSpeed, F.speed, Math.min(1, b.age / 3)) : F.speed;
+    const speed = (b.climbing ? THREE.MathUtils.lerp(F.takeOffSpeed, F.speed, Math.min(1, b.age / 3)) : F.speed) * b.pace;
     const rise = b.climbing ? F.climbRate : THREE.MathUtils.clamp((b.height - above) * 0.5, -2, 2);
     _want.set(-Math.sin(b.heading) * speed, rise, -Math.cos(b.heading) * speed);
     b.vel.lerp(_want, 1 - Math.exp(-F.response * dt));
@@ -442,10 +454,15 @@ export class Birds {
     if (now) this.startle(this.flocks.get(key)!, car.position);
   }
 
-  /** Sends a loose flock across the sky ahead of the player, from one side to the other (see SKY). */
+  /**
+   * Sends a loose flock, or a lone bird or a pair, across the sky ahead of the player, from one side
+   * to the other (see SKY).
+   */
   private crossSky(player: THREE.Vector3): void {
     const S = SKY;
-    const count = Math.round(between(S.birds, Math.random()));
+    const lone = Math.random() < S.lone;
+    const count = Math.round(between(lone ? S.loneBirds : S.birds, Math.random()));
+    const cloud = lone ? { along: S.loneCloud, across: S.loneCloud, up: S.loneCloud / 2 } : S.cloud;
     if (this.birds.length + count > CAPACITY) return;
     // From the left (−x) or the right, across the slope with some slant, a little way downhill.
     const side = Math.random() < 0.5 ? -1 : 1;
@@ -458,16 +475,20 @@ export class Birds {
     const seed = Math.random() * 100;
     const along = new THREE.Vector3(-Math.sin(heading), 0, -Math.cos(heading));
     for (let i = 0; i < count; i++) {
-      const a = (Math.random() * 2 - 1) * S.cloud.along;
-      const c = (Math.random() * 2 - 1) * S.cloud.across;
+      const stray = !lone && Math.random() < 1 / S.strays;
+      // A straggler starts at the back.
+      const a = (Math.random() * 2 - 1) * cloud.along - (stray ? Math.random() * S.strayLag : 0);
+      const c = (Math.random() * 2 - 1) * cloud.across;
       const x = x0 + along.x * a - along.z * c;
       const z = z0 + along.z * a + along.x * c;
-      const b = newBird(new THREE.Vector3(x, this.field.height(x, z) + height + (Math.random() * 2 - 1) * S.cloud.up, z));
+      const b = newBird(new THREE.Vector3(x, this.field.height(x, z) + height + (Math.random() * 2 - 1) * cloud.up, z));
       this.takeOff(b, heading);
-      b.vel.copy(along).multiplyScalar(FLIGHT.speed);
+      b.pace = stray ? between(S.strayPace, Math.random()) : 1;
+      b.vel.copy(along).multiplyScalar(FLIGHT.speed * b.pace);
       b.climbing = false;
       b.height = height;
-      b.seed = seed + Math.random() * 0.3;
+      // The flock shares a wander; a straggler goes its own way.
+      b.seed = stray ? Math.random() * 100 : seed + Math.random() * 0.3;
       b.flapping = Math.random() < 0.6;
       b.switchIn = Math.random() * 2;
       this.birds.push(b);
@@ -598,6 +619,7 @@ function newBird(pos: THREE.Vector3): Bird {
     flying: true,
     heading: 0,
     seed: Math.random() * 100,
+    pace: 1,
     height: between(FLIGHT.height, Math.random()),
     climbing: true,
     phase: Math.random() * Math.PI * 2,
