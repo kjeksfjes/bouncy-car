@@ -1,8 +1,11 @@
+import { DEV_MODE } from './constants';
 import type { Car } from './vehicle/car';
 
 const AIR_POPUP_SECONDS = 1.6;
 /** How long photo mode shows the slow-motion badge after a change (ms). */
 const SLOW_FLASH_MS = 1500;
+/** The gap between the inspection legend and photo mode's controls beside it (px). */
+const CARD_GAP = 12;
 
 /**
  * Whether the keyboard is a Mac's: the legend's keys go by their Mac symbols there, by name
@@ -27,10 +30,13 @@ export class Hud {
   private readonly legend = document.getElementById('legend')!;
   private readonly legendHow = document.getElementById('legend-how')!;
   private readonly legendEsc = document.getElementById('legend-esc')!;
+  private readonly devLegend = document.getElementById('dev-legend')!;
   private isPaused = false;
+  /** The 2D map is open (over the middle of the screen): photo mode's controls make way for it. */
+  private mapOpen = false;
   private photo = false;
   private slowMotion = false;
-  /** H hides photo mode's controls (for a clean shot) until pressed again. */
+  /** H hides the controls cards (photo mode's, and the dev shortcuts) until pressed again. */
   private legendHidden = false;
   private toastTimer: number | undefined;
   private slowFlashTimer: number | undefined;
@@ -38,7 +44,8 @@ export class Hud {
   private airTimer = 0;
 
   constructor() {
-    for (const key of document.querySelectorAll('#legend kbd[data-key="shift"]')) key.textContent = SHIFT;
+    for (const key of document.querySelectorAll('.legend kbd[data-key="shift"]')) key.textContent = SHIFT;
+    this.showLegend();
   }
 
   /** Shows a short message mid-screen for a couple of seconds. */
@@ -66,13 +73,19 @@ export class Hud {
     if (label !== null && this.slow.textContent !== `SLOW ${label}`) this.slow.textContent = `SLOW ${label}`;
   }
 
+  /** Dev: the 2D map opened or closed. */
+  setMapOpen(open: boolean): void {
+    this.mapOpen = open;
+    this.showLegend();
+  }
+
   /** Shows the inspection view's legend, or hides it with null. */
   setInspect(legend: { title: string; entries: { colour: string; label: string }[] } | null): void {
     this.inspect.classList.toggle('visible', legend !== null);
     if (!legend) return;
     this.inspect.replaceChildren();
     const title = document.createElement('strong');
-    title.textContent = `Inspect: ${legend.title} (I for next)`;
+    title.textContent = `Inspect: ${legend.title} (I next, ${MAC ? '⇧I' : 'Shift+I'} back)`;
     this.inspect.append(title);
     for (const { colour, label } of legend.entries) {
       const row = document.createElement('div');
@@ -104,7 +117,7 @@ export class Hud {
     this.showLegend();
   }
 
-  /** H: hides or shows photo mode's controls. */
+  /** H: hides or shows the controls cards. */
   toggleLegend(): void {
     this.legendHidden = !this.legendHidden;
     this.showLegend();
@@ -112,12 +125,17 @@ export class Hud {
 
   /**
    * Photo mode's controls show while paused: how to get into it from the pause, or out of it again
-   * (Esc plays on in slow motion, see Game.tick).
+   * (Esc plays on in slow motion, see Game.tick). The dev shortcuts show throughout with ?dev, but
+   * not in photo mode.
    */
   private showLegend(): void {
-    this.legend.classList.toggle('visible', (this.isPaused || this.photo) && !this.legendHidden);
+    this.legend.classList.toggle('visible', (this.isPaused || this.photo) && !this.legendHidden && !this.mapOpen);
+    this.devLegend.classList.toggle('visible', DEV_MODE && !this.legendHidden);
     this.legendHow.textContent = this.photo ? 'The camera is yours' : `Right-drag or ${SHIFT}-drag to start`;
     this.legendEsc.textContent = !this.photo ? 'resume' : this.slowMotion ? 'play and pause' : 'back to the pause';
+    // The inspection legend shares the corner: it moves aside while photo mode's controls show.
+    const beside = this.legend.classList.contains('visible');
+    this.inspect.style.left = beside ? `${this.legend.offsetLeft + this.legend.offsetWidth + CARD_GAP}px` : '';
   }
 
   update(dt: number, car: Car, autopilot: boolean): void {

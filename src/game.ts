@@ -1,11 +1,13 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { FEATURES, GRAVITY, PHYSICS_STEP } from './constants';
+import { DEV_MODE, FEATURES, GRAVITY, PHYSICS_STEP } from './constants';
 import { GameAudio } from './audio/audio';
 import { Hud } from './hud';
+import { MapOverlay } from './mapOverlay';
 import { Input } from './input';
 import { OrbitCamera } from './render/orbitCamera';
 import { HeliCamera } from './render/heliCamera';
+import { MapCamera } from './render/mapCamera';
 import { PhotoCamera } from './render/photoCamera';
 import { GroundSection } from './render/groundSection';
 import { PointerOrbit } from './render/pointerOrbit';
@@ -84,6 +86,9 @@ export class Game {
   private slowLevel = 1;
   /** Dev: the terrain inspection view shown (I cycles), or null for the normal ground. */
   private inspectMode: InspectMode | null = null;
+  /** Dev: the camera straight above (V), and the 2D map over the screen (Shift+V). */
+  private mapView = false;
+  private mapOverlay: MapOverlay | null = null;
   private timeScale = 1;
   /** The atmosphere's warmth (see Stage.setWarmth), eased toward the biome's. */
   private warmth = 0;
@@ -95,6 +100,7 @@ export class Game {
   /** The terrain's height at (x, z), for the exposure's check on whether a ridge hides the sun. */
   private readonly groundHeight = (x: number, z: number): number => this.field.height(x, z);
   private readonly photo: PhotoCamera;
+  private readonly map: MapCamera;
   private readonly audio = new GameAudio();
   private readonly juice: Juice;
   /** Whether the first frame has drawn the glass shards' warm-up (see Shards.warmUp). */
@@ -147,6 +153,7 @@ export class Game {
     this.orbit = new OrbitCamera(this.stage.camera, this.field, this.pointer);
     this.heli = new HeliCamera(this.stage.camera, this.field, this.pointer);
     const ground = (x: number, z: number) => this.terrain.surfaceHeight(x, z);
+    this.map = new MapCamera(this.stage.camera, this.pointer);
     this.photo = new PhotoCamera(this.stage.camera, this.pointer, (ndc, out) => this.stage.surfaceAt(ndc, out), FEATURES.groundSection ? null : ground);
     this.clods = new Clods(this.stage.scene, ground);
     this.birds = new Birds(this.stage.scene, this.field, this.trees, ground, {
@@ -243,7 +250,7 @@ export class Game {
     const nextBiome = this.input.consume('KeyB');
     const jumpBiome = this.input.consume('shift:KeyB');
     const autopilot = this.input.consume('KeyP');
-    const tip = this.input.consume('KeyF');
+    const tip = DEV_MODE && this.input.consume('KeyF');
     if (!this.paused) {
       if (reset) this.resetCar(this.car);
       if (replace || this.autopilotWantsCar) this.replaceCar();
@@ -254,13 +261,26 @@ export class Game {
       if (tip) this.car.tipOver(135);
     }
     // Dev: Shift+M silences the engines, to hear the rest better (it also presses M, so it goes first).
-    const engines = import.meta.env.DEV && this.input.consume('shift:KeyM');
+    const engines = DEV_MODE && this.input.consume('shift:KeyM');
     if (this.input.consume('KeyM') && !engines) this.audio.toggleMute();
-    if (engines) this.audio.toggleEngines();
+    if (engines) this.hud.toast(this.audio.toggleEngines() ? 'ENGINES OFF' : 'ENGINES ON');
     if (this.input.consume('KeyC')) this.cycleCamera();
-    if (import.meta.env.DEV && this.input.consume('KeyI')) this.cycleInspect();
+    // Dev: the next inspection view (I) or the one before (Shift+I, which also presses I, so it goes first).
+    if (DEV_MODE) {
+      const back = this.input.consume('shift:KeyI');
+      const next = this.input.consume('KeyI');
+      if (back || next) this.cycleInspect(back ? -1 : 1);
+    }
+    // Dev: the map view (V) and the 2D map (Shift+V, which also presses V, so it goes first).
+    if (DEV_MODE) {
+      const flat = this.input.consume('shift:KeyV');
+      const above = this.input.consume('KeyV');
+      if (flat) this.toggleMapOverlay();
+      else if (above && !this.photoMode) this.setMapView(!this.mapView);
+      this.mapOverlay?.update({ position: this.car.position, quaternion: this.car.model.root.quaternion }, this.paused, this.terrain.loadedChunks());
+    }
     // Dev: a rook flock in front of the car to drive into (G), or set off right away (Shift+G).
-    if (import.meta.env.DEV) {
+    if (DEV_MODE) {
       // Shift+G also presses G, so it goes first.
       const now = this.input.consume('shift:KeyG');
       const ahead = this.input.consume('KeyG');
@@ -278,8 +298,9 @@ export class Game {
     if (this.paused) {
       // Everything stands still except the camera, which runs on real time so the frozen
       // scene can be looked around. A right-drag, Shift+drag or Option+drag hands it to photo mode's free camera.
-      if (!this.photoMode && this.pointer.freeLook) this.setPhotoMode(true);
-      if (this.photoMode) {
+      if (!this.photoMode && !this.mapView && this.pointer.freeLook) this.setPhotoMode(true);
+      if (this.mapView) this.map.update(dt, this.car.position);
+      else if (this.photoMode) {
         const keys = this.input.car();
         this.holdTurning();
         this.photo.update(dt, keys.steer, keys.throttle - keys.brake, this.input.shift, this.car.position);
@@ -288,7 +309,9 @@ export class Game {
       }
       this.view.update(this.stage.camera, this.stage.viewDistance);
       this.stage.follow(this.car.position);
-      this.sight.update(dt, this.stage.camera, this.car.model.root, !this.photoMode);
+      // Nothing moves, so this only rebuilds chunks marked stale (e.g. by switching the inspection view).
+      this.terrain.update(this.streamCenters(), STREAM_BUDGET);
+      this.sight.update(dt, this.stage.camera, this.car.model.root, !this.photoMode && !this.mapView);
       this.stage.expose(dt, this.groundHeight);
       this.section?.update(this.stage.camera);
       this.stage.render();
@@ -325,15 +348,13 @@ export class Game {
     // physics body is a fatal Rapier panic.
     for (const car of this.allCars) car.syncVisual(alpha, gt);
     const pos = this.car.position;
-    const centers: StreamCenter[] = [
-      { position: pos, radius: LOAD_RADIUS },
-      ...this.traffic.cars.map((a) => ({ position: a.car.position, radius: AI_STREAM_RADIUS })),
-    ];
-    this.terrain.update(centers, STREAM_BUDGET);
+    this.terrain.update(this.streamCenters(), STREAM_BUDGET);
     if (this.photoMode) {
       // While the action runs, the keys drive the car as usual; the photo camera takes the mouse.
       this.holdTurning();
       this.photo.update(dt, 0, 0, false, this.car.position);
+    } else if (this.mapView) {
+      this.map.update(dt, this.car.position);
     } else {
       const camera = this.cameraMode === 'orbit' ? this.orbit : this.heli;
       camera.update(dt, this.car.model.root, this.car.velocity, false, this.timeScale);
@@ -355,7 +376,7 @@ export class Game {
     this.juice.update(gt, live, this.stage.renderer.getDrawingBufferSize(this.bufferSize).y / 2);
     this.audio.update(gt, this.stage.camera, live);
     this.hud.update(gt, this.car, this.autopilot);
-    if (import.meta.env.DEV) this.hud.setWhere(this.describeWhere());
+    if (DEV_MODE) this.hud.setWhere(this.describeWhere());
     // The first frame compiles what a crash first shows (glass shards and their transmission pass,
     // cracked panes, light wires), so the first crash doesn't stall on it.
     if (!this.warmedUp) {
@@ -363,7 +384,7 @@ export class Game {
       this.stage.warmUp(crashWarmUpObjects());
       this.warmedUp = true;
     }
-    this.sight.update(dt, this.stage.camera, this.car.model.root, !this.photoMode);
+    this.sight.update(dt, this.stage.camera, this.car.model.root, !this.photoMode && !this.mapView);
     this.stage.expose(dt, this.groundHeight);
     this.section?.update(this.stage.camera);
     this.stage.render();
@@ -423,15 +444,64 @@ export class Game {
     this.photo.begin();
   }
 
-  /** Dev: off → each inspection view in turn → off. */
-  private cycleInspect(): void {
-    const i = this.inspectMode === null ? 0 : INSPECT_MODES.indexOf(this.inspectMode) + 1;
-    this.inspectMode = INSPECT_MODES[i] ?? null;
-    this.terrain.inspect = this.inspectMode;
-    this.hud.setInspect(this.inspectMode && INSPECT_LEGENDS[this.inspectMode]);
+  /** Dev: the camera straight above the car, in clear air (see MapCamera), or back to the camera before. */
+  private setMapView(on: boolean): void {
+    if (on === this.mapView) return;
+    this.mapView = on;
+    this.stage.setHaze(!on);
+    if (on) this.map.begin();
+    else {
+      this.map.end();
+      (this.cameraMode === 'orbit' ? this.orbit : this.heli).reset();
+    }
+  }
+
+  /** Dev: opens the 2D map round where the view is (the map view's middle, or the car), or closes it. */
+  private toggleMapOverlay(): void {
+    if (this.mapOverlay) {
+      this.mapOverlay.dispose();
+      this.mapOverlay = null;
+      // The legend goes back to the world's inspection view.
+      this.hud.setInspect(this.inspectMode && INSPECT_LEGENDS[this.inspectMode]);
+      this.hud.setMapOpen(false);
+      return;
+    }
+    const at = this.mapView ? this.map.centre : this.car.position;
+    // It starts in the world's inspection view; I and Shift+I then change only the map's.
+    this.mapOverlay = new MapOverlay(this.field, this.trees, this.rocks, { x: at.x, z: at.z }, this.inspectMode);
+    this.hud.setMapOpen(true);
+  }
+
+  /** Where the terrain is kept loaded: round the player's car, and less round the traffic. */
+  private streamCenters(): StreamCenter[] {
+    return [
+      { position: this.car.position, radius: LOAD_RADIUS },
+      ...this.traffic.cars.map((a) => ({ position: a.car.position, radius: AI_STREAM_RADIUS })),
+    ];
+  }
+
+  /**
+   * Dev: off → each inspection view in turn → off, forward (1) or back (−1): the 2D map's while it's
+   * open, else the world's.
+   */
+  private cycleInspect(way: 1 | -1): void {
+    const current = this.mapOverlay ? this.mapOverlay.mode : this.inspectMode;
+    // Off sits between the last view and the first, as index −1.
+    const at = current === null ? -1 : INSPECT_MODES.indexOf(current);
+    const n = INSPECT_MODES.length + 1;
+    const i = ((at + 1 + way + n) % n) - 1;
+    const mode = i < 0 ? null : INSPECT_MODES[i];
+    if (this.mapOverlay) this.mapOverlay.mode = mode;
+    else {
+      this.inspectMode = mode;
+      this.terrain.inspect = mode;
+    }
+    this.hud.setInspect(mode && INSPECT_LEGENDS[mode]);
   }
 
   private cycleCamera(): void {
+    // From the map view, C goes back to the camera before it.
+    if (this.mapView) return this.setMapView(false);
     this.cameraMode = CAMERA_MODES[(CAMERA_MODES.indexOf(this.cameraMode) + 1) % CAMERA_MODES.length];
     (this.cameraMode === 'orbit' ? this.orbit : this.heli).reset();
   }

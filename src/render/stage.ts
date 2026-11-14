@@ -46,6 +46,8 @@ const GLARE = { depth: 0.45, inner: 0.17, outer: 0.8, darken: 0.25, recover: 0.6
 const COOL_CURVE = 0.6;
 /** The haze starts this far from the camera (m), so the car and the ground around it stay clear (see fogFade's HAZE). */
 const HAZE_NEAR = 30;
+/** Fog pushed out beyond anything the camera reaches (m): no haze at all (see setHaze). */
+const CLEAR_AIR = 1e6;
 /** The ambient light (baked from the sky) is re-baked when the warmth has moved this much. */
 const REBAKE_STEP = 0.1;
 
@@ -262,6 +264,13 @@ export class Stage {
   }
 
   /** Keeps the shadow frustum, the sky and the sun's flare centred on the action. Call after the camera moves. */
+  /** Dev map view: off clears the haze, so the ground shows its own colours however high the camera is. */
+  setHaze(on: boolean): void {
+    const fog = this.scene.fog as THREE.Fog;
+    fog.near = on ? HAZE_NEAR : CLEAR_AIR;
+    fog.far = on ? this.viewDistance : CLEAR_AIR + 1;
+  }
+
   follow(target: THREE.Vector3): void {
     this.sun.position.copy(target).addScaledVector(SUN_DIR, 150);
     this.sun.target.position.copy(target);

@@ -1036,16 +1036,21 @@ export class Car {
     this.model.root.updateMatrixWorld(true);
   }
 
-  /** Rolls the car onto its side (dev key F, for testing scrapes), keeping its speed. */
-  tipOver(degrees: number): void {
-    // Roll about the car's own forward axis, keeping its speed, lifted clear of the ground.
-    const before = new THREE.Matrix4().compose(this.currPos, this.currQuat, _tmp.set(1, 1, 1));
-    _q.setFromAxisAngle(_fwd.set(0, 0, -1), THREE.MathUtils.degToRad(degrees)).premultiply(this.currQuat);
-    _p.copy(this.currPos).setY(this.currPos.y + 1);
-    this.body.setTranslation(_p, true);
-    this.body.setRotation(_q, true);
-    this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
-    this.panels.teleport(before, new THREE.Matrix4().compose(_p, _q, _tmp.set(1, 1, 1)));
+  /**
+   * Throws the car up and over (dev key F, for testing scrapes and crashes), keeping its speed: a kick
+   * of `lift` m/s up and `push` m/s toward the side it rolls to, spinning about its length fast enough
+   * to roll `degrees` (to the right) by the time it would land on level ground. Physics does the rest,
+   * so it lands on its side, its roof or rolls on.
+   */
+  tipOver(degrees: number, lift = 5, push = 1.5): void {
+    const air = (2 * lift) / GRAVITY;
+    const spin = THREE.MathUtils.degToRad(degrees) / air;
+    _fwd.set(0, 0, -1).applyQuaternion(this.currQuat);
+    // Rolling about the forward axis by a positive angle drops the right side: push that way.
+    _tmp.set(1, 0, 0).applyQuaternion(this.currQuat).setY(0).normalize();
+    const v = this.body.linvel();
+    this.body.setLinvel({ x: v.x + _tmp.x * push, y: Math.max(v.y, 0) + lift, z: v.z + _tmp.z * push }, true);
+    this.body.setAngvel({ x: _fwd.x * spin, y: _fwd.y * spin, z: _fwd.z * spin }, true);
   }
 
   /**

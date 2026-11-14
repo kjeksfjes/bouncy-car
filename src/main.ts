@@ -26,10 +26,7 @@ async function main(): Promise<void> {
   // Dev only: ?x=-120 spawns that far across the slope (the HUD shows start= and x= in dev).
   const startX = import.meta.env.DEV ? Number(params.get('x') ?? 0) : 0;
   const game = new Game(document.getElementById('app')!, seed, start, terrain, startX);
-  if (import.meta.env.DEV) {
-    window.__bouncy = game;
-    document.querySelector('.hint')!.insertAdjacentHTML('beforeend', ' · <kbd>I</kbd> inspect terrain (dev)');
-  }
+  if (import.meta.env.DEV) window.__bouncy = game;
   document.getElementById('loading')!.remove();
   game.start();
 }

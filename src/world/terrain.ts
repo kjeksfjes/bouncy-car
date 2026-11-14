@@ -127,6 +127,11 @@ export class Terrain {
     this.far.refreshBeyond(z);
   }
 
+  /** The loaded chunks, as chunk coordinates (CHUNK_SIZE m a side). */
+  *loadedChunks(): Iterable<[number, number]> {
+    for (const k of this.chunks.keys()) yield k.split(',').map(Number) as [number, number];
+  }
+
   /** Dev: colours the ground by what shapes it (see InspectMode), or by its cover again with null. */
   set inspect(mode: InspectMode | null) {
     this.inspectMode = mode;

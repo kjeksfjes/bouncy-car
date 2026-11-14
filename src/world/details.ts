@@ -138,6 +138,17 @@ export class RockLayout {
   }
 
   /**
+   * The same as inCell, but leaves the cache alone when the cell isn't in it: for the dev map, whose
+   * many thousands of cells would otherwise push out the ones chunks and the AI keep asking for.
+   */
+  peek(cellX: number, cellZ: number): Rock | null {
+    const key = (cellX + 1048576) * 2097152 + (cellZ + 1048576);
+    if (this.gone.has(key)) return null;
+    const cached = this.cache.get(key);
+    return cached !== undefined ? cached : this.place(cellX, cellZ, key, undefined);
+  }
+
+  /**
    * Whether a boulder was knocked loose from within `clearance` of (x, z): its hollow is there.
    * Only where it lay (its radius), so nothing that grew round it goes when it does.
    */
