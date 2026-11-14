@@ -150,7 +150,7 @@ export class Game {
     this.photo = new PhotoCamera(this.stage.camera, this.pointer, (ndc, out) => this.stage.surfaceAt(ndc, out), FEATURES.groundSection ? null : ground);
     this.clods = new Clods(this.stage.scene, ground);
     this.birds = new Birds(this.stage.scene, this.field, this.trees, ground, {
-      up: (at, count) => this.audio.birdsUp(at, count),
+      up: (birds) => this.audio.birdsUp(birds),
       call: (at) => this.audio.birdCall(at),
     });
     this.juice = new Juice(
@@ -253,9 +253,19 @@ export class Game {
       if (autopilot) this.toggleAutopilot(this.input.shift);
       if (tip) this.car.tipOver(135);
     }
-    if (this.input.consume('KeyM')) this.audio.toggleMute();
+    // Dev: Shift+M silences the engines, to hear the rest better (it also presses M, so it goes first).
+    const engines = import.meta.env.DEV && this.input.consume('shift:KeyM');
+    if (this.input.consume('KeyM') && !engines) this.audio.toggleMute();
+    if (engines) this.audio.toggleEngines();
     if (this.input.consume('KeyC')) this.cycleCamera();
     if (import.meta.env.DEV && this.input.consume('KeyI')) this.cycleInspect();
+    // Dev: a rook flock in front of the car to drive into (G), or set off right away (Shift+G).
+    if (import.meta.env.DEV) {
+      // Shift+G also presses G, so it goes first.
+      const now = this.input.consume('shift:KeyG');
+      const ahead = this.input.consume('KeyG');
+      if (!this.paused && (now || ahead)) this.birds.devFlock(this.car, now);
+    }
     this.input.endFrame();
     const slowTarget = this.slowMotion ? SLOW_SPEEDS[this.slowLevel] : 1;
     this.timeScale += (slowTarget - this.timeScale) * (1 - Math.exp(-SLOW_RAMP * dt));

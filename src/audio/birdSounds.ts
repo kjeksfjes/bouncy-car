@@ -5,21 +5,29 @@
  */
 
 /**
- * Wingbeats: air rushing past the feathers, not a hit. Each bird is one rushing voice: noise through
- * a broad band round `band` (min..max Hz, its own centre) with a little low `body` under it, swelling
- * and fading smoothly with each wingbeat (`rate` beats/s, min..max, its own; the downstroke at full
- * strength, the upstroke at `upstroke`). The voices start up to `ripple` s apart and die away over
- * `length` s as the birds climb off. At most `voices` are heard; more birds only make it louder.
+ * Wingbeats: air rushing past the feathers, not a hit. Each bird is one voice: noise through a broad
+ * band round its own centre in `band` (min..max Hz) with a little low `body` under it, puffing with
+ * each stroke at its own `rate` (beats/s, min..max). A downstroke swells over `swell` of a beat and
+ * fades by `stroke` of it, leaving a gap, so single flaps stand out; the upstroke is a weaker puff
+ * (`upstroke`) in the gap. Each bird has its own loudness (`near`, min..max: nearer and further off)
+ * and lasts its own `length` s (min..max), dying away as it climbs off; they set off over
+ * `ripple.base` s plus `ripple.perBird` s a bird, up to `ripple.max`. At most `voices` are heard (more
+ * birds only make it louder). Loudness grows with the birds as noise from many sources adds, by the
+ * root of their number: a group of `reference` birds sounds at `level`.
  */
 const WINGS = {
-  rate: [4.5, 6] as const,
-  band: [900, 2400] as const,
+  rate: [3.8, 6.5] as const,
+  band: [700, 3000] as const,
   q: 0.7,
   body: { freq: 500, q: 0.9, level: 0.45 },
-  upstroke: 0.35,
-  ripple: 0.3,
-  length: 1.6,
-  voices: 6,
+  swell: 0.12,
+  stroke: 0.42,
+  upstroke: 0.3,
+  near: [0.5, 1] as const,
+  length: [0.9, 1.8] as const,
+  ripple: { base: 0.15, perBird: 0.04, max: 1 },
+  voices: 10,
+  reference: 8,
   level: 1.4,
 };
 
@@ -51,18 +59,19 @@ const CAW = {
 
 const between = (range: readonly [number, number]) => range[0] + Math.random() * (range[1] - range[0]);
 
-/** A group of `count` birds lifting off together: their wings rushing, out of step, dying away. */
+/** A group of `count` birds lifting off together: their wingbeats, out of step, dying away. */
 export function wingFlutter(ctx: BaseAudioContext, out: AudioNode, noise: AudioBuffer, count: number, pitch = 1): void {
   const W = WINGS;
   const voices = Math.min(W.voices, count);
-  // More birds than voices only make it louder (as noise adds: by the root).
-  const level = W.level * Math.sqrt(count / voices) / Math.sqrt(voices);
+  // The whole group at its loudness for `count` birds, shared over the voices (which add by the root).
+  const level = (W.level * Math.sqrt(count / W.reference)) / Math.sqrt(voices);
+  const ripple = Math.min(W.ripple.max, W.ripple.base + W.ripple.perBird * count);
   for (let i = 0; i < voices; i++) {
-    const t = ctx.currentTime + (Math.random() * W.ripple) / pitch;
-    const length = W.length / pitch;
+    const t = ctx.currentTime + (Math.random() * ripple) / pitch;
+    const length = between(W.length) / pitch;
     const src = new AudioBufferSourceNode(ctx, { buffer: noise, loop: true, playbackRate: pitch });
     const env = new GainNode(ctx, { gain: 0 });
-    env.gain.setValueCurveAtTime(beatCurve(between(W.rate) * pitch, length, level), t, length);
+    env.gain.setValueCurveAtTime(beatCurve(between(W.rate) * pitch, length, level * between(W.near)), t, length);
     src.connect(new BiquadFilterNode(ctx, { type: 'bandpass', frequency: between(W.band) * pitch, Q: W.q })).connect(env);
     src.connect(new BiquadFilterNode(ctx, { type: 'bandpass', frequency: W.body.freq * pitch, Q: W.body.q })).connect(new GainNode(ctx, { gain: W.body.level })).connect(env);
     env.connect(out);
@@ -71,20 +80,24 @@ export function wingFlutter(ctx: BaseAudioContext, out: AudioNode, noise: AudioB
 }
 
 /**
- * One bird's wingbeats as a gain curve over `length` s: a smooth swell and fade per stroke (sin²),
- * the downstroke full and the upstroke weaker, the whole dying away as it climbs off.
+ * One bird's wingbeats as a gain curve over `length` s: per beat a downstroke puff (swelling over
+ * WINGS.swell of the beat, faded by WINGS.stroke) and a weaker upstroke puff in the gap after it,
+ * the whole dying away as it climbs off.
  */
 function beatCurve(rate: number, length: number, level: number): Float32Array {
-  const steps = Math.ceil(length * 200);
+  const W = WINGS;
+  const steps = Math.ceil(length * 400);
   const curve = new Float32Array(steps);
   const phase0 = Math.random();
+  const puff = (x: number, swell: number, end: number) =>
+    x < swell ? Math.sin((Math.PI / 2) * (x / swell)) : x < end ? Math.cos((Math.PI / 2) * ((x - swell) / (end - swell))) ** 2 : 0;
   for (let i = 0; i < steps; i++) {
     const t = (i / (steps - 1)) * length;
     const cycle = (t * rate + phase0) % 1;
-    // First half of each cycle the downstroke, second the upstroke.
-    const stroke = Math.sin(Math.PI * ((cycle * 2) % 1)) ** 2 * (cycle < 0.5 ? 1 : WINGS.upstroke);
-    const fade = Math.min(1, t / 0.05) * (1 - t / length) ** 1.5;
-    curve[i] = level * stroke * fade;
+    const down = puff(cycle, W.swell, W.stroke);
+    const up = W.upstroke * puff(cycle - 0.55, W.swell * 0.8, W.stroke * 0.7);
+    const fade = Math.min(1, t / 0.04) * (1 - t / length) ** 1.5;
+    curve[i] = level * Math.max(down, up) * fade;
   }
   return curve;
 }

@@ -27,16 +27,18 @@ const MIX = {
   /** Rocks: knocked loose, clacking on each other, landing. */
   rock: 0.7,
   /** Rooks: a group's wingbeats lifting off, and their caws. */
-  wings: 0.5,
+  wings: 0.3,
   caw: 0.38,
 };
 
 /**
  * Rooks lifting off: one caw, plus one for every `cawPerBirds` birds, up to `cawsMax`, spread over the
  * first `cawSpread` s. At most `cawVoices` caws start within `cawWindow` s, so a big flock doesn't
- * pile up a choir.
+ * pile up a choir. Their wings come from up to `wingSpots` of the birds, one per `birdsPerSpot`, each
+ * carrying its share of the group. Every rook sound follows the bird it comes from as it flies, for
+ * `follow` s (wings) or `call` s (a caw; longer than the caws, as they can start late).
  */
-const ROOKS = { cawPerBirds: 4, cawsMax: 4, cawSpread: 1.2, cawVoices: 3, cawWindow: 0.6 };
+const ROOKS = { cawPerBirds: 4, cawsMax: 4, cawSpread: 1.2, cawVoices: 3, cawWindow: 0.6, wingSpots: 3, birdsPerSpot: 4, follow: 3.5, call: 1 };
 
 /** At most this many rock clacks and thuds start within ROCK_WINDOW s: a collapsing heap would otherwise pile up voices. */
 const ROCK_VOICES = 6;
@@ -176,8 +178,11 @@ class CarVoice {
     this.drag = new DragChain(ctx, noise, this.panner);
   }
 
-  /** @param pitch slow motion lowers the engine (see AudioEngine.setTimeScale) */
-  update(dt: number, car: Car, pitch: number): void {
+  /**
+   * @param pitch slow motion lowers the engine (see AudioEngine.setTimeScale)
+   * @param engineOn false silences the engine (the rest of the car is still heard)
+   */
+  update(dt: number, car: Car, pitch: number, engineOn: boolean): void {
     const now = this.ctx.currentTime;
     const p = car.position;
     this.panner.positionX.setTargetAtTime(p.x, now, 0.02);
@@ -205,7 +210,7 @@ class CarVoice {
     this.rasp.gain.setTargetAtTime(ENGINE.raspShut + load * ENGINE.raspOpen, now, 0.06);
     const muffler = (ENGINE.muffler + revs * ENGINE.mufflerRevs + load * ENGINE.mufflerLoad) * pitch;
     for (const filter of this.muffler) filter.frequency.setTargetAtTime(muffler, now, 0.05);
-    this.engineGain.gain.setTargetAtTime(MIX.engine * this.level * alive * (0.7 + 0.3 * load), now, 0.08);
+    this.engineGain.gain.setTargetAtTime(MIX.engine * this.level * alive * (engineOn ? 1 : 0) * (0.7 + 0.3 * load), now, 0.08);
 
     this.tyres(dt, car, speed, pitch);
     this.scrape(dt, car, pitch);
@@ -296,12 +301,14 @@ export class GameAudio implements CarEvents {
   private engine: AudioEngine | null = null;
   private muted = false;
   private paused = false;
+  private enginesOff = false;
 
   constructor() {
     const start = () => {
       if (this.engine) return;
       this.engine = new AudioEngine();
       this.engine.setMuted(this.muted || this.paused);
+      this.engine.setEnginesOff(this.enginesOff);
     };
     window.addEventListener('keydown', start, { once: true });
     window.addEventListener('pointerdown', start, { once: true });
@@ -310,6 +317,12 @@ export class GameAudio implements CarEvents {
   toggleMute(): void {
     this.muted = !this.muted;
     this.engine?.setMuted(this.muted || this.paused);
+  }
+
+  /** Dev: silences the cars' engines (tyres, scrapes and the rest go on), to hear everything else better. */
+  toggleEngines(): void {
+    this.enginesOff = !this.enginesOff;
+    this.engine?.setEnginesOff(this.enginesOff);
   }
 
   /** Slow motion (game time per real time, 1 = normal): sounds drop in pitch and stretch out. */
@@ -353,12 +366,12 @@ export class GameAudio implements CarEvents {
     this.engine?.rockHit(at, k, size, stone);
   }
 
-  /** `count` rooks lifting off together at `at`: their wingbeats and a few alarm caws. */
-  birdsUp(at: THREE.Vector3, count: number): void {
-    this.engine?.birdsUp(at, count);
+  /** Rooks lifting off together, at `birds` (kept moving as they fly): their wingbeats and a few alarm caws. */
+  birdsUp(birds: readonly THREE.Vector3[]): void {
+    this.engine?.birdsUp(birds);
   }
 
-  /** One rook calling at `at`. */
+  /** One rook calling at `at` (kept moving as it flies). */
   birdCall(at: THREE.Vector3): void {
     this.engine?.birdCall(at);
   }
@@ -390,6 +403,10 @@ class AudioEngine {
   private rockTimes: number[] = [];
   /** When the latest caws start (see ROOKS). */
   private cawTimes: number[] = [];
+  /** One-shots following a moving source (see followOut). */
+  private followers: { panner: PannerNode; at: THREE.Vector3; until: number }[] = [];
+  /** Dev: the cars' engines silenced, to hear the rest better. */
+  private enginesOff = false;
 
   constructor() {
     loadEngineWorklet(this.ctx).then(
@@ -417,6 +434,10 @@ class AudioEngine {
     this.master.gain.setTargetAtTime(muted ? 0 : MIX.master, this.ctx.currentTime, 0.05);
   }
 
+  setEnginesOff(off: boolean): void {
+    this.enginesOff = off;
+  }
+
   setTimeScale(scale: number): void {
     this.pitch = Math.sqrt(THREE.MathUtils.clamp(scale, 0.01, 1));
     // Fully open at normal speed, ≈2.5 kHz at ¼, closing to SLOW_FLOOR further down.
@@ -428,6 +449,7 @@ class AudioEngine {
   update(dt: number, camera: THREE.Camera, cars: readonly Car[]): void {
     if (this.ctx.state !== 'running' || !this.engineReady) return;
     this.placeListener(camera);
+    this.follow();
 
     for (const [car, voice] of this.voices) {
       if (!cars.includes(car)) {
@@ -438,7 +460,7 @@ class AudioEngine {
     cars.forEach((car, i) => {
       let voice = this.voices.get(car);
       if (!voice) this.voices.set(car, (voice = new CarVoice(this.ctx, this.loops, this.noise, this.profile, i === 0 ? 1 : MIX.aiEngine)));
-      voice.update(dt, car, this.pitch);
+      voice.update(dt, car, this.pitch, !this.enginesOff);
     });
 
     const player = cars[0];
@@ -516,11 +538,16 @@ class AudioEngine {
     this.rockHit(at, 1, size * 0.6, true);
   }
 
-  birdsUp(at: THREE.Vector3, count: number): void {
+  birdsUp(birds: readonly THREE.Vector3[]): void {
     const R = ROOKS;
-    wingFlutter(this.ctx, this.oneShotOut(at, MIX.wings), this.noise, count, this.pitch);
+    const count = birds.length;
+    if (count === 0) return;
+    // A bigger group heard from a few of its birds, so it has some width and spreads as they fly.
+    const spots = Math.min(R.wingSpots, Math.ceil(count / R.birdsPerSpot));
+    const from = pick(birds, spots);
+    for (const at of from) wingFlutter(this.ctx, this.followOut(at, MIX.wings, R.follow), this.noise, Math.round(count / spots), this.pitch);
     const caws = Math.min(R.cawsMax, 1 + Math.floor(count / R.cawPerBirds));
-    for (let i = 0; i < caws; i++) this.birdCall(at, Math.random() * R.cawSpread);
+    for (const at of pick(birds, caws)) this.birdCall(at, Math.random() * R.cawSpread);
   }
 
   birdCall(at: THREE.Vector3, delay = 0): void {
@@ -529,7 +556,7 @@ class AudioEngine {
     this.cawTimes = this.cawTimes.filter((t) => Math.abs(start - t) < R.cawWindow);
     if (this.cawTimes.length >= R.cawVoices) return;
     this.cawTimes.push(start);
-    caw(this.ctx, this.oneShotOut(at, MIX.caw), this.pitch, delay / this.pitch);
+    caw(this.ctx, this.followOut(at, MIX.caw, delay + R.call), this.pitch, delay / this.pitch);
   }
 
   rockHit(at: THREE.Vector3, k: number, size: number, stone: boolean): void {
@@ -646,6 +673,33 @@ class AudioEngine {
    * `saturate` drives the layers through a soft clipper, which glues them and adds
    * harmonics so low thumps are audible on small speakers.
    */
+  /**
+   * Like oneShotOut, but the panner keeps following `at` (a position the caller keeps moving) for
+   * `life` s of game time, then disconnects.
+   */
+  private followOut(at: THREE.Vector3, level: number, life: number): GainNode {
+    const gain = new GainNode(this.ctx, { gain: level });
+    const panner = new PannerNode(this.ctx, { ...PANNER, positionX: at.x, positionY: at.y, positionZ: at.z });
+    gain.connect(panner).connect(this.master);
+    this.followers.push({ panner, at, until: this.ctx.currentTime + life / this.pitch });
+    return gain;
+  }
+
+  /** Moves the following panners (see followOut) to where their sources are now, and lets the finished ones go. */
+  private follow(): void {
+    const now = this.ctx.currentTime;
+    this.followers = this.followers.filter((f) => {
+      if (now > f.until) {
+        f.panner.disconnect();
+        return false;
+      }
+      f.panner.positionX.setTargetAtTime(f.at.x, now, 0.02);
+      f.panner.positionY.setTargetAtTime(f.at.y, now, 0.02);
+      f.panner.positionZ.setTargetAtTime(f.at.z, now, 0.02);
+      return true;
+    });
+  }
+
   private oneShotOut(at: THREE.Vector3, level: number, saturate = false): GainNode {
     const gain = new GainNode(this.ctx, { gain: level });
     const panner = new PannerNode(this.ctx, { ...PANNER, positionX: at.x, positionY: at.y, positionZ: at.z });
@@ -730,4 +784,14 @@ function softClip(): Float32Array<ArrayBuffer> {
     curve[i] = Math.tanh(x * 2.5);
   }
   return curve;
+}
+
+/** Up to `n` of `items`, different ones, picked at random. */
+function pick<T>(items: readonly T[], n: number): T[] {
+  const pool = items.slice();
+  for (let i = 0; i < Math.min(n, pool.length); i++) {
+    const j = i + Math.floor(Math.random() * (pool.length - i));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+  return pool.slice(0, n);
 }

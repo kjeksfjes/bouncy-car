@@ -116,12 +116,21 @@ const CAPACITY = 192;
 /** A car touches a tree when one of its body's circles (FOOTPRINT) comes within this much more than touching (m). */
 const TOUCH_MARGIN = 0.15;
 
+/**
+ * Dev testing (see Birds.devFlock): a flock of `birds` put down `ahead` m in front of the car (beyond
+ * startling range, to drive into), or `near` m in front and set off at once.
+ */
+const DEV_FLOCK = { birds: 15, ahead: 45, near: 8 };
+
 /** A rook in the air within `reach` m of the camera calls now and then: `perSecond` on average. */
 const CALLS = { reach: 120, perSecond: 0.04 };
 
-/** What the birds make heard: a group lifting off together (wingbeats and alarm calls), and one calling. */
+/**
+ * What the birds make heard: a group lifting off together (wingbeats and alarm calls), and one
+ * calling. Both get the birds' own positions, which they keep moving, so the sound can follow them.
+ */
 export interface BirdSounds {
-  up(at: THREE.Vector3, count: number): void;
+  up(birds: readonly THREE.Vector3[]): void;
   call(at: THREE.Vector3): void;
 }
 
@@ -204,6 +213,8 @@ export class Birds {
   private readonly flown = new Set<string>();
   private readonly barren = new Set<string>();
   private lookOver = 0;
+  /** Flocks put down for testing so far (see devFlock). */
+  private devFlocks = 0;
   /** Seconds to the next flock across the sky. */
   private skyIn = between(SKY.gap, Math.random());
   /** The player's ground velocity (m/s), from its last position, for aiming a flock across its way. */
@@ -260,6 +271,7 @@ export class Birds {
     const away = yawTo(tree.x - from.x, tree.z - from.z);
     const crownY = tree.y + (tree.oak ? 10 : 3.5) * tree.scale;
     const crownR = (tree.oak ? 4.5 : 1.4) * tree.scale;
+    const up: THREE.Vector3[] = [];
     for (let i = 0; i < count && this.birds.length < CAPACITY; i++) {
       const a = Math.random() * Math.PI * 2;
       const r = crownR * Math.sqrt(Math.random()) * 0.8;
@@ -267,8 +279,9 @@ export class Birds {
       b.delay = Math.random() * ROOKERY.stagger;
       this.takeOff(b, away + (Math.random() * 2 - 1) * FLIGHT.spread);
       this.birds.push(b);
+      up.push(b.pos);
     }
-    this.sounds.up(new THREE.Vector3(tree.x, crownY, tree.z), count);
+    this.sounds.up(up);
   }
 
   /**
@@ -395,7 +408,7 @@ export class Birds {
     flock.startled = true;
     this.flown.add(flock.key);
     this.flocks.delete(flock.key);
-    this.sounds.up(flock.centre, flock.birds.length);
+    this.sounds.up(flock.birds.map((b) => b.pos));
     let first = Infinity;
     for (const b of flock.birds) first = Math.min(first, b.pos.distanceTo(from));
     for (const b of flock.birds) {
@@ -414,6 +427,19 @@ export class Birds {
     b.flapping = true;
     b.flap = 1;
     b.age = 0;
+  }
+
+  /**
+   * Dev testing: a flock on the ground in front of `car` wherever it is, to drive into, or with `now`
+   * right in front of it and set off at once (see DEV_FLOCK).
+   */
+  devFlock(car: Car, now: boolean): void {
+    const D = DEV_FLOCK;
+    if (this.birds.length + D.birds > CAPACITY) return;
+    const ahead = _want.set(0, 0, -1).applyQuaternion(car.model.root.quaternion).setY(0).normalize().multiplyScalar(now ? D.near : D.ahead);
+    const key = `dev:${++this.devFlocks}`;
+    this.putDown(key, { x: car.position.x + ahead.x, z: car.position.z + ahead.z }, D.birds);
+    if (now) this.startle(this.flocks.get(key)!, car.position);
   }
 
   /** Sends a loose flock across the sky ahead of the player, from one side to the other (see SKY). */
