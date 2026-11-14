@@ -254,6 +254,8 @@ function leafMass(at: THREE.Vector3, r: number, random: () => number): THREE.Buf
 
 /** How far the oak is set into the ground (m). */
 const OAK_SINK = 0.65;
+/** Tree trunks' collider friction (Rapier's default is 0.5): slippery, so cars slide off them rather than getting pinned. */
+const TRUNK_FRICTION = 0.1;
 /**
  * The oak's trunk and roots surface (see sdfMesh): facet size (`cell`, m), how wide the filled-in
  * joins between trunk and roots are (`fillet`, m), and the bark's lumps (`gnarl` m deep, `gnarlScale`
@@ -430,7 +432,9 @@ export class PropScatter {
         if (t.oak) objects.push(this.drapedFoot(t));
         const halfHeight = (t.oak ? OAK.halfHeight : SPECIES[t.species].halfHeight) * t.scale;
         this.world.createCollider(
-          RAPIER.ColliderDesc.cylinder(halfHeight, t.radius).setTranslation(t.x, t.y + halfHeight, t.z),
+          // Slippery bark (averaged with the car body's 0.2): a car pressed against a trunk slides
+          // off it instead of hanging there.
+          RAPIER.ColliderDesc.cylinder(halfHeight, t.radius).setTranslation(t.x, t.y + halfHeight, t.z).setFriction(TRUNK_FRICTION),
           body,
         );
       }

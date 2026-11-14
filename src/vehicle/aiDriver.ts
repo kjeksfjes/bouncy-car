@@ -3,6 +3,7 @@ import type { Obstacles } from '../world/details';
 import type { Varde } from '../world/landmarks';
 import type { TerrainField } from '../world/terrainField';
 import type { Car, CarInput } from './car';
+import { circleBlocked, FOOTPRINT } from './clearPose';
 
 /**
  * Tuning for the AI driver. Yaw is measured from straight downhill (−Z),
@@ -94,18 +95,47 @@ const AI = {
    * Stuck: on the throttle for `stuckTime` s without getting `stuckProgress` m from where it was.
    * Judged by progress, not speed: a car pinned nose-first against a trunk on a steep slope bounces
    * off it and back at ±2 m/s for ever. Stuck again within `stuckArea` m and `stuckMemory` s is the
-   * next attempt, and each tries something else (see `stuck`). Backing out lasts until it has
-   * reversed the attempt's distance, `reverseTime` s have passed, or it stops making headway
-   * (`reverseStall` s without `reverseStallProgress` m: backed into something).
+   * next attempt (see `stuck`). Backing out ends early after `reverseTime` s, or once it stops
+   * making headway (`reverseStall` s without `reverseStallProgress` m).
    */
   stuckProgress: 2.5,
   stuckTime: 2,
   stuckArea: 15,
   stuckMemory: 30,
-  reverseDistance: [4, 7, 8],
-  reverseTime: 4,
+  reverseTime: 5,
   reverseStall: 1,
   reverseStallProgress: 0.5,
+  /**
+   * Getting loose (see planEscape), with the car's body as FOOTPRINT's circles. Reversing arcs are tried at
+   * `backSteers`, stopping at `backStops` m (out to `maxBack`, or `maxBackLater` from the second
+   * attempt); from each, forward arcs at `outSteers`, out to `outLength` m in `outStep` m steps,
+   * turning at most `outTurn` rad before going straight. A way out runs clear at least `minOut`
+   * m; it scores its clear run (up to outLength), `exitRoute` × how well it heads the way the
+   * route goes, less `costBack` per m reversed. While backing it stops short of a trunk
+   * `backLookout` m behind its tail. Driving out it creeps at `outSpeed` m/s for up to `outDistance`
+   * m, then holds that heading `exitHold` s. `replans` more reverses are tried before it counts as stuck again.
+   * Ground rising more than `maxClimb` (rise per m) the way it's going, at its leading edge, blocks
+   * an arc like a trunk does: it can't drive up a rock face.
+   */
+  backSteers: [-1, -0.5, 0, 0.5, 1],
+  backStops: [1.5, 3, 4.5, 6, 8, 10, 12],
+  backStep: 0.5,
+  maxBack: 8,
+  maxBackLater: 12,
+  outSteers: [-1, -0.5, 0, 0.5, 1],
+  outLength: 12,
+  outStep: 1,
+  outTurn: 1.3,
+  minOut: 5,
+  exitRoute: 2,
+  costBack: 0.4,
+  backLookout: 0.8,
+  outSpeed: 3.5,
+  outDistance: 8,
+  outTime: 4,
+  exitHold: 2,
+  replans: 2,
+  maxClimb: 1,
   /** After an attempt, the heading that got it stuck is shunned (± `tabooWidth` rad, growing per attempt) for `tabooTime` s. */
   tabooWidth: 0.35,
   tabooGrowth: 0.2,
@@ -114,6 +144,46 @@ const AI = {
   /** The third attempt drives off any way it can, across the slope too (± `escapeSpread` rad) for `escapeTime` s. */
   escapeSpread: 1.9,
   escapeTime: 6,
+  /**
+   * Forest mode, among many trees: checked every routeEvery s by `forestRing` spots on each of two
+   * rings (`forestRadii` m) round the car, a spot counting if a trunk comes within
+   * `forestClearance` m. It goes in past `forestEnter` of them blocked and out under `forestExit`.
+   * In it, the car drives at most `forestSpeed` m/s (`forestCreep` with a trunk within
+   * `forestCaution` m ahead), and instead of the long-range route it seeks the nearest open ground
+   * (see seekOpen), steering among the trunks with a closer, finer look (`forestLook` m in
+   * `forestStep` m steps, `forestCandidates` headings ±`forestSpread`, `forestTreeClearance` m off a trunk).
+   */
+  forestRing: 8,
+  forestRadii: [5, 10],
+  forestClearance: 1,
+  forestEnter: 0.25,
+  forestExit: 0.12,
+  forestSpeed: 8,
+  forestCreep: 4,
+  forestCaution: 8,
+  forestLook: 20,
+  forestStep: 1,
+  forestCandidates: 25,
+  forestSpread: 1.4,
+  forestTreeClearance: 2.6,
+  costForestTree: 9,
+  /**
+   * Seeking open ground: `openCandidates` headings ±`openSpread` round downhill, walked out to
+   * `openRange` m in `openStep` m steps; open ground is a spot with no trunk within `openRadius`
+   * m (checked at its middle and `openRing` spots round it). Each heading costs how far its open
+   * ground is (per `openRange`), `costOpenTrunk` per trunk on the way, and its turn off downhill;
+   * one with no open ground costs `costNoOpen`.
+   */
+  openCandidates: 19,
+  openSpread: 1.8,
+  openRange: 60,
+  openStep: 4,
+  openRadius: 6,
+  openRing: 6,
+  costOpenFar: 2,
+  costOpenTrunk: 0.6,
+  costOpenOff: 0.4,
+  costNoOpen: 6,
   /** Upside down / on its side for this long → reset. */
   flippedTime: 1.5,
   /**
@@ -127,11 +197,29 @@ const AI = {
 
 export interface AiDecision {
   input: CarInput;
-  /** The car should be put back on its wheels; where and facing which way, if not where it is. */
+  /**
+   * The car should be put back on its wheels: clear of anything it's against (see clearPose),
+   * otherwise at `resetTo` if given (where it is, facing the most open way), or where it is.
+   */
   reset: boolean;
   resetTo?: { x: number; z: number; yaw: number };
   /** The car is wrecked and has come to rest: it wants a new one. */
   newCar?: boolean;
+}
+
+/**
+ * Getting loose: backing `back` m along the arc at `backSteer`, then driving out `out` m along the
+ * arc at `outSteer` toward `exitYaw`. `from` is where the current phase started, `time` how long it's run.
+ */
+interface Manoeuvre {
+  phase: 'back' | 'out';
+  back: number;
+  backSteer: number;
+  outSteer: number;
+  exitYaw: number;
+  out: number;
+  from: THREE.Vector3;
+  time: number;
 }
 
 const _fwd = new THREE.Vector3();
@@ -142,7 +230,8 @@ const _n = new THREE.Vector3();
  * Look-ahead driver. A long-range route (a few times a second) finds the open way far ahead: lanes
  * through forest or round it, off rock faces and steep side slopes, or at a cairn to knock over.
  * Each frame it picks the clearest heading near that route and steers for it, at a speed for the
- * grip under its tyres. Stuck, it tries something new each time.
+ * grip under its tyres. Among many trees it slows right down, seeks the nearest open ground and
+ * picks its way between the trunks with a closer, finer look. Stuck, it tries something new each time.
  */
 export class AiDriver {
   /** Chosen heading as a world-space direction, for the debug arrow. */
@@ -156,14 +245,12 @@ export class AiDriver {
   private cairn: Varde | null = null;
   private cairnTime = 0;
 
-  private reversing = 0;
-  private reverseDistance = 0;
-  private reverseSteer = 0;
+  /** Getting loose: backing out, then driving out (see planEscape), and how many reverses it has planned there. */
+  private manoeuvre: Manoeuvre | null = null;
+  private replanned = 0;
   /** Where the car last made progress, and how long it's been on the throttle since without making more. */
   private readonly anchor = new THREE.Vector3();
   private sinceProgress = 0;
-  /** Where backing out started. */
-  private readonly reverseFrom = new THREE.Vector3();
   /** Where it last got stuck, when (s of its own time), and which attempt that was there. */
   private readonly stuckAt = new THREE.Vector3();
   private stuckWhen = -Infinity;
@@ -176,6 +263,8 @@ export class AiDriver {
   /** Seconds left of driving off any way it can. */
   private escape = 0;
   private flipped = 0;
+  /** Among many trees: slow, careful, seeking open ground (see AI forest mode). */
+  private forest = false;
   /** How long the car has lain broken and still (s). */
   private wrecked = 0;
 
@@ -210,7 +299,7 @@ export class AiDriver {
     this.flipped = _up.y < 0.3 && car.velocity.length() < 3 ? this.flipped + dt : 0;
     if (this.flipped > AI.flippedTime) {
       this.flipped = 0;
-      this.reversing = 0;
+      this.manoeuvre = null;
       this.madeProgress(pos);
       return { input: idle, reset: true };
     }
@@ -221,41 +310,46 @@ export class AiDriver {
       return { input: { ...idle, brake: 1 }, reset: false };
     }
 
-    // Backing out after getting stuck, until far enough back, out of time, or backed into something.
-    if (this.reversing > 0) {
-      this.reversing -= dt;
-      const backed = pos.distanceTo(this.reverseFrom);
-      const elapsed = AI.reverseTime - this.reversing;
-      const stalled = elapsed > AI.reverseStall && backed < AI.reverseStallProgress;
-      if (this.reversing > 0 && backed < this.reverseDistance && !stalled) {
-        return { input: { ...idle, brake: 1, steer: this.reverseSteer }, reset: false };
-      }
-      this.reversing = 0;
-      this.madeProgress(pos);
+    const carYaw = Math.atan2(-_fwd.x, -_fwd.z);
+    // Getting loose: backing out, then driving out, each step looked over first.
+    if (this.manoeuvre) {
+      const decision = this.loosen(dt, car, pos, carYaw);
+      if (decision) return decision;
     }
 
-    const carYaw = Math.atan2(-_fwd.x, -_fwd.z);
     this.routeTimer -= dt;
     if (this.routeTimer <= 0) {
       this.routeTimer = AI.routeEvery;
-      this.pickCairn(pos);
-      this.planRoute(pos);
+      const density = this.treeDensity(pos);
+      this.forest = density > (this.forest ? AI.forestExit : AI.forestEnter);
+      if (this.forest) {
+        this.cairn = null;
+        this.seekOpen(pos);
+      } else {
+        this.pickCairn(pos);
+        this.planRoute(pos);
+      }
     }
 
     const company = this.companyBearings(pos, others);
-    const look = Math.min(AI.lookMax, AI.lookBase + Math.max(0, speed) * AI.lookPerSpeed);
-    const spread = this.escape > 0 ? AI.escapeSpread : AI.spread;
+    const forest = this.forest;
+    const look = forest ? AI.forestLook : Math.min(AI.lookMax, AI.lookBase + Math.max(0, speed) * AI.lookPerSpeed);
+    const step = forest ? AI.forestStep : AI.sampleStep;
+    const clearance = forest ? AI.forestTreeClearance : AI.clearance;
+    const candidates = forest ? AI.forestCandidates : AI.candidates;
+    const spread = this.escape > 0 ? AI.escapeSpread : forest ? AI.forestSpread : AI.spread;
+    const costTree = forest ? AI.costForestTree : AI.costTree;
     let bestYaw = this.routeYaw;
     let bestCost = Infinity;
     let bestTreeDist = Infinity;
-    for (let i = 0; i < AI.candidates; i++) {
-      const off = -spread + (2 * spread * i) / (AI.candidates - 1);
+    for (let i = 0; i < candidates; i++) {
+      const off = -spread + (2 * spread * i) / (candidates - 1);
       const yaw = wrapAngle(this.routeYaw + off);
-      const treeDist = this.firstTree(pos, yaw, look);
+      const treeDist = this.firstTree(pos, yaw, look, step, clearance);
       const cost =
         Math.abs(off) * AI.costOffRoute +
         Math.abs(wrapAngle(yaw - carYaw)) * AI.costTurn +
-        (treeDist < look ? ((look - treeDist) / look) * AI.costTree : 0) +
+        (treeDist < look ? ((look - treeDist) / look) * costTree : 0) +
         this.companyCost(yaw, company) +
         this.tabooCost(yaw);
       if (cost < bestCost) {
@@ -274,6 +368,8 @@ export class AiDriver {
     const hunting = this.cairn !== null;
     let target = (bestTreeDist < AI.cautionDistance && !hunting ? AI.cautiousSpeed : this.cruiseSpeed) * Math.pow(grip, AI.gripSpeed);
     if (this.hazardAt < AI.hazardDistance && !hunting) target *= AI.hazardSlow;
+    // Among many trees: slowly, creeping past a trunk close ahead.
+    if (forest) target = Math.min(target, bestTreeDist < AI.forestCaution ? AI.forestCreep : AI.forestSpeed * Math.pow(grip, AI.gripSpeed));
     target *= 1 - Math.min(0.5, (Math.abs(error) * AI.cornerSlow) / grip);
     const input: CarInput = {
       throttle: speed < target ? 1 : 0,
@@ -285,17 +381,17 @@ export class AiDriver {
     // Stuck: pushing without getting anywhere.
     if (input.throttle === 0 || pos.distanceTo(this.anchor) > AI.stuckProgress) this.madeProgress(pos);
     else this.sinceProgress += dt;
-    if (this.sinceProgress > AI.stuckTime) return this.stuck(pos, steer, bestYaw, input);
+    if (this.sinceProgress > AI.stuckTime) return this.stuck(car, pos, carYaw, input);
     return { input, reset: false };
   }
 
   /**
-   * Got stuck: each attempt in the same spot tries something else. 1: back out turning the other
-   * way. 2: back out further, turning the opposite way to last time, and shun the heading that got
-   * it stuck. 3: back out straight, then drive off any way it can, across the slope too. 4 and on:
-   * back on its wheels where it is, facing the most open way.
+   * Got stuck. It shuns the heading that got it stuck and plans a way loose (see planEscape),
+   * reversing further from the second attempt; the third also drives off any way it can for a
+   * while, across the slope too. With no way loose, or on the fourth attempt in the same spot, it
+   * goes back on its wheels where it is, facing the most open way.
    */
-  private stuck(pos: THREE.Vector3, steer: number, yaw: number, input: CarInput): AiDecision {
+  private stuck(car: Car, pos: THREE.Vector3, yaw: number, input: CarInput): AiDecision {
     const again = this.time - this.stuckWhen < AI.stuckMemory && pos.distanceTo(this.stuckAt) < AI.stuckArea;
     this.attempts = again ? this.attempts + 1 : 1;
     this.stuckAt.copy(pos);
@@ -305,27 +401,183 @@ export class AiDriver {
     this.tabooYaw = yaw;
     this.tabooWidth = AI.tabooWidth + AI.tabooGrowth * (this.attempts - 1);
     this.tabooLeft = AI.tabooTime;
-    if (this.attempts >= 4) {
-      this.attempts = 0;
-      this.cairn = null;
-      const to = { x: pos.x, z: pos.z, yaw: this.openestYaw(pos) };
-      this.routeYaw = to.yaw;
-      return { input, reset: true, resetTo: to };
-    }
-    const D = AI.reverseDistance;
-    this.reversing = AI.reverseTime;
-    this.reverseFrom.copy(pos);
-    this.reverseDistance = D[Math.min(this.attempts, D.length) - 1];
-    if (this.attempts === 1) this.reverseSteer = steer >= 0 ? -1 : 1;
-    else if (this.attempts === 2) this.reverseSteer = -this.reverseSteer || (steer >= 0 ? 1 : -1);
-    else {
-      this.reverseSteer = 0;
-      // Counted from now, so it runs on after backing out.
-      this.escape = AI.reverseTime + AI.escapeTime;
-    }
+    if (this.attempts >= 4) return this.giveUp(pos, input);
     // A cairn it keeps getting stuck going for isn't worth it.
     if (this.attempts >= 2) this.cairn = null;
-    return { input: { throttle: 0, brake: 1, steer: this.reverseSteer, handbrake: false }, reset: false };
+    // Counted from now, so it runs on after getting loose.
+    if (this.attempts >= 3) this.escape = AI.reverseTime + AI.outTime + AI.escapeTime;
+    this.replanned = 0;
+    const plan = this.planEscape(car, pos, yaw, this.attempts >= 2 ? AI.maxBackLater : AI.maxBack);
+    if (!plan) return this.giveUp(pos, input);
+    this.manoeuvre = plan;
+    return this.loosen(0, car, pos, yaw) ?? { input, reset: false };
+  }
+
+  /** No way loose: back on its wheels where it is, facing the most open way. */
+  private giveUp(pos: THREE.Vector3, input: CarInput): AiDecision {
+    this.attempts = 0;
+    this.cairn = null;
+    this.manoeuvre = null;
+    const to = { x: pos.x, z: pos.z, yaw: this.openestYaw(pos) };
+    this.routeYaw = to.yaw;
+    return { input, reset: true, resetTo: to };
+  }
+
+  /**
+   * One step of getting loose. Backing out: along the planned arc until it has reversed far
+   * enough, sees a trunk close behind, stalls or runs out of time; then it looks over the ways out
+   * from where it actually is, and drives out along the best (or plans another reverse, or gives
+   * up as stuck). Driving out: creeping along that arc until it has gone far enough or faces the
+   * way out, which it then holds for a moment. Null when it's done and normal driving takes over.
+   */
+  private loosen(dt: number, car: Car, pos: THREE.Vector3, yaw: number): AiDecision | null {
+    const m = this.manoeuvre!;
+    const A = AI;
+    m.time += dt;
+    const idle: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false };
+    const moved = pos.distanceTo(m.from);
+    if (m.phase === 'back') {
+      // Its tail, and a little further back: stop before backing into a trunk.
+      const tail = FOOTPRINT.circles[FOOTPRINT.circles.length - 1] + A.backLookout;
+      const behind = circleBlocked(this.obstacles, pos.x, pos.z, yaw, tail, FOOTPRINT.clearance * 0.8);
+      const stalled = m.time > A.reverseStall && moved < A.reverseStallProgress;
+      if (moved < m.back && !behind && !stalled && m.time < A.reverseTime) {
+        return { input: { ...idle, brake: 1, steer: m.backSteer }, reset: false };
+      }
+      // Look over the ways out from where it actually ended up.
+      const out = this.bestOut(car, pos.x, pos.z, yaw);
+      if (!out || out.clear < A.minOut) {
+        if (this.replanned++ < A.replans) {
+          const again = this.planEscape(car, pos, yaw, A.maxBackLater);
+          if (again) {
+            this.manoeuvre = again;
+            return this.loosen(0, car, pos, yaw);
+          }
+        }
+        this.manoeuvre = null;
+        return this.stuck(car, pos, yaw, idle);
+      }
+      Object.assign(m, { phase: 'out', outSteer: out.steer, exitYaw: out.exitYaw, out: Math.min(A.outDistance, out.clear * 0.8), time: 0 });
+      m.from.copy(pos);
+      this.madeProgress(pos);
+      return this.loosen(0, car, pos, yaw);
+    }
+    // Driving out: along the arc, then straighten onto the way out.
+    const facing = Math.abs(wrapAngle(m.exitYaw - yaw)) < 0.15;
+    if (moved < m.out && !facing && m.time < A.outTime) {
+      const speed = car.forwardSpeed;
+      const input: CarInput = { throttle: speed < A.outSpeed ? 1 : 0, brake: speed > A.outSpeed + 2 ? 1 : 0, steer: m.outSteer, handbrake: false };
+      if (pos.distanceTo(this.anchor) > A.stuckProgress) this.madeProgress(pos);
+      else this.sinceProgress += dt;
+      if (this.sinceProgress > A.stuckTime) {
+        this.manoeuvre = null;
+        return this.stuck(car, pos, yaw, input);
+      }
+      return { input, reset: false };
+    }
+    this.manoeuvre = null;
+    this.routeYaw = m.exitYaw;
+    this.routeTimer = A.exitHold;
+    this.madeProgress(pos);
+    return null;
+  }
+
+  /**
+   * Plans a way loose from (pos, yaw): a reverse (or none) and the arc to drive out along. Each
+   * reversing arc runs until its tail would touch a trunk; from points along it, the forward arcs
+   * are looked over (see bestOut), and the best pair wins, shorter reverses preferred. Null if no
+   * way out runs clear far enough.
+   */
+  private planEscape(car: Car, pos: THREE.Vector3, yaw: number, maxBack: number): Manoeuvre | null {
+    const A = AI;
+    let best: { score: number; back: number; backSteer: number } | null = null;
+    // Driving straight out, without reversing, if a way is open.
+    const direct = this.bestOut(car, pos.x, pos.z, yaw);
+    if (direct && direct.clear >= A.minOut) best = { score: direct.score, back: 0, backSteer: 0 };
+    for (const backSteer of A.backSteers) {
+      const armed = this.armed(pos.x, pos.z, yaw);
+      const pose = { x: pos.x, z: pos.z, yaw };
+      let stop = 0;
+      for (let d = A.backStep; d <= maxBack + 1e-6; d += A.backStep) {
+        this.advance(car, pose, -A.backStep, backSteer, Math.PI);
+        if (this.footprintBlocked(pose.x, pose.z, pose.yaw, armed) || this.tooSteep(pose.x, pose.z, pose.yaw, -1)) break;
+        if (Math.abs(d - A.backStops[stop]) > 1e-6) continue;
+        stop++;
+        const out = this.bestOut(car, pose.x, pose.z, pose.yaw);
+        if (out && out.clear >= A.minOut) {
+          const score = out.score - A.costBack * d;
+          if (!best || score > best.score) best = { score, back: d, backSteer };
+        }
+        if (stop >= A.backStops.length) break;
+      }
+    }
+    if (!best) return null;
+    return { phase: 'back', back: best.back, backSteer: best.backSteer, outSteer: 0, exitYaw: yaw, out: 0, from: pos.clone(), time: 0 };
+  }
+
+  /**
+   * The best arc to drive off along from (x, z, yaw): each of AI.outSteers held until it has
+   * turned AI.outTurn, then straight, as far as it runs clear (up to AI.outLength). It scores that
+   * run, how well it ends up heading the route's way, and none toward the shunned heading.
+   */
+  private bestOut(car: Car, x: number, z: number, yaw: number): { steer: number; clear: number; exitYaw: number; score: number } | null {
+    const A = AI;
+    let best: { steer: number; clear: number; exitYaw: number; score: number } | null = null;
+    for (const steer of A.outSteers) {
+      const armed = this.armed(x, z, yaw);
+      const pose = { x, z, yaw };
+      let clear = 0;
+      for (let d = A.outStep; d <= A.outLength + 1e-6; d += A.outStep) {
+        this.advance(car, pose, A.outStep, steer, A.outTurn, yaw);
+        if (this.footprintBlocked(pose.x, pose.z, pose.yaw, armed) || this.tooSteep(pose.x, pose.z, pose.yaw, 1)) break;
+        clear = d;
+      }
+      const score = clear + A.exitRoute * Math.cos(wrapAngle(pose.yaw - this.routeYaw)) - this.tabooCost(pose.yaw);
+      if (!best || score > best.score) best = { steer, clear, exitYaw: pose.yaw, score };
+    }
+    return best;
+  }
+
+  /**
+   * Moves `pose` `ds` m along (negative: backwards) with the steering at `steer` (−1..1), the car's
+   * full lock and wheelbase giving the turn; it stops turning once `turn` rad from `fromYaw`.
+   */
+  private advance(car: Car, pose: { x: number; z: number; yaw: number }, ds: number, steer: number, turn: number, fromYaw = pose.yaw): void {
+    const W = car.cfg.wheels;
+    const wheelbase = W.rearZ - W.frontZ;
+    if (Math.abs(wrapAngle(pose.yaw - fromYaw)) < turn) pose.yaw += (Math.tan(steer * car.cfg.steering.maxAngle) / wheelbase) * ds;
+    pose.x += -Math.sin(pose.yaw) * ds;
+    pose.z += -Math.cos(pose.yaw) * ds;
+  }
+
+  /** Which of the body's circles (FOOTPRINT) are clear where it stands: one already against a trunk doesn't count until it's off it. */
+  private armed(x: number, z: number, yaw: number): boolean[] {
+    return FOOTPRINT.circles.map((local) => !circleBlocked(this.obstacles, x, z, yaw, local));
+  }
+
+  /** Whether the body at (x, z, yaw) touches a trunk with any of its armed circles (arming those that have come clear). */
+  private footprintBlocked(x: number, z: number, yaw: number, armed: boolean[]): boolean {
+    const F = FOOTPRINT.circles;
+    for (let i = 0; i < F.length; i++) {
+      const blocked = circleBlocked(this.obstacles, x, z, yaw, F[i]);
+      if (!armed[i]) {
+        if (!blocked) armed[i] = true;
+      } else if (blocked) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether the ground at the body's leading edge (its nose going forward, `dir` 1; its tail
+   * reversing, −1) rises more than AI.maxClimb per m the way it's going.
+   */
+  private tooSteep(x: number, z: number, yaw: number, dir: 1 | -1): boolean {
+    const F = FOOTPRINT;
+    const edge = dir > 0 ? F.circles[0] - F.clearance : F.circles[F.circles.length - 1] + F.clearance;
+    const n = this.field.normal(x + Math.sin(yaw) * edge, z + Math.cos(yaw) * edge, _n, 1);
+    const ux = -Math.sin(yaw) * dir;
+    const uz = -Math.cos(yaw) * dir;
+    return -(n.x * ux + n.z * uz) / n.y > AI.maxClimb;
   }
 
   private madeProgress(pos: THREE.Vector3): void {
@@ -471,14 +723,80 @@ export class AiDriver {
     return cost;
   }
 
-  /** Distance along heading `yaw` to the first blocking tree or boulder (the cairn it's going for doesn't count), or Infinity. */
-  private firstTree(from: THREE.Vector3, yaw: number, look: number): number {
+  /**
+   * Distance along heading `yaw` to the first tree or boulder within `clearance` m of the way,
+   * checked every `step` m (the cairn it's going for doesn't count), or Infinity.
+   */
+  private firstTree(from: THREE.Vector3, yaw: number, look: number, step = AI.sampleStep, clearance = AI.clearance): number {
     const dx = -Math.sin(yaw);
     const dz = -Math.cos(yaw);
-    for (let d = AI.sampleStep; d <= look; d += AI.sampleStep) {
-      if (this.obstacles.blocking(from.x + dx * d, from.z + dz * d, AI.clearance, this.cairn ?? undefined)) return d;
+    for (let d = step; d <= look; d += step) {
+      if (this.obstacles.blocking(from.x + dx * d, from.z + dz * d, clearance, this.cairn ?? undefined)) return d;
     }
     return Infinity;
+  }
+
+  /** Share of the spots on two rings round the car that a trunk (or boulder) comes close to: how thick the trees are here. */
+  private treeDensity(pos: THREE.Vector3): number {
+    const A = AI;
+    let blocked = 0;
+    let total = 0;
+    for (const r of A.forestRadii) {
+      for (let k = 0; k < A.forestRing; k++) {
+        const angle = ((k + (r === A.forestRadii[0] ? 0 : 0.5)) / A.forestRing) * Math.PI * 2;
+        if (this.obstacles.blocking(pos.x + Math.cos(angle) * r, pos.z + Math.sin(angle) * r, A.forestClearance)) blocked++;
+        total++;
+      }
+    }
+    return blocked / total;
+  }
+
+  /** Whether (x, z) is open ground: no trunk within AI.openRadius of it. */
+  private open(x: number, z: number): boolean {
+    const A = AI;
+    if (this.obstacles.blocking(x, z, A.openRadius * 0.5)) return false;
+    for (let k = 0; k < A.openRing; k++) {
+      const angle = (k / A.openRing) * Math.PI * 2;
+      if (this.obstacles.blocking(x + Math.cos(angle) * A.openRadius, z + Math.sin(angle) * A.openRadius, A.openRadius * 0.5)) return false;
+    }
+    return true;
+  }
+
+  /** Points the route at the nearest open ground it can reach past the fewest trunks, leaning downhill. */
+  private seekOpen(pos: THREE.Vector3): void {
+    const A = AI;
+    const spread = this.escape > 0 ? A.escapeSpread : A.openSpread;
+    let best = this.routeYaw;
+    let bestCost = Infinity;
+    for (let i = 0; i < A.openCandidates; i++) {
+      const yaw = -spread + (2 * spread * i) / (A.openCandidates - 1);
+      const dx = -Math.sin(yaw);
+      const dz = -Math.cos(yaw);
+      let trunks = 0;
+      let found = Infinity;
+      for (let d = A.openStep; d <= A.openRange; d += A.openStep) {
+        const x = pos.x + dx * d;
+        const z = pos.z + dz * d;
+        if (this.open(x, z)) {
+          found = d;
+          break;
+        }
+        if (this.obstacles.blocking(x, z, AI.clearance)) trunks++;
+      }
+      const cost =
+        (found === Infinity ? A.costNoOpen : (found / A.openRange) * A.costOpenFar) +
+        trunks * A.costOpenTrunk +
+        Math.abs(yaw) * A.costOpenOff +
+        this.tabooCost(yaw) +
+        // A little loyalty to the current way, so it doesn't swing between two openings.
+        Math.abs(wrapAngle(yaw - this.routeYaw)) * 0.2;
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = yaw;
+      }
+    }
+    this.routeYaw = best;
+    this.hazardAt = Infinity;
   }
 }
 

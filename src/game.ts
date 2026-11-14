@@ -15,6 +15,7 @@ import { Visibility } from './render/visibility';
 import { Traffic } from './traffic';
 import { AiDriver } from './vehicle/aiDriver';
 import { Car, crashWarmUpObjects, type CarEvents, type CarInput } from './vehicle/car';
+import { clearPose, type Pose } from './vehicle/clearPose';
 import { COUPE_70S } from './vehicle/carConfig';
 import { Debris } from './world/debris';
 import { BIOMES } from './world/biome';
@@ -99,6 +100,8 @@ export class Game {
   private readonly rocks: RockLayout;
   private readonly boulders: Boulders;
   private readonly clods: Clods;
+  /** Trees, boulders and tors: what resets keep a car clear of. */
+  private readonly obstacles: Obstacles;
   /** Drives the player's car while the autopilot is on. */
   private readonly ai: AiDriver;
   /** Shows the AI's chosen heading while the autopilot drives. */
@@ -123,6 +126,7 @@ export class Game {
     this.trees = new TreeLayout(this.field);
     this.rocks = new RockLayout(this.field, this.trees);
     const obstacles = new Obstacles(this.trees, this.rocks, this.field.landmarks);
+    this.obstacles = obstacles;
     this.terrain = new Terrain(this.field, this.stage.scene, this.world, this.trees, this.rocks);
     this.section = FEATURES.groundSection ? new GroundSection(this.stage.scene, (x, z) => this.terrain.surfaceHeight(x, z)) : null;
     this.ai = new AiDriver(this.field, obstacles);
@@ -229,7 +233,7 @@ export class Game {
     const autopilot = this.input.consume('KeyP');
     const tip = this.input.consume('KeyF');
     if (!this.paused) {
-      if (reset) this.car.resetUpright(this.field);
+      if (reset) this.resetCar(this.car);
       if (replace || this.autopilotWantsCar) this.replaceCar();
       this.autopilotWantsCar = false;
       if (jumpBiome) this.jumpToNextBiome();
@@ -439,7 +443,7 @@ export class Game {
   private drive(driver: AiDriver, car: Car, dt: number): CarInput {
     const others = this.allCars.filter((c) => c !== car).map((c) => c.position);
     const decision = driver.update(dt, car, others);
-    if (decision.reset) car.resetUpright(this.field, decision.resetTo);
+    if (decision.reset) this.resetCar(car, decision.resetTo);
     // The autopilot's wreck is replaced next frame, as N would (traffic wrecks stay where they lie).
     if (decision.newCar && car === this.car) this.autopilotWantsCar = true;
     return decision.input;
@@ -492,6 +496,17 @@ export class Game {
     (this.cameraMode === 'orbit' ? this.orbit : this.heli).reset();
     this.hud.reset();
     this.hud.toast(next.name);
+  }
+
+  /**
+   * Puts a car back on its wheels: clear of a trunk or boulder it's against (the nearest spot it
+   * fits, facing the most open way, see clearPose), otherwise at `fallback` or where it is.
+   */
+  private resetCar(car: Car, fallback?: Pose): void {
+    const p = car.position;
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(car.model.root.quaternion);
+    const yaw = Math.atan2(-fwd.x, -fwd.z);
+    car.resetUpright(this.field, clearPose(this.obstacles, p.x, p.z, yaw) ?? fallback);
   }
 
   private replaceCar(): void {
