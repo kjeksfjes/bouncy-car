@@ -91,6 +91,8 @@ export class Game {
   private readonly pointer = new PointerOrbit();
   /** Trees hiding most of the car dissolve in front of it, except in photo mode, where the shot shows them whole. */
   private readonly sight = new SightCut();
+  /** The terrain's height at (x, z), for the exposure's check on whether a ridge hides the sun. */
+  private readonly groundHeight = (x: number, z: number): number => this.field.height(x, z);
   private readonly photo: PhotoCamera;
   private readonly audio = new GameAudio();
   private readonly juice: Juice;
@@ -270,6 +272,7 @@ export class Game {
       this.view.update(this.stage.camera, this.stage.viewDistance);
       this.stage.follow(this.car.position);
       this.sight.update(dt, this.stage.camera, this.car.model.root, !this.photoMode);
+      this.stage.expose(dt, this.groundHeight);
       this.section?.update(this.stage.camera);
       this.stage.render();
       this.section?.restore(this.stage.camera);
@@ -343,6 +346,7 @@ export class Game {
       this.warmedUp = true;
     }
     this.sight.update(dt, this.stage.camera, this.car.model.root, !this.photoMode);
+    this.stage.expose(dt, this.groundHeight);
     this.section?.update(this.stage.camera);
     this.stage.render();
     this.section?.restore(this.stage.camera);

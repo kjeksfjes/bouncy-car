@@ -22,6 +22,26 @@ const WARM = {
   belowHorizon: '#c6d6df',
   curve: 0.4,
 };
+/**
+ * The ground as the ambient light sees it below the horizon (see bakeEnvironment): the light it
+ * bounces up onto whatever faces down, the undersides of cars and crowns. In the snow (warmth 0) to
+ * grass (1). Estimated as albedo / π × the light falling on the ground (the sun's 2.6 at ≈33° up,
+ * plus roughly the sky's 0.75): snow (albedo ≈0.8) bounces about as much as the pale haze, grass
+ * (≈0.2, greenish) far less.
+ */
+const GROUND_BOUNCE = { snow: '#c2c5ca', grass: '#596d4a' };
+/** The renderer's exposure, looking anywhere but into the sun. */
+const EXPOSURE = 1.05;
+/**
+ * Looking into the sun: the land and the car darken toward a silhouette against the bright sky,
+ * as a camera exposing for the sky shows them (the sky isn't tone mapped, so it stays as it is).
+ * The exposure drops by up to `depth`: fully with the sun within `inner` rad of the view's centre,
+ * not at all past `outer` rad. It darkens over `darken` s and recovers over `recover` s (the time
+ * to go two thirds of the way). Only while the terrain leaves the sun showing: checked along the
+ * sun's direction from the camera out to `reach` m, `firstStep` m first, each step `stepGrowth`
+ * times the last. Trees and the car itself don't count: around them the sky still glares.
+ */
+const GLARE = { depth: 0.45, inner: 0.17, outer: 0.8, darken: 0.25, recover: 0.6, reach: 2000, firstStep: 2, stepGrowth: 1.15 };
 /** The sky gradient's curve in the snow: how quickly it turns from horizon to top colour (lower = sooner). */
 const COOL_CURVE = 0.6;
 /** The haze starts this far from the camera (m), so the car and the ground around it stay clear (see fogFade's HAZE). */
@@ -50,6 +70,7 @@ const SUN_GLOW_COLOR = (() => {
 
 const SHADOW_EXTENT = 45;
 const _warm = new THREE.Color();
+const _view = new THREE.Vector3();
 /** The lens flare's anchor sits this far from the camera toward the sun: inside the sky dome and the far plane. */
 const FLARE_DISTANCE = 800;
 
@@ -136,7 +157,7 @@ export class Stage {
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFShadowMap;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.05;
+    renderer.toneMappingExposure = EXPOSURE;
     container.appendChild(renderer.domElement);
     this.renderer = renderer;
 
@@ -152,8 +173,10 @@ export class Stage {
     this.sky = makeSky(900);
     this.scene.add(this.sky);
 
-    // Image-based ambient light from the same sky gradient: cool fill in the shadows.
+    // Image-based ambient light from the same sky gradient: cool fill in the shadows, and the
+    // ground's bounce from below.
     this.envSky = makeSky(50);
+    (this.envSky.material as THREE.ShaderMaterial).uniforms.below.value.set(GROUND_BOUNCE.snow);
     this.bakeEnvironment();
     this.scene.environmentIntensity = 0.75;
 
@@ -196,6 +219,8 @@ export class Stage {
       u.below.value.set(PALETTE.belowHorizon).lerp(_warm.set(WARM.belowHorizon), t);
       u.curve.value = THREE.MathUtils.lerp(COOL_CURVE, WARM.curve, t);
     }
+    // The ambient light sees the ground below the horizon, not the haze.
+    (this.envSky.material as THREE.ShaderMaterial).uniforms.below.value.set(GROUND_BOUNCE.snow).lerp(_warm.set(GROUND_BOUNCE.grass), t);
     const fog = this.scene.fog as THREE.Fog;
     const sky = (this.sky.material as THREE.ShaderMaterial).uniforms;
     fog.color.copy(sky.horizon.value);
@@ -242,6 +267,31 @@ export class Stage {
     this.sun.target.position.copy(target);
     this.sky.position.copy(this.camera.position);
     this.flare.position.copy(this.camera.position).addScaledVector(SUN_DIR, FLARE_DISTANCE);
+  }
+
+  /**
+   * Darkens the exposure while the camera looks into the sun (see GLARE). Call after the camera moves.
+   * @param dt real time (s)
+   * @param groundAt the terrain's height at (x, z), which can hide the sun
+   */
+  expose(dt: number, groundAt: (x: number, z: number) => number): void {
+    const G = GLARE;
+    this.camera.getWorldDirection(_view);
+    const toward = THREE.MathUtils.smoothstep(_view.dot(SUN_DIR), Math.cos(G.outer), Math.cos(G.inner));
+    const into = toward > 0 && this.sunAbove(groundAt) ? toward : 0;
+    const goal = EXPOSURE * (1 - G.depth * into);
+    const now = this.renderer.toneMappingExposure;
+    this.renderer.toneMappingExposure = goal + (now - goal) * Math.exp(-dt / (goal < now ? G.darken : G.recover));
+  }
+
+  /** Whether the sun stands above the terrain as seen from the camera (see GLARE). */
+  private sunAbove(groundAt: (x: number, z: number) => number): boolean {
+    const G = GLARE;
+    const eye = this.camera.position;
+    for (let d = G.firstStep; d <= G.reach; d *= G.stepGrowth) {
+      if (groundAt(eye.x + SUN_DIR.x * d, eye.z + SUN_DIR.z * d) > eye.y + SUN_DIR.y * d) return false;
+    }
+    return true;
   }
 
   render(): void {
