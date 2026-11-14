@@ -6,10 +6,11 @@ import type { PointerOrbit } from './pointerOrbit';
  */
 const PHOTO = {
   /**
-   * Orbiting (drag): radians per pixel dragged. (A right-drag looks round by what's under the
-   * mouse instead: see PhotoCamera.update.)
+   * Orbiting (drag): radians per pixel dragged. (A right-drag looks round by `lookSpeed` times the
+   * angle a pixel covers instead, so slower the more it's zoomed in: see PhotoCamera.update.)
    */
   orbitTurn: 0.0035,
+  lookSpeed: 3,
   /** Looking round on Shift+arrow keys (rad/s). */
   turnSpeed: 1.2,
   /** How far the view tilts up and down (rad): just short of straight up and down. */
@@ -100,8 +101,9 @@ const still = (): Move => ({ yaw: 0, pitch: 0, across: 0, over: 0, right: 0, up:
  * the point under the mouse (drag), looks round from where it stands (right-drag or Option+drag,
  * or Shift+arrow keys), pans (Shift+drag, keeping the grabbed point under the mouse, or the left
  * and right arrow keys), moves towards and away from the point under the mouse (scroll) or along
- * the view (the up and down arrow keys), and zooms the lens (Shift+scroll). The scene moves with
- * the mouse, as if dragged. Every move eases in over a moment (PHOTO.ease)
+ * the view (the up and down arrow keys), and zooms the lens (Shift+scroll). Orbiting and panning
+ * move the scene with the mouse, as if dragged; looking round turns the view the way the mouse
+ * goes. Every move eases in over a moment (PHOTO.ease)
  * rather than jumping with each mouse event. The field of view is put back on leaving.
  */
 export class PhotoCamera {
@@ -192,13 +194,13 @@ export class PhotoCamera {
       }
     }
 
-    // Look round: a right-drag turns the view by the angle a pixel covers, so the scene stays under the
-    // mouse (slower the more it's zoomed in); Shift+keys look the way they point.
+    // Look round: a right-drag turns the view the way the mouse goes (see PHOTO.lookSpeed);
+    // Shift+keys look the way they point.
     const m = this.pending;
-    const lookTurn = THREE.MathUtils.degToRad(this.fov) / this.pointer.height;
+    const lookTurn = (P.lookSpeed * THREE.MathUtils.degToRad(this.fov)) / this.pointer.height;
     const keyTurn = shift ? P.turnSpeed * dt : 0;
-    m.yaw += input.lookX * lookTurn + turn * keyTurn;
-    m.pitch += input.lookY * lookTurn + tilt * keyTurn;
+    m.yaw += -input.lookX * lookTurn + turn * keyTurn;
+    m.pitch += -input.lookY * lookTurn + tilt * keyTurn;
 
     // Orbit: the camera swings round the grabbed point as one piece (it stays where it is on
     // screen), the scene turning with the mouse.
@@ -207,11 +209,12 @@ export class PhotoCamera {
     if (this.noTurning) m.yaw = m.pitch = m.across = m.over = 0;
 
     // Pan: a drag keeps what it grabbed under the mouse (it moves one pixel's width at that depth
-    // per pixel); the arrow keys slide it left and right, and move it forward and back.
+    // per pixel), but a right-drag moves the camera the way the mouse goes, as its look does; the
+    // arrow keys slide it left and right, and move it forward and back.
     const pan = (this.grabDepth * 2 * Math.tan(THREE.MathUtils.degToRad(this.fov) / 2)) / this.grabHeight;
     const panKeys = shift ? 0 : Math.max(P.panNear, subjectDistance) * P.panPerSecond * dt;
-    const panX = input.panX + (this.noTurning ? input.dx + input.lookX : 0);
-    const panY = input.panY + (this.noTurning ? input.dy + input.lookY : 0);
+    const panX = input.panX + (this.noTurning ? input.dx - input.lookX : 0);
+    const panY = input.panY + (this.noTurning ? input.dy - input.lookY : 0);
     m.right -= panX * pan + turn * panKeys;
     m.up += panY * pan;
     m.ahead += tilt * panKeys;
