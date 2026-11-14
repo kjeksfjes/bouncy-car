@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Car, CarEvents, ContactSurface } from '../vehicle/car';
 import { caw, wingFlutter } from './birdSounds';
+import { glassBreak } from './glass';
 import { ENGINE_PROCESSOR, loadEngineWorklet } from './engineWorklet';
 import { DragChain, GrindChain, SCRAPE, blendDrag, blendGrind, scrapeGrains, surfaceProfile, type GrindSound } from './scrape';
 import { Squeal, TYRE_ROLL, TYRE_SLIDE, loadLoudness, slideWildness, wilder } from './tyres';
@@ -503,15 +504,8 @@ class AudioEngine {
   }
 
   glass(_car: Car, at: THREE.Vector3, shattered: boolean): void {
-    const out = this.oneShotOut(at, MIX.glass);
-    if (!shattered) {
-      this.noiseBurst(out, 'highpass', 2500, 1, 0.6, 0.07);
-      this.tone(out, 'sine', 2800 + Math.random() * 1500, 0.2, 0.12);
-      return;
-    }
-    this.noiseBurst(out, 'highpass', 4000, 0.8, 0.9, 0.45);
-    // Tinkling pieces landing over the next half second.
-    for (let i = 0; i < 14; i++) this.tone(out, 'sine', 3000 + Math.random() * 6000, 0.12, 0.06 + Math.random() * 0.08, Math.random() * 0.5);
+    // Toughened glass: a pop and a rush of small cubes, not a house window's ringing shards.
+    glassBreak(this.ctx, this.oneShotOut(at, MIX.glass), shattered, this.pitch);
   }
 
   clank(_car: Car, at: THREE.Vector3, size: number): void {
