@@ -1,27 +1,24 @@
 import * as THREE from 'three';
 import { replaceOnce } from './shaderPatch';
+import { pixelRatio } from './stage';
 
 /**
- * The see-through cut's shape. Feel values: change freely.
- * - `radius`: the cone from the camera to the car is this wide at the car (m), narrowing to the
- *   camera, so on screen it covers the middle of the car and nothing else. The outer `edge` share
- *   of it dissolves out gradually rather than ending in a hard rim.
- * - `shortOf`: the cone ends this far short of the car's centre (m), fading out over `endFade` m,
- *   so what stands right beside the car (and the ground it's on) stays whole.
+ * How a tree that hides the car thins out. Feel values: change freely.
+ * - `thin`: the share of its leaves' pixels dropped once it's fully thinned.
+ * - `wood`: the same for its trunk, roots and limbs: less, so the tree's frame still shows where
+ *   it stands and what the car can hit.
+ * - `block`: the pattern's dots are this many CSS px square, in an ordered 4×4 grid (Bayer), so
+ *   the thinned leaves read as a deliberate screen rather than grain.
  */
-const CUT = {
-  radius: 1.6,
-  edge: 0.5,
-  shortOf: 1.5,
-  endFade: 2,
-};
+const THIN = { thin: 0.75, wood: 0.45, block: 2 };
 
 /**
- * When the cut opens: the camera's sight lines to `points` on the car's body (car-local m: its
+ * When a tree thins: the camera's sight lines to `points` on the car's body (car-local m: its
  * corners, sides, middle and roof; front is −z, the ground ≈ −0.75) are checked against the
- * trees every frame, and the cut fades in once at least `hiddenShare` of them are blocked, over
- * `fadeIn` s, and out again over `fadeOut` s. A tree hiding only a corner, a side or a strip of
- * the car leaves it alone: enough of it still shows.
+ * trees every frame, and once trees block at least `hiddenShare` of them, every tree on those lines
+ * thins out over `fadeIn` s, and fills in again over `fadeOut` s when it no longer hides the car.
+ * A tree hiding only a corner, a side or a strip of the car is left alone: enough of it still shows.
+ * At most `max` trees are thinned at once.
  */
 const OPEN = {
   points: [
@@ -36,43 +33,66 @@ const OPEN = {
     [0, 0.6, 0.8],
   ].map(([x, y, z]) => new THREE.Vector3(x, y, z)),
   hiddenShare: 0.6,
-  fadeIn: 0.15,
-  fadeOut: 0.4,
+  fadeIn: 0.2,
+  fadeOut: 0.5,
+  max: 8,
 };
 
 /**
- * Where the car is, and how far the cut is open (0..1). SightCut sets both every frame; every
- * material given the cut (see cutSightLine) reads them.
+ * The thinned trees: each one's root (world m, its instance's origin) and how far it's thinned
+ * (0..1), unused slots at 0. SightCut sets them every frame; every material given the cut (see
+ * cutSightLine) reads them.
  */
-export const sightCut = { target: { value: new THREE.Vector3() }, on: { value: 0 } };
+export const sightCut = { trees: { value: Array.from({ length: OPEN.max }, () => new THREE.Vector4()) } };
 
 /** What can hide the car: the trees' meshes, added and removed as their chunks come and go. */
 export const sightBlockers = new Set<THREE.Object3D>();
 
 const _point = new THREE.Vector3();
 const _dir = new THREE.Vector3();
+const _matrix = new THREE.Matrix4();
 
-/** Opens the cut while trees hide most of the car (see OPEN), and keeps it aimed at the car. */
+/** Thins the trees that hide most of the car (see OPEN). */
 export class SightCut {
   private readonly ray = new THREE.Raycaster();
   private readonly hits: THREE.Intersection[] = [];
   private readonly blockers: THREE.Object3D[] = [];
+  /** The trees hiding the car this frame, by root. */
+  private readonly blocking: THREE.Vector3[] = [];
+  /** The trees thinned or thinning, by root. */
+  private readonly thinned: { root: THREE.Vector3; fade: number }[] = [];
 
   /**
    * @param dt real time (s)
    * @param car the car's visual root
-   * @param enabled false keeps the cut shut (photo mode: the shot shows the trees whole)
+   * @param enabled false fills every tree in again (photo mode: the shot shows the trees whole)
    */
   update(dt: number, camera: THREE.Camera, car: THREE.Object3D, enabled: boolean): void {
     const O = OPEN;
-    sightCut.target.value.copy(car.position);
-    const open = enabled && this.hiddenShare(camera.position, car) >= O.hiddenShare;
-    const on = sightCut.on;
-    on.value = open ? Math.min(1, on.value + dt / O.fadeIn) : Math.max(0, on.value - dt / O.fadeOut);
+    this.blocking.length = 0;
+    if (enabled) this.findBlocking(camera.position, car);
+    const same = (a: THREE.Vector3, b: THREE.Vector3) => a.distanceToSquared(b) < 1e-4;
+    for (const root of this.blocking) {
+      if (this.thinned.length < O.max && !this.thinned.some((t) => same(t.root, root))) this.thinned.push({ root, fade: 0 });
+    }
+    for (let i = this.thinned.length - 1; i >= 0; i--) {
+      const t = this.thinned[i];
+      const hides = this.blocking.some((root) => same(t.root, root));
+      t.fade = hides ? Math.min(1, t.fade + dt / O.fadeIn) : Math.max(0, t.fade - dt / O.fadeOut);
+      if (t.fade === 0 && !hides) this.thinned.splice(i, 1);
+    }
+    sightCut.trees.value.forEach((slot, i) => {
+      const t = this.thinned[i];
+      if (t) slot.set(t.root.x, t.root.y, t.root.z, t.fade);
+      else slot.w = 0;
+    });
   }
 
-  /** The share of the car's sight points that trees hide from `eye`. */
-  private hiddenShare(eye: THREE.Vector3, car: THREE.Object3D): number {
+  /**
+   * Fills `blocking` with the roots of the trees on the sight lines from `eye` to the car's points,
+   * if they hide enough of them (see OPEN).
+   */
+  private findBlocking(eye: THREE.Vector3, car: THREE.Object3D): void {
     const points = OPEN.points;
     this.blockers.length = 0;
     for (const b of sightBlockers) this.blockers.push(b);
@@ -85,63 +105,76 @@ export class SightCut {
       this.hits.length = 0;
       this.ray.intersectObjects(this.blockers, false, this.hits);
       if (this.hits.length > 0) hidden++;
+      for (const hit of this.hits) {
+        // An instanced tree's root is its instance's origin; an oak's own foot (a plain mesh) stands
+        // where its crown's instance does, so the two thin together.
+        const root = new THREE.Vector3();
+        if (hit.object instanceof THREE.InstancedMesh && hit.instanceId !== undefined) {
+          hit.object.getMatrixAt(hit.instanceId, _matrix);
+          root.setFromMatrixPosition(_matrix).applyMatrix4(hit.object.matrixWorld);
+        } else {
+          root.setFromMatrixPosition(hit.object.matrixWorld);
+        }
+        if (!this.blocking.some((b) => b.distanceToSquared(root) < 1e-4)) this.blocking.push(root);
+      }
     }
-    return hidden / points.length;
+    if (hidden / points.length < OPEN.hiddenShare) this.blocking.length = 0;
   }
 }
 
+/** The 4×4 ordered dither (Bayer), as thresholds 0..15. */
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+
 /**
- * Gives `material` the see-through cut: whatever it draws between the camera and the car, in a
- * cone round the line of sight (see CUT), dissolves in a fine dither (whole pixels dropped, not
- * blended, so no transparency sorting) as far as the cut is open. Shadows are drawn with three's
- * own depth material, so the cut parts still cast theirs.
+ * Gives `material` the see-through cut: a tree SightCut thins (see sightCut.trees) drops pixels in
+ * a coarse ordered pattern (whole pixels dropped, not blended, so no transparency sorting), as far
+ * as it's thinned: its leaves (the faces whose `crown` attribute is 1, see the tree builders in
+ * props.ts) by THIN.thin, the wood by THIN.wood. Shadows are drawn with three's own
+ * depth material, so a thinned crown still casts its full shadow.
  *
  * Sets the material's `onBeforeCompile`, so it first calls the shared one on the prototype (the
  * haze's uniforms, see installFogFade).
  */
 export function cutSightLine(material: THREE.Material): void {
-  const C = CUT;
   const f = (n: number) => n.toFixed(3);
+  const n = OPEN.max;
+  // In device pixels, as gl_FragCoord counts.
+  const block = Math.max(1, Math.round(THIN.block * pixelRatio()));
   material.onBeforeCompile = (shader, renderer) => {
     THREE.Material.prototype.onBeforeCompile.call(material, shader, renderer);
-    shader.uniforms.sightTarget = sightCut.target;
-    shader.uniforms.sightOn = sightCut.on;
+    shader.uniforms.sightTrees = sightCut.trees;
     shader.vertexShader = replaceOnce(
-      replaceOnce(shader.vertexShader, 'void main() {', 'varying vec3 vSightWorld;\nvoid main() {', 'Sight cut'),
+      replaceOnce(
+        shader.vertexShader,
+        'void main() {',
+        `attribute float crown;\nuniform vec4 sightTrees[${n}];\nvarying float vSightThin;\nvoid main() {`,
+        'Sight cut',
+      ),
       '#include <project_vertex>',
-      [
-        '#include <project_vertex>',
-        '#ifdef USE_INSTANCING',
-        '\tvSightWorld = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;',
-        '#else',
-        '\tvSightWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;',
-        '#endif',
-      ].join('\n'),
+      /* glsl */ `#include <project_vertex>
+	vSightThin = 0.0;
+#ifdef USE_INSTANCING
+	vec3 sightRoot = (modelMatrix * instanceMatrix[3]).xyz;
+#else
+	vec3 sightRoot = modelMatrix[3].xyz;
+#endif
+	for (int i = 0; i < ${n}; i++) {
+		if (sightTrees[i].w > 0.0 && distance(sightRoot, sightTrees[i].xyz) < 0.01) {
+			vSightThin = sightTrees[i].w * mix(${f(THIN.wood)}, ${f(THIN.thin)}, crown);
+		}
+	}`,
       'Sight cut',
     );
     shader.fragmentShader = replaceOnce(
       shader.fragmentShader,
       'void main() {',
-      /* glsl */ `varying vec3 vSightWorld;
-uniform vec3 sightTarget;
-uniform float sightOn;
+      /* glsl */ `varying float vSightThin;
+const float SIGHT_BAYER[16] = float[16](${BAYER.map((v) => f(v)).join(', ')});
 void main() {
-	if (sightOn > 0.0) {
-		vec3 sightAxis = sightTarget - cameraPosition;
-		float sightLength = max(length(sightAxis), 1e-3);
-		vec3 sightDir = sightAxis / sightLength;
-		vec3 sightFrom = vSightWorld - cameraPosition;
-		float sightAlong = dot(sightFrom, sightDir);
-		// How far off the line of sight, as a share of the cone's radius at that depth.
-		float sightAway = length(sightFrom - sightDir * sightAlong) * sightLength / (${f(C.radius)} * max(sightAlong, 1e-3));
-		float sightEnd = sightLength - ${f(C.shortOf)};
-		float sightIn = sightOn
-			* (1.0 - smoothstep(${f(1 - C.edge)}, 1.0, sightAway))
-			* (1.0 - smoothstep(sightEnd - ${f(C.endFade)}, sightEnd, sightAlong))
-			* step(0.0, sightAlong);
-		// Interleaved gradient noise: an even, fine dither over the screen.
-		float sightDither = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-		if (sightIn > sightDither) discard;
+	if (vSightThin > 0.0) {
+		ivec2 sightCell = ivec2(gl_FragCoord.xy / ${f(block)}) & 3;
+		float sightThreshold = (SIGHT_BAYER[sightCell.x + sightCell.y * 4] + 0.5) / 16.0;
+		if (vSightThin > sightThreshold) discard;
 	}`,
       'Sight cut',
     );

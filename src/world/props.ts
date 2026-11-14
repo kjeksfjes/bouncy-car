@@ -56,11 +56,21 @@ function paintFaces(
   geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 }
 
-/** Merges flat-coloured parts into one tree geometry. */
+/**
+ * Marks a part as leaves: its `crown` attribute is 1 (wood is 0), so the see-through cut thins it
+ * when the tree hides the car (see cutSightLine).
+ */
+function leafy(geo: THREE.BufferGeometry): THREE.BufferGeometry {
+  geo.setAttribute('crown', new THREE.BufferAttribute(new Float32Array(geo.getAttribute('position').count).fill(1), 1));
+  return geo;
+}
+
+/** Merges flat-coloured parts into one tree geometry; parts not marked as leaves (see leafy) are wood. */
 function mergeTree(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
   const merged = mergeGeometries(parts.map((g) => {
     g.deleteAttribute('uv');
     g.deleteAttribute('normal');
+    if (!g.hasAttribute('crown')) g.setAttribute('crown', new THREE.BufferAttribute(new Float32Array(g.getAttribute('position').count), 1));
     return g;
   }));
   if (!merged) throw new Error('Tree geometry merge failed: part attributes differ');
@@ -85,7 +95,7 @@ function buildSpruce(snowy: boolean): THREE.BufferGeometry {
     cone.translate(0, l.y + l.h / 2, 0);
     const snowLine = l.y + l.h * 0.5;
     paintFaces(cone, (centroid, n) => (snowy && centroid.y > snowLine && n.y > 0 ? COLORS.snow : l.color));
-    parts.push(cone);
+    parts.push(leafy(cone));
   }
   return mergeTree(parts);
 }
@@ -110,7 +120,7 @@ function buildPine(): THREE.BufferGeometry {
     const cloud = new THREE.IcosahedronGeometry(c.r, 0).toNonIndexed();
     cloud.scale(1, 0.42, 1).translate(c.x, c.y, c.z);
     paintFaces(cloud, (_, n) => (n.y > 0.3 ? COLORS.pineNeedles : COLORS.pineNeedlesDark));
-    parts.push(cloud);
+    parts.push(leafy(cloud));
     const reach = Math.hypot(c.x, c.z);
     if (reach < 0.3) continue;
     // A branch from the trunk, rising a little, to the cloud's middle.
@@ -139,7 +149,7 @@ function buildBroadleaf(): THREE.BufferGeometry {
     blob.scale(1, 0.85, 1).translate(c.x, c.y, c.z);
     // Faces turned down sit in the canopy's shade.
     paintFaces(blob, (_, n) => (n.y < -0.2 || i === 1 ? COLORS.leavesDark : COLORS.leaves));
-    parts.push(blob);
+    parts.push(leafy(blob));
   });
   return mergeTree(parts);
 }
@@ -210,7 +220,7 @@ function leafMass(at: THREE.Vector3, r: number, random: () => number): THREE.Buf
   const core = new THREE.IcosahedronGeometry(r * 0.8, 1).toNonIndexed();
   core.scale(1, SQUASH, 1).translate(at.x, at.y, at.z);
   paintFaces(core, () => COLORS.oakLeafShade);
-  const parts = [core];
+  const parts = [leafy(core)];
 
   const shades = [COLORS.oakLeafShade, COLORS.oakLeafDeep, COLORS.oakLeafMid, COLORS.oakLeafLight, COLORS.oakLeafSun];
   const up = new THREE.Vector3(0, 1, 0);
@@ -248,7 +258,7 @@ function leafMass(at: THREE.Vector3, r: number, random: () => number): THREE.Buf
       const lit = n.y > 0.55 ? 4 : n.y > 0.1 ? 3 : n.y > -0.4 ? 2 : 1;
       return shades[Math.max(0, lit - dim)];
     });
-    parts.push(g);
+    parts.push(leafy(g));
   }
   return parts;
 }
@@ -400,7 +410,7 @@ export class PropScatter {
     broadleaf: buildBroadleaf(),
     oak: this.oak.crown,
   };
-  /** Trees between the camera and the car dissolve, so they don't hide it (see cutSightLine). */
+  /** A tree that hides the car thins its leaves, so it doesn't hide it (see cutSightLine). */
   private readonly material = new THREE.MeshStandardMaterial({
     vertexColors: true,
     flatShading: true,
