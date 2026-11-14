@@ -3,6 +3,36 @@
 Releases are named plainly after what they bring (the first three after
 game-development milestones).
 
+## v0.9.0 – "Rooks, Maps and Controls" (2026-11-14)
+
+Rooks that live in the trees and on the meadows and take off when you
+come crashing through, a controls card on screen, and a dev mode with
+map views of the mountain.
+
+- **Rookeries:** some big broadleaf trees, every great oak, and a few
+  pines and spruces hold rooks. Any touch on the tree sends them up and
+  away from the car: they climb on fast wingbeats, then flap and glide
+  off. An emptied tree stays empty.
+- **Rook flocks:** flocks of 8–25 feed on open grass, walking, pecking
+  and looking round. A car within 22 m or a crash within 60 m sends
+  them up in a ripple. Now and then a loose flock crosses the sky in
+  green country.
+- **Rook sounds:** whirring wingbeats as a group lifts off, alarm caws
+  (their resonances measured from a rook recording), and calls from
+  birds in the air. The sounds follow the birds as they fly.
+- **Controls card:** the controls move from the line along the top into
+  a card in the bottom left corner, with Esc (pause and photo mode) set
+  apart. Photo mode shows only its own card. H hides the card in front
+  of you, and each card remembers it.
+- **Airtime popup:** gone.
+- **Dev mode:** `?dev` in the address, or typing "dev" while playing,
+  turns on the test tools, listed on a card on the right: terrain
+  inspection views (I, Shift+I back, also while paused), a camera
+  straight down over the car (V), a 4 km 2D map with trees, boulders
+  and the loaded area (Shift+V), a rook flock (G, Shift+G), engine sound
+  off (Shift+M), a blast under the car (F) and Go to (J, which also
+  updates the address). F was a hidden key anyone could press before.
+
 ## v0.8.0 – "Smarter Autopilot, Clearer View" (2026-11-14)
 
 An autopilot that plans its way down the mountain, hunts cairns and
