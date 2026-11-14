@@ -11,7 +11,7 @@ import { KICKER_HEIGHT, type TerrainField } from './terrainField';
  */
 export type InspectMode = 'landforms' | 'layers' | 'steepness' | 'moisture' | 'curvature' | 'exposure';
 
-export const INSPECT_MODES: readonly InspectMode[] = ['landforms', 'layers', 'steepness', 'moisture', 'curvature', 'exposure'];
+export const INSPECT_MODES: readonly InspectMode[] = ['landforms', 'layers', 'steepness', 'moisture', 'exposure', 'curvature'];
 
 interface LegendEntry {
   colour: string;

@@ -8,10 +8,12 @@ export const PHYSICS_STEP = 1 / 60;
 export const GRAVITY = 11;
 
 /**
- * `?dev` in the URL, in any build: the test shortcuts and their legend (see index.html's
- * #dev-legend), and where the car is in the HUD.
+ * Whether the game starts in dev mode: `?dev` in the URL, in any build. Dev mode brings the test
+ * shortcuts and their legend (see index.html's #dev-legend), and where the car is in the HUD; typing
+ * DEV_WORD turns it on and off while playing (see Game).
  */
-export const DEV_MODE = new URLSearchParams(location.search).has('dev');
+export const DEV_FROM_URL = new URLSearchParams(location.search).has('dev');
+export const DEV_WORD = 'dev';
 
 /**
  * Features that are off unless switched on. In dev, a URL parameter switches one on for a look.

@@ -321,9 +321,13 @@ export class GameAudio implements CarEvents {
 
   /** Dev: silences the cars' engines (tyres, scrapes and the rest go on), to hear everything else better. Returns whether they're off. */
   toggleEngines(): boolean {
-    this.enginesOff = !this.enginesOff;
-    this.engine?.setEnginesOff(this.enginesOff);
+    this.setEnginesOff(!this.enginesOff);
     return this.enginesOff;
+  }
+
+  setEnginesOff(off: boolean): void {
+    this.enginesOff = off;
+    this.engine?.setEnginesOff(off);
   }
 
   /** Slow motion (game time per real time, 1 = normal): sounds drop in pitch and stretch out. */

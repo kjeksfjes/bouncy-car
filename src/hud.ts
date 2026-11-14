@@ -1,4 +1,4 @@
-import { DEV_MODE } from './constants';
+import { DEV_FROM_URL } from './constants';
 import type { Car } from './vehicle/car';
 
 const AIR_POPUP_SECONDS = 1.6;
@@ -32,6 +32,7 @@ export class Hud {
   private readonly legendEsc = document.getElementById('legend-esc')!;
   private readonly devLegend = document.getElementById('dev-legend')!;
   private isPaused = false;
+  private devMode = DEV_FROM_URL;
   /** The 2D map is open (over the middle of the screen): photo mode's controls make way for it. */
   private mapOpen = false;
   private photo = false;
@@ -98,6 +99,13 @@ export class Hud {
     }
   }
 
+  /** Dev mode on or off: its shortcuts' legend, and where the car is. */
+  setDevMode(on: boolean): void {
+    this.devMode = on;
+    if (!on) this.where.hidden = true;
+    this.showLegend();
+  }
+
   /** Dev: where the car is (see Game.describeWhere). */
   setWhere(text: string): void {
     this.where.hidden = false;
@@ -125,12 +133,12 @@ export class Hud {
 
   /**
    * Photo mode's controls show while paused: how to get into it from the pause, or out of it again
-   * (Esc plays on in slow motion, see Game.tick). The dev shortcuts show throughout with ?dev, but
+   * (Esc plays on in slow motion, see Game.tick). The dev shortcuts show throughout in dev mode, but
    * not in photo mode.
    */
   private showLegend(): void {
     this.legend.classList.toggle('visible', (this.isPaused || this.photo) && !this.legendHidden && !this.mapOpen);
-    this.devLegend.classList.toggle('visible', DEV_MODE && !this.legendHidden);
+    this.devLegend.classList.toggle('visible', this.devMode && !this.legendHidden);
     this.legendHow.textContent = this.photo ? 'The camera is yours' : `Right-drag or ${SHIFT}-drag to start`;
     this.legendEsc.textContent = !this.photo ? 'resume' : this.slowMotion ? 'play and pause' : 'back to the pause';
     // The inspection legend shares the corner: it moves aside while photo mode's controls show.

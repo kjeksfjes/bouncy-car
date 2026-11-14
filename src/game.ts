@@ -1,6 +1,6 @@
 import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
-import { DEV_MODE, FEATURES, GRAVITY, PHYSICS_STEP } from './constants';
+import { DEV_FROM_URL, DEV_WORD, FEATURES, GRAVITY, PHYSICS_STEP } from './constants';
 import { GameAudio } from './audio/audio';
 import { Hud } from './hud';
 import { MapOverlay } from './mapOverlay';
@@ -86,6 +86,8 @@ export class Game {
   private slowLevel = 1;
   /** Dev: the terrain inspection view shown (I cycles), or null for the normal ground. */
   private inspectMode: InspectMode | null = null;
+  /** Dev mode: the test shortcuts, their legend and where the car is (see DEV_WORD). */
+  private devMode = DEV_FROM_URL;
   /** Dev: the camera straight above (V), and the 2D map over the screen (Shift+V). */
   private mapView = false;
   private mapOverlay: MapOverlay | null = null;
@@ -250,7 +252,12 @@ export class Game {
     const nextBiome = this.input.consume('KeyB');
     const jumpBiome = this.input.consume('shift:KeyB');
     const autopilot = this.input.consume('KeyP');
-    const tip = DEV_MODE && this.input.consume('KeyF');
+    // Typing the dev word turns dev mode on or off; its letters' own keys do nothing this time.
+    if (this.input.typed(DEV_WORD)) {
+      this.setDevMode(!this.devMode);
+      for (const c of DEV_WORD) this.input.consume(`Key${c.toUpperCase()}`);
+    }
+    const tip = this.devMode && this.input.consume('KeyF');
     if (!this.paused) {
       if (reset) this.resetCar(this.car);
       if (replace || this.autopilotWantsCar) this.replaceCar();
@@ -261,18 +268,18 @@ export class Game {
       if (tip) this.car.tipOver(135);
     }
     // Dev: Shift+M silences the engines, to hear the rest better (it also presses M, so it goes first).
-    const engines = DEV_MODE && this.input.consume('shift:KeyM');
+    const engines = this.devMode && this.input.consume('shift:KeyM');
     if (this.input.consume('KeyM') && !engines) this.audio.toggleMute();
     if (engines) this.hud.toast(this.audio.toggleEngines() ? 'ENGINES OFF' : 'ENGINES ON');
     if (this.input.consume('KeyC')) this.cycleCamera();
     // Dev: the next inspection view (I) or the one before (Shift+I, which also presses I, so it goes first).
-    if (DEV_MODE) {
+    if (this.devMode) {
       const back = this.input.consume('shift:KeyI');
       const next = this.input.consume('KeyI');
       if (back || next) this.cycleInspect(back ? -1 : 1);
     }
     // Dev: the map view (V) and the 2D map (Shift+V, which also presses V, so it goes first).
-    if (DEV_MODE) {
+    if (this.devMode) {
       const flat = this.input.consume('shift:KeyV');
       const above = this.input.consume('KeyV');
       if (flat) this.toggleMapOverlay();
@@ -280,7 +287,7 @@ export class Game {
       this.mapOverlay?.update({ position: this.car.position, quaternion: this.car.model.root.quaternion }, this.paused, this.terrain.loadedChunks());
     }
     // Dev: a rook flock in front of the car to drive into (G), or set off right away (Shift+G).
-    if (DEV_MODE) {
+    if (this.devMode) {
       // Shift+G also presses G, so it goes first.
       const now = this.input.consume('shift:KeyG');
       const ahead = this.input.consume('KeyG');
@@ -376,7 +383,7 @@ export class Game {
     this.juice.update(gt, live, this.stage.renderer.getDrawingBufferSize(this.bufferSize).y / 2);
     this.audio.update(gt, this.stage.camera, live);
     this.hud.update(gt, this.car, this.autopilot);
-    if (DEV_MODE) this.hud.setWhere(this.describeWhere());
+    if (this.devMode) this.hud.setWhere(this.describeWhere());
     // The first frame compiles what a crash first shows (glass shards and their transmission pass,
     // cracked panes, light wires), so the first crash doesn't stall on it.
     if (!this.warmedUp) {
@@ -442,6 +449,20 @@ export class Game {
       return;
     }
     this.photo.begin();
+  }
+
+  /** Dev mode on, or off and the game back as it plays: no inspection, map or silenced engines. */
+  private setDevMode(on: boolean): void {
+    this.devMode = on;
+    this.hud.setDevMode(on);
+    this.hud.toast(on ? 'DEV MODE ON' : 'DEV MODE OFF');
+    if (on) return;
+    if (this.mapOverlay) this.toggleMapOverlay();
+    this.setMapView(false);
+    this.inspectMode = null;
+    this.terrain.inspect = null;
+    this.hud.setInspect(null);
+    this.audio.setEnginesOff(false);
   }
 
   /** Dev: the camera straight above the car, in clear air (see MapCamera), or back to the camera before. */
