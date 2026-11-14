@@ -149,7 +149,7 @@ export class Game {
     const ground = (x: number, z: number) => this.terrain.surfaceHeight(x, z);
     this.photo = new PhotoCamera(this.stage.camera, this.pointer, (ndc, out) => this.stage.surfaceAt(ndc, out), FEATURES.groundSection ? null : ground);
     this.clods = new Clods(this.stage.scene, ground);
-    this.birds = new Birds(this.stage.scene, this.field, this.trees);
+    this.birds = new Birds(this.stage.scene, this.field, this.trees, ground);
     this.juice = new Juice(
       this.stage.scene, this.field, this.trees, this.orbit, this.stage.camera,
       (car) => car === this.car,
@@ -328,7 +328,7 @@ export class Game {
     this.view.update(this.stage.camera, this.stage.viewDistance);
     this.debris.update(gt, pos, this.view, alpha);
     this.clods.update(gt);
-    this.birds.update(gt, this.stage.camera.position);
+    this.birds.update(gt, this.stage.camera.position, pos, this.allCars.map((c) => c.position));
     this.traffic.update(gt, pos, this.view);
     this.stage.follow(pos);
     this.updateWarmth(dt);
