@@ -15,8 +15,8 @@
  * - `level`: the burst's peak, and a crack's.
  */
 export const GLASS = {
-  pop: { decay: 0.0018, bodyHz: 900, bodyDecay: 0.022, body: 0.5 },
-  rush: { rate: 1600, halfLife: 0.09, band: [2600, 9500], q: [5, 14], amp: 0.55 },
+  pop: { decay: 0.0018, bodyHz: 550, bodyDecay: 0.035, body: 0.9 },
+  rush: { rate: 1500, halfLife: 0.09, band: [2000, 7500], q: [4, 12], amp: 0.5 },
   patter: { delay: 0.06, rate: 55, halfLife: 0.28, band: [1700, 6000], q: [18, 40], amp: 0.4 },
   crack: { pop: 0.6, clicks: 7, spread: 0.035 },
   level: { shatter: 0.9, crack: 0.55 },
