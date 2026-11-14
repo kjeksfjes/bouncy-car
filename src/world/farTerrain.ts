@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { replaceOnce as patchOnce } from '../render/shaderPatch';
 import { emptySample, faceEnvironment } from './environment';
 import { hash2 } from './noise';
 import { buildFarTrees, kindOf, type TreeKind } from './props';
@@ -296,9 +297,6 @@ export class FarTerrain {
 }
 
 
-/** `source` with `find` replaced, which must occur exactly once (a shader patch that misses throws). */
 function replaceOnce(source: string, find: string, replace: string): string {
-  const at = source.indexOf(find);
-  if (at < 0 || source.indexOf(find, at + 1) >= 0) throw new Error(`Far terrain shader patch: "${find}" not found exactly once`);
-  return source.slice(0, at) + replace + source.slice(at + find.length);
+  return patchOnce(source, find, replace, 'Far terrain');
 }

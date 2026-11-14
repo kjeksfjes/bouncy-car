@@ -2,6 +2,7 @@ import RAPIER from '@dimforge/rapier3d-compat';
 import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { createNoise3D } from 'simplex-noise';
+import { cutSightLine, sightBlockers } from '../render/sightCut';
 import { mulberry32 } from './noise';
 import { blendedField, chain, surfaceNets, type Segment } from './sdfMesh';
 import { OAK, SPECIES, TREE_CELL, type Tree, type TreeLayout } from './trees';
@@ -399,6 +400,7 @@ export class PropScatter {
     broadleaf: buildBroadleaf(),
     oak: this.oak.crown,
   };
+  /** Trees between the camera and the car dissolve, so they don't hide it (see cutSightLine). */
   private readonly material = new THREE.MeshStandardMaterial({
     vertexColors: true,
     flatShading: true,
@@ -409,7 +411,9 @@ export class PropScatter {
     private readonly trees: TreeLayout,
     private readonly world: RAPIER.World,
     private readonly groundHeight: (x: number, z: number) => number,
-  ) {}
+  ) {
+    cutSightLine(this.material);
+  }
 
   populate(x0: number, z0: number, size: number, env: EnvGrid, body: RAPIER.RigidBody): ChunkProps {
     const q = new THREE.Quaternion();
@@ -448,13 +452,18 @@ export class PropScatter {
       mesh.computeBoundingSphere();
       objects.push(mesh);
     }
+    objects.forEach((o) => sightBlockers.add(o));
 
     return {
       objects,
       // Tree geometry and the material are shared across chunks; the instance buffers and the oaks'
       // draped feet are the chunk's own.
       dispose: () =>
-        objects.forEach((o) => (o instanceof THREE.InstancedMesh ? o.dispose() : (o as THREE.Mesh).geometry.dispose())),
+        objects.forEach((o) => {
+          sightBlockers.delete(o);
+          if (o instanceof THREE.InstancedMesh) o.dispose();
+          else (o as THREE.Mesh).geometry.dispose();
+        }),
     };
   }
 

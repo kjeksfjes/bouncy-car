@@ -9,6 +9,7 @@ import { HeliCamera } from './render/heliCamera';
 import { PhotoCamera } from './render/photoCamera';
 import { GroundSection } from './render/groundSection';
 import { PointerOrbit } from './render/pointerOrbit';
+import { SightCut } from './render/sightCut';
 import { Juice } from './render/juice';
 import { Stage } from './render/stage';
 import { Visibility } from './render/visibility';
@@ -88,6 +89,8 @@ export class Game {
   private readonly input = new Input();
   private readonly hud = new Hud();
   private readonly pointer = new PointerOrbit();
+  /** Trees hiding most of the car dissolve in front of it, except in photo mode, where the shot shows them whole. */
+  private readonly sight = new SightCut();
   private readonly photo: PhotoCamera;
   private readonly audio = new GameAudio();
   private readonly juice: Juice;
@@ -266,6 +269,7 @@ export class Game {
       }
       this.view.update(this.stage.camera, this.stage.viewDistance);
       this.stage.follow(this.car.position);
+      this.sight.update(dt, this.stage.camera, this.car.model.root, !this.photoMode);
       this.section?.update(this.stage.camera);
       this.stage.render();
       this.section?.restore(this.stage.camera);
@@ -338,6 +342,7 @@ export class Game {
       this.stage.warmUp(crashWarmUpObjects());
       this.warmedUp = true;
     }
+    this.sight.update(dt, this.stage.camera, this.car.model.root, !this.photoMode);
     this.section?.update(this.stage.camera);
     this.stage.render();
     this.section?.restore(this.stage.camera);
