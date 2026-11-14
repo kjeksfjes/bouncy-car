@@ -79,10 +79,9 @@
       .legend header { display: flex; align-items: center; gap: 7px; margin-bottom: 2px; }
       .legend header svg { width: 15px; height: 15px; opacity: 0.85; }
       .legend h2 { margin: 0; font: 700 12px/1 Barlow, system-ui, sans-serif; letter-spacing: 0.16em; text-transform: uppercase; }
-      .legend .how { margin: 0 0 9px; font-size: 12px; color: rgb(255 255 255 / 0.6); }
-      .legend dl { display: grid; grid-template-columns: auto auto; gap: 5px 14px; margin: 0; align-items: center; }
-      .legend dt { display: flex; gap: 4px; justify-content: flex-end; white-space: nowrap; color: rgb(255 255 255 / 0.7); }
-      .legend dd { margin: 0; }
+      .legend .how { margin: 0 0 14px; font-size: 12px; color: rgb(255 255 255 / 0.6); }
+      /* The heading (title, and subtitle if any) stands apart from the list: more room than between rows. */
+      .legend header + .actions { margin-top: 14px; }
       .legend kbd {
         display: inline-block; min-width: 20px; padding: 1px 5px; border-radius: 5px; text-align: center;
         font: 600 11px/16px Barlow, system-ui, sans-serif; color: #fff;
@@ -91,7 +90,23 @@
       .legend footer { margin-top: 9px; padding-top: 7px; border-top: 1px solid var(--line); font-size: 12px; color: rgb(255 255 255 / 0.6); }
       #dev-legend { left: auto; right: 16px; bottom: auto; top: 50%; transform: translateY(calc(-50% + 6px)); }
       #dev-legend.visible { transform: translateY(-50%); }
-      .legend dd kbd { margin: 0 1px; }
+      .legend hr { margin: 10px 0; border: 0; border-top: 1px solid var(--line); }
+      /*
+       * The driving and photo cards: each action, then how to do it (the keys, or the mouse move, or
+       * either), then a tip in fainter type.
+       */
+      .legend .actions { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+      .legend .actions li { display: flex; align-items: center; gap: 10px; min-height: 21px; }
+      .legend .how-to { display: flex; align-items: center; gap: 4px; color: rgb(255 255 255 / 0.6); white-space: nowrap; }
+      .legend .how-to .or { margin: 0 3px; font-size: 12px; color: rgb(255 255 255 / 0.45); }
+      .legend .aside { display: flex; align-items: center; gap: 4px; font-size: 12px; color: rgb(255 255 255 / 0.45); white-space: nowrap; }
+      /* A variant of the action above it (another key for more of the same), indented under it behind an elbow. */
+      .legend .actions .sub { padding-left: 5px; color: rgb(255 255 255 / 0.6); }
+      .legend .actions .sub kbd { color: rgb(255 255 255 / 0.65); background: rgb(255 255 255 / 0.06); border-color: rgb(255 255 255 / 0.11); }
+      .legend .actions .sub::before {
+        content: ''; flex: none; width: 8px; height: 9px; margin-right: -3px; transform: translateY(-4px);
+        border-left: 1.5px solid rgb(255 255 255 / 0.35); border-bottom: 1.5px solid rgb(255 255 255 / 0.35); border-bottom-left-radius: 2px;
+      }
       /* A key worth knowing about, set apart in its card. */
       .legend .feature {
         display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 8px 10px; border-radius: 8px;
@@ -101,6 +116,9 @@
       .legend .feature strong { display: block; font-weight: 700; color: #fff; }
       .legend .feature small { display: block; margin-top: 2px; font-size: 12px; color: rgb(255 255 255 / 0.65); }
       .legend .feature small kbd { min-width: 0; padding: 0 4px; font-size: 10px; line-height: 14px; }
+      /* A few keys worth knowing about, a row each, their names lined up. */
+      .legend .feature.keys { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; }
+      .legend .feature.keys > kbd { justify-self: center; }
       /* Dev: the Go to form, top middle. */
       #goto { left: 50%; bottom: auto; top: 72px; transform: translateX(-50%); opacity: 1; pointer-events: auto; z-index: 2; }
       #goto[hidden] { display: none; }
@@ -152,18 +170,27 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2"/><path d="M3.5 10.5 10 12M20.5 10.5 14 12M12 14v7"/></svg>
           <h2>Driving</h2>
         </header>
-        <dl>
-          <dt><kbd>W</kbd><kbd>S</kbd></dt><dd>Throttle, brake and reverse</dd>
-          <dt><kbd>A</kbd><kbd>D</kbd></dt><dd>Steer (or the arrow keys)</dd>
-          <dt><kbd>Space</kbd></dt><dd>Handbrake</dd>
-          <dt>In the air</dt><dd><kbd>S</kbd> levels, <kbd>A</kbd><kbd>D</kbd> roll</dd>
-          <dt><kbd>R</kbd> <kbd>N</kbd></dt><dd>Reset upright · New car</dd>
-          <dt><kbd>B</kbd></dt><dd>Next biome ahead (<kbd data-key="shift">⇧</kbd><kbd>B</kbd> go there)</dd>
-          <dt><kbd>C</kbd></dt><dd>Camera (drag orbits, scroll zooms)</dd>
-          <dt><kbd>P</kbd></dt><dd>Autopilot (<kbd data-key="shift">⇧</kbd><kbd>P</kbd> with heading)</dd>
-          <dt><kbd>T</kbd></dt><dd>Slow motion (<kbd>'</kbd> its speed)</dd>
-          <dt><kbd>M</kbd></dt><dd>Mute</dd>
-        </dl>
+        <ul class="actions">
+          <li>Throttle<span class="how-to"><kbd>↑</kbd><span class="or">or</span><kbd>W</kbd></span></li>
+          <li>Brake and reverse<span class="how-to"><kbd>↓</kbd><span class="or">or</span><kbd>S</kbd></span></li>
+          <li>Steer<span class="how-to"><kbd>←</kbd><kbd>→</kbd><span class="or">or</span><kbd>A</kbd><kbd>D</kbd></span></li>
+          <li>Handbrake<span class="how-to"><kbd>Space</kbd></span></li>
+          <li>Level out in the air<span class="how-to"><kbd>↓</kbd><span class="or">or</span><kbd>S</kbd></span></li>
+          <li>Roll in the air<span class="how-to"><kbd>←</kbd><kbd>→</kbd><span class="or">or</span><kbd>A</kbd><kbd>D</kbd></span></li>
+        </ul>
+        <hr />
+        <ul class="actions">
+          <li>Camera<span class="how-to"><kbd>C</kbd></span><span class="aside">drag orbits, scroll zooms</span></li>
+          <li>Slow motion<span class="how-to"><kbd>T</kbd></span></li>
+          <li class="sub">Change its speed<span class="how-to"><kbd>'</kbd></span></li>
+          <li>Autopilot<span class="how-to"><kbd>P</kbd></span></li>
+          <li class="sub">With its heading shown<span class="how-to"><kbd data-key="shift">⇧</kbd><kbd>P</kbd></span></li>
+          <li>Reset upright<span class="how-to"><kbd>R</kbd></span></li>
+          <li>New car<span class="how-to"><kbd>N</kbd></span></li>
+          <li>Next biome ahead<span class="how-to"><kbd>B</kbd></span></li>
+          <li class="sub">Go straight there<span class="how-to"><kbd data-key="shift">⇧</kbd><kbd>B</kbd></span></li>
+          <li>Mute<span class="how-to"><kbd>M</kbd></span></li>
+        </ul>
         <div class="feature">
           <kbd>Esc</kbd>
           <div><strong>Pause and photo mode</strong><small>Paused, right-drag or <kbd data-key="shift">⇧</kbd>-drag to start it</small></div>
@@ -181,34 +208,35 @@
           <h2>Photo mode</h2>
         </header>
         <p class="how">The camera is yours</p>
-        <dl>
-          <dt>Drag</dt><dd>Orbit round the point</dd>
-          <dt>Right-drag</dt><dd>Turn the camera</dd>
-          <dt><kbd data-key="shift">⇧</kbd> Drag</dt><dd>Pan</dd>
-          <dt>Scroll</dt><dd>Move to the point</dd>
-          <dt><kbd data-key="shift">⇧</kbd> Scroll</dt><dd>Zoom the lens</dd>
-          <dt><kbd>←</kbd><kbd>→</kbd></dt><dd>Pan</dd>
-          <dt><kbd>↑</kbd><kbd>↓</kbd></dt><dd>Forward and back</dd>
-          <dt><kbd data-key="shift">⇧</kbd> Arrows</dt><dd>Look round</dd>
-        </dl>
-        <footer><kbd>H</kbd> hide controls · <kbd>Esc</kbd> <span id="legend-esc"></span></footer>
+        <ul class="actions">
+          <li>Orbit round the point<span class="how-to">Drag</span></li>
+          <li>Turn the camera<span class="how-to">Right-drag<span class="or">or</span><kbd data-key="shift">⇧</kbd> Arrows</span></li>
+          <li>Pan<span class="how-to"><kbd data-key="shift">⇧</kbd> Drag<span class="or">or</span><kbd>←</kbd><kbd>→</kbd></span></li>
+          <li>Forward and back<span class="how-to">Scroll<span class="or">or</span><kbd>↑</kbd><kbd>↓</kbd></span></li>
+          <li>Zoom the lens<span class="how-to"><kbd data-key="shift">⇧</kbd> Scroll</span></li>
+        </ul>
+        <div class="feature keys">
+          <kbd>Esc</kbd><strong>Play and pause</strong>
+          <kbd>C</kbd><strong>Back to your view</strong>
+        </div>
+        <footer><kbd>H</kbd> hide controls</footer>
       </div>
       <div id="dev-legend" class="legend" aria-label="Dev shortcuts">
         <header>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 7-5 5 5 5M16 7l5 5-5 5"/></svg>
           <h2>Dev</h2>
         </header>
-        <dl>
-          <dt><kbd>I</kbd></dt><dd>Next terrain inspection view</dd>
-          <dt><kbd data-key="shift">⇧</kbd><kbd>I</kbd></dt><dd>Inspection view before</dd>
-          <dt><kbd>V</kbd></dt><dd>Map view from above (drag, scroll)</dd>
-          <dt><kbd data-key="shift">⇧</kbd><kbd>V</kbd></dt><dd>2D map, 4 km across, round the view</dd>
-          <dt><kbd>G</kbd></dt><dd>Rook flock ahead, to drive into</dd>
-          <dt><kbd data-key="shift">⇧</kbd><kbd>G</kbd></dt><dd>Rook flock, startled now</dd>
-          <dt><kbd data-key="shift">⇧</kbd><kbd>M</kbd></dt><dd>Engine sound off and on</dd>
-          <dt><kbd>F</kbd></dt><dd>Blast the car over</dd>
-          <dt><kbd>J</kbd></dt><dd>Go to a distance and across</dd>
-        </dl>
+        <ul class="actions">
+          <li>Next terrain inspection view<span class="how-to"><kbd>I</kbd></span></li>
+          <li class="sub">The one before<span class="how-to"><kbd data-key="shift">⇧</kbd><kbd>I</kbd></span></li>
+          <li>Map view from above<span class="how-to"><kbd>V</kbd></span><span class="aside">drag pans, scroll zooms</span></li>
+          <li class="sub">2D map, 4 km across<span class="how-to"><kbd data-key="shift">⇧</kbd><kbd>V</kbd></span></li>
+          <li>Rook flock ahead, to drive into<span class="how-to"><kbd>G</kbd></span></li>
+          <li class="sub">Startled now<span class="how-to"><kbd data-key="shift">⇧</kbd><kbd>G</kbd></span></li>
+          <li>Engine sound off and on<span class="how-to"><kbd>E</kbd></span></li>
+          <li>Blast the car over<span class="how-to"><kbd>F</kbd></span></li>
+          <li>Go to a distance and across<span class="how-to"><kbd>J</kbd></span></li>
+        </ul>
         <footer><kbd>H</kbd> hide controls · type <kbd>dev</kbd> to leave</footer>
       </div>
       <form id="goto" class="legend" aria-label="Go to" hidden>

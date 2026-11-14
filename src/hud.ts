@@ -31,13 +31,11 @@ export class Hud {
   private readonly inspect = document.getElementById('inspect')!;
   private readonly where = document.getElementById('where')!;
   private readonly legend = document.getElementById('legend')!;
-  private readonly legendEsc = document.getElementById('legend-esc')!;
   private readonly devLegend = document.getElementById('dev-legend')!;
   private readonly playLegend = document.getElementById('play-legend')!;
   private readonly goto = document.getElementById('goto') as HTMLFormElement;
   private devMode = DEV_FROM_URL;
   private photo = false;
-  private slowMotion = false;
   /** H hides the card in front of you until pressed again, each on its own (see toggleLegend). */
   private readonly hidden: Record<Card, boolean> = {
     play: readHidden(HIDDEN_KEY.play),
@@ -70,10 +68,6 @@ export class Hud {
   /** Shows the slow-motion speed (e.g. '¼×'), or hides the badge with null. */
   setSlowMotion(label: string | null): void {
     this.slow.classList.toggle('visible', label !== null);
-    if (this.slowMotion !== (label !== null)) {
-      this.slowMotion = label !== null;
-      this.showLegend();
-    }
     if (label !== null && this.slow.textContent !== `SLOW ${label}`) this.slow.textContent = `SLOW ${label}`;
   }
 
@@ -175,16 +169,14 @@ export class Hud {
 
   /**
    * One card at a time in the bottom left corner: the driving card (which tells how to get into photo
-   * mode), or in photo mode only its own controls, with how to get out again (Esc plays on in slow
-   * motion, see Game.tick). In dev mode the dev shortcuts show on the right instead of the driving
-   * card (but not in photo mode), and the inspection legend has the corner. Each card stays hidden
-   * once H hid it.
+   * mode), or in photo mode only its own controls, with how to play on and get out again. In dev
+   * mode the dev shortcuts show on the right instead of the driving card (but not in photo mode),
+   * and the inspection legend has the corner. Each card stays hidden once H hid it.
    */
   private showLegend(): void {
     this.playLegend.classList.toggle('visible', !this.devMode && !this.photo && !this.hidden.play);
     this.legend.classList.toggle('visible', this.photo && !this.hidden.photo);
     this.devLegend.classList.toggle('visible', this.devMode && !this.hidden.dev);
-    this.legendEsc.textContent = this.slowMotion ? 'play and pause' : 'back to the pause';
   }
 
   update(car: Car, autopilot: boolean): void {

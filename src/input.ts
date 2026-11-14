@@ -58,6 +58,18 @@ export class Input {
     return true;
   }
 
+  /**
+   * Whether the last keys typed are the start of `word` (two letters or more, but not all of it), so
+   * the key just pressed may be part of typing it rather than meant on its own.
+   */
+  startsTyping(word: string): boolean {
+    for (let n = Math.min(word.length - 1, this.typing.length); n >= 2; n--) {
+      const last = this.typing.slice(-n);
+      if (last.map((c) => c.key).join('') === word.slice(0, n) && last[n - 1].at - last[0].at <= TYPING_WINDOW) return true;
+    }
+    return false;
+  }
+
   /** True once per key press: a key code (`KeyT`), a typed character as `char:'`, or `shift:KeyB` for Shift+B. */
   consume(code: string): boolean {
     return this.pressed.delete(code);

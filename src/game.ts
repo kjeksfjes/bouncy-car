@@ -228,7 +228,6 @@ export class Game {
     const dt = Math.min(0.1, (now - this.lastTime) / 1000);
     this.lastTime = now;
 
-    // Slow motion first: Esc below depends on it.
     if (this.input.consume('KeyT')) {
       this.slowMotion = !this.slowMotion;
       if (this.slowMotion) this.hud.flashSlowMotion();
@@ -239,12 +238,8 @@ export class Game {
       this.slowMotion = true;
       this.hud.flashSlowMotion();
     }
-    // Esc pauses and resumes. In photo mode it leaves photo mode, except in slow motion, where it
-    // plays the action on (and pauses it again) as seen from the photo camera.
-    if (this.input.consume('Escape')) {
-      if (this.photoMode && !this.slowMotion) this.setPhotoMode(false);
-      else this.togglePause();
-    }
+    // Esc pauses and resumes, in photo mode too: the action plays on as seen from the photo camera.
+    if (this.input.consume('Escape')) this.togglePause();
     if (this.input.consume('KeyH')) this.hud.toggleLegend();
     // While paused, only the camera and mute keys act; the rest are dropped, not queued.
     const reset = this.input.consume('KeyR');
@@ -267,11 +262,16 @@ export class Game {
       if (autopilot) this.toggleAutopilot(this.input.shift);
       if (tip) this.car.blast();
     }
-    // Dev: Shift+M silences the engines, to hear the rest better (it also presses M, so it goes first).
-    const engines = this.devMode && this.input.consume('shift:KeyM');
-    if (this.input.consume('KeyM') && !engines) this.audio.toggleMute();
-    if (engines) this.hud.toast(this.audio.toggleEngines() ? 'ENGINES OFF' : 'ENGINES ON');
-    if (this.input.consume('KeyC')) this.cycleCamera();
+    if (this.input.consume('KeyM')) this.audio.toggleMute();
+    // Dev: E silences the engines, to hear the rest better (not the E in typing the dev word).
+    if (this.devMode && this.input.consume('KeyE') && !this.input.startsTyping(DEV_WORD)) {
+      this.hud.toast(this.audio.toggleEngines() ? 'ENGINES OFF' : 'ENGINES ON');
+    }
+    // C cycles the cameras; in photo mode it goes back to the one you had.
+    if (this.input.consume('KeyC')) {
+      if (this.photoMode) this.setPhotoMode(false);
+      else this.cycleCamera();
+    }
     // Dev: the next inspection view (I) or the one before (Shift+I, which also presses I, so it goes first).
     if (this.devMode) {
       const back = this.input.consume('shift:KeyI');
@@ -439,11 +439,6 @@ export class Game {
   }
 
   /**
-   * Photo mode on (from the pause): the free camera takes over from the view as it is, and the UI
-   * hides. Off: the field of view and the UI
-   * come back. In slow motion the game can run on in photo mode (see Esc in tick).
-   */
-  /**
    * Under the ground photo mode can't turn (see PhotoCamera.noTurning), and a drag there doesn't
    * mark a point to orbit. Goes by the last frame's look.
    */
@@ -453,6 +448,11 @@ export class Game {
     this.pointer.orbitsCursor = !underground;
   }
 
+  /**
+   * Photo mode on (from the pause): the free camera takes over from the view as it is, and the UI
+   * hides. Off (C): the camera you had, its field of view and the UI come back. The game can run on
+   * in photo mode (Esc, see tick).
+   */
   private setPhotoMode(on: boolean): void {
     if (on === this.photoMode) return;
     this.photoMode = on;
