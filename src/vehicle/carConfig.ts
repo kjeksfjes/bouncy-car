@@ -342,7 +342,9 @@ export const COUPE_70S: CarConfig = {
     // Must beat gravity on the slope (mass × g × sin 18° ≈ 5.4 kN) to back out of trees.
     reverseForce: 10000,
     reverseMaxSpeed: 14,
-    brakeForce: 14000,
+    // Above what snow can take (mu 1.2 × 1600 kg × g ≈ 19 kN), so braking on snow is limited by
+    // grip, and bites harder on the grippier bare grounds.
+    brakeForce: 22000,
     handbrakeForce: 6000,
   },
 
