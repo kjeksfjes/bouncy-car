@@ -399,7 +399,7 @@ export class Game {
     this.stage.follow(pos);
     this.updateWarmth(dt);
     this.ai.debug = this.autopilot && this.showAiDebug ? (this.ai.debug ?? emptyAiDebug()) : null;
-    this.aiDebug.update(this.ai.debug, this.ai.woodsPath, this.car.model.root, this.mapView);
+    this.aiDebug.update(this.ai.debug, this.ai.woodsPath, this.car.model.root, this.stage.camera, this.mapView);
     // Traffic may have despawned cars just now; again use a fresh list.
     const live = this.allCars;
     this.juice.update(gt, live, this.stage.renderer.getDrawingBufferSize(this.bufferSize).y / 2);
