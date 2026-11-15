@@ -8,3 +8,6 @@ playwright/.cache/
 
 # Beads issue tracking stays local
 .beads/
+
+# Reference images (third-party drawings and pictures) stay local; views.json calibrates them for scripts/overlay.mjs
+ref/**/*.png
