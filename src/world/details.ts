@@ -238,6 +238,11 @@ export class Obstacles {
   ) {}
 
   /** Whether a tree, a boulder or a tor comes within `clearance` of (x, z); `except` a varde to leave out (one the AI means to hit). */
+  /** How many trees stand within `radius` m of (x, z): how thick the woods are there. */
+  treesWithin(x: number, z: number, radius: number): number {
+    return this.trees.countWithin(x, z, radius);
+  }
+
   blocking(x: number, z: number, clearance: number, except?: Varde): boolean {
     return this.trees.blocking(x, z, clearance) !== null || this.rocks.blocking(x, z, clearance) !== null || this.landmarks.blocking(x, z, clearance, except);
   }

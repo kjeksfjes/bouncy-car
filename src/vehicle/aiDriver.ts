@@ -77,8 +77,13 @@ const AI = {
   cornerSlow: 0.6,
   /** Steering gain: steer input per radian of heading error. */
   steerGain: 2.2,
-  /** Allowed overspeed before braking (m/s); gravity alone keeps pushing downhill. */
+  /**
+   * Allowed overspeed before braking (m/s); gravity alone keeps pushing downhill. `carefulMargin`
+   * where it's taking care (a tree on its path, or among many): the slope would carry it well past
+   * the careful speed otherwise.
+   */
   brakeMargin: 5,
+  carefulMargin: 1.5,
   /**
    * Cairns: a standing varde ahead, `cairnRange` (min..max) m away and within `cairnCone` rad of
    * downhill, becomes the target: the route aims at it (`costCairn` per radian off it, downhill
@@ -145,19 +150,27 @@ const AI = {
   escapeSpread: 1.9,
   escapeTime: 6,
   /**
-   * Forest mode, among many trees: checked every routeEvery s by `forestRing` spots on each of two
-   * rings (`forestRadii` m) round the car, a spot counting if a trunk comes within
-   * `forestClearance` m. It goes in past `forestEnter` of them blocked and out under `forestExit`.
+   * Forest mode, among many trees: checked every routeEvery s by counting the trees within
+   * `forestRadius` m of the car. It goes in at `forestEnter` of them and out under `forestExit`.
+   * Trees about cap its speed, by how many stand within forestRadius m: `treeSpeeds[n]` m/s with n
+   * of them (none past the list: forestSpeed). They're looked for at the same time where it is and
+   * `woodsStep` m at a time out to `woodsLook` m the way it's going, and it slows in time to be down
+   * to each spot's cap there, counting on braking only `woodsBrake` m/s² (it's often in the air
+   * over the bumps, where it can neither brake nor steer).
+   * (Trees stand at most one to a 6 m cell, so a full wood has about 12 within 12 m; 4 is about a
+   * tree every 10 m, measured over the map.)
    * In it, the car drives at most `forestSpeed` m/s (`forestCreep` with a trunk within
    * `forestCaution` m ahead), and instead of the long-range route it seeks the nearest open ground
    * (see seekOpen), steering among the trunks with a closer, finer look (`forestLook` m in
    * `forestStep` m steps, `forestCandidates` headings ±`forestSpread`, `forestTreeClearance` m off a trunk).
    */
-  forestRing: 8,
-  forestRadii: [5, 10],
-  forestClearance: 1,
-  forestEnter: 0.25,
-  forestExit: 0.12,
+  forestRadius: 12,
+  treeSpeeds: [Infinity, Infinity, 16, 12],
+  woodsLook: 120,
+  woodsStep: 8,
+  woodsBrake: 3,
+  forestEnter: 4,
+  forestExit: 3,
   forestSpeed: 8,
   forestCreep: 4,
   forestCaution: 8,
@@ -165,7 +178,7 @@ const AI = {
   forestStep: 1,
   forestCandidates: 25,
   forestSpread: 1.4,
-  forestTreeClearance: 2.6,
+  forestTreeClearance: 1.6,
   costForestTree: 9,
   /**
    * Seeking open ground: `openCandidates` headings ±`openSpread` round downhill, walked out to
@@ -265,6 +278,8 @@ export class AiDriver {
   private flipped = 0;
   /** Among many trees: slow, careful, seeking open ground (see AI forest mode). */
   private forest = false;
+  /** The speed the trees about allow, here and ahead (m/s; see AI.treeSpeeds). */
+  private treeCap = Infinity;
   /** How long the car has lain broken and still (s). */
   private wrecked = 0;
 
@@ -320,8 +335,9 @@ export class AiDriver {
     this.routeTimer -= dt;
     if (this.routeTimer <= 0) {
       this.routeTimer = AI.routeEvery;
-      const density = this.treeDensity(pos);
-      this.forest = density > (this.forest ? AI.forestExit : AI.forestEnter);
+      const trees = this.obstacles.treesWithin(pos.x, pos.z, AI.forestRadius);
+      this.treeCap = this.treeLimit(pos, car.velocity, trees);
+      this.forest = trees >= (this.forest ? AI.forestExit : AI.forestEnter);
       if (this.forest) {
         this.cairn = null;
         this.seekOpen(pos);
@@ -366,14 +382,17 @@ export class AiDriver {
     // Faster where the tyres grip, slower for trees, hazards and corners (less so where it grips).
     const grip = car.grip;
     const hunting = this.cairn !== null;
-    let target = (bestTreeDist < AI.cautionDistance && !hunting ? AI.cautiousSpeed : this.cruiseSpeed) * Math.pow(grip, AI.gripSpeed);
+    const cautious = bestTreeDist < AI.cautionDistance && !hunting;
+    let target = (cautious ? AI.cautiousSpeed : this.cruiseSpeed) * Math.pow(grip, AI.gripSpeed);
     if (this.hazardAt < AI.hazardDistance && !hunting) target *= AI.hazardSlow;
     // Among many trees: slowly, creeping past a trunk close ahead.
     if (forest) target = Math.min(target, bestTreeDist < AI.forestCaution ? AI.forestCreep : AI.forestSpeed * Math.pow(grip, AI.gripSpeed));
+    // Trees about, here and ahead: slow enough to be down to their cap by the time it's there.
+    else target = Math.min(target, this.treeCap);
     target *= 1 - Math.min(0.5, (Math.abs(error) * AI.cornerSlow) / grip);
     const input: CarInput = {
       throttle: speed < target ? 1 : 0,
-      brake: speed > target + AI.brakeMargin ? 1 : 0,
+      brake: speed > target + (cautious || forest ? AI.carefulMargin : AI.brakeMargin) ? 1 : 0,
       steer,
       handbrake: false,
     };
@@ -679,14 +698,17 @@ export class AiDriver {
     return { cost: weights > 0 ? sum / weights : 0, hazard };
   }
 
-  /** The heading round the car with the longest clear run, leaning downhill: where a reset faces. */
+  /** The heading round the car with the longest clear run, leaning toward its route: where a reset faces. */
   private openestYaw(pos: THREE.Vector3): number {
-    let best = 0;
+    let best = this.routeYaw;
     let bestScore = -Infinity;
+    // Among many trees, with the closer look's narrower margin (a lane it can drive counts as clear).
+    const clearance = this.forest ? AI.forestTreeClearance : AI.clearance;
     for (let i = 0; i < 24; i++) {
       const yaw = wrapAngle((i / 24) * Math.PI * 2);
-      const clear = Math.min(30, this.firstTree(pos, yaw, 30));
-      const score = clear - Math.abs(yaw) * 4 - this.tabooCost(yaw) * 4;
+      const clear = Math.min(30, this.firstTree(pos, yaw, 30, AI.sampleStep, clearance));
+      // Turning off the route (to open ground, or downhill) costs, not off downhill as such.
+      const score = clear - Math.abs(wrapAngle(yaw - this.routeYaw)) * 4 - this.tabooCost(yaw) * 4;
       if (score > bestScore) {
         bestScore = score;
         best = yaw;
@@ -736,19 +758,24 @@ export class AiDriver {
     return Infinity;
   }
 
-  /** Share of the spots on two rings round the car that a trunk (or boulder) comes close to: how thick the trees are here. */
-  private treeDensity(pos: THREE.Vector3): number {
+  /**
+   * The speed the trees allow (see AI.treeSpeeds): `here` of them round the car, and ahead the way
+   * `velocity` goes along the ground, each spot's cap raised by what braking can take off before
+   * it's there.
+   */
+  private treeLimit(pos: THREE.Vector3, velocity: THREE.Vector3, here: number): number {
     const A = AI;
-    let blocked = 0;
-    let total = 0;
-    for (const r of A.forestRadii) {
-      for (let k = 0; k < A.forestRing; k++) {
-        const angle = ((k + (r === A.forestRadii[0] ? 0 : 0.5)) / A.forestRing) * Math.PI * 2;
-        if (this.obstacles.blocking(pos.x + Math.cos(angle) * r, pos.z + Math.sin(angle) * r, A.forestClearance)) blocked++;
-        total++;
-      }
+    const cap = (trees: number) => A.treeSpeeds[trees] ?? A.forestSpeed;
+    let limit = cap(here);
+    const along = Math.hypot(velocity.x, velocity.z);
+    if (along < 1) return limit;
+    const dx = velocity.x / along;
+    const dz = velocity.z / along;
+    for (let d = A.woodsStep; d <= A.woodsLook; d += A.woodsStep) {
+      const at = cap(this.obstacles.treesWithin(pos.x + dx * d, pos.z + dz * d, A.forestRadius));
+      if (at < Infinity) limit = Math.min(limit, Math.sqrt(at * at + 2 * A.woodsBrake * d));
     }
-    return blocked / total;
+    return limit;
   }
 
   /** Whether (x, z) is open ground: no trunk within AI.openRadius of it. */

@@ -125,6 +125,18 @@ export class TreeLayout {
   }
 
   /** Nearest tree whose trunk comes within `clearance` of (x, z), or null. */
+  /** How many trees stand within `radius` m of (x, z) (by their middles). */
+  countWithin(x: number, z: number, radius: number): number {
+    let n = 0;
+    for (let cz = Math.floor((z - radius) / TREE_CELL); cz <= Math.floor((z + radius) / TREE_CELL); cz++) {
+      for (let cx = Math.floor((x - radius) / TREE_CELL); cx <= Math.floor((x + radius) / TREE_CELL); cx++) {
+        const t = this.inCell(cx, cz);
+        if (t && Math.hypot(t.x - x, t.z - z) <= radius) n++;
+      }
+    }
+    return n;
+  }
+
   blocking(x: number, z: number, clearance: number): Tree | null {
     const reach = clearance + MAX_REACH;
     let best: Tree | null = null;
