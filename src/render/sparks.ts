@@ -4,8 +4,13 @@ import type { TerrainField } from '../world/terrainField';
 
 /** Feel values for the sparks. */
 const SPARK = {
-  /** Air drag (1/s): hot metal flecks are tiny and slow down fast. */
-  drag: 0.5,
+  /**
+   * Air drag (1/s, min..max): most sparks fly on, drawn out into streaks; `flecks` of them are the
+   * tiniest, which the air brakes hard (`fleckDrag`), so they slow to short dashes and glowing dots.
+   */
+  drag: [0.4, 0.8] as const,
+  flecks: 0.35,
+  fleckDrag: [4, 9] as const,
   /** A streak is the path of the last `streak` seconds, at most `maxLength` m long. */
   streak: 0.04,
   maxLength: 0.8,
@@ -16,6 +21,12 @@ const SPARK = {
   bounce: 0.3,
   skid: 0.85,
   bounceCost: 0.05,
+  /**
+   * The glow round each spark (there's no bloom to give one): the same streak drawn again
+   * `width` m to each side (at least `minPixels` px), soft to its edges, added onto what's behind at
+   * `strength` of the spark's colour.
+   */
+  glow: { width: 0.04, minPixels: 3, strength: 0.35 },
 };
 
 /**
@@ -47,6 +58,9 @@ const VERTEX = /* glsl */ `
   varying vec3 vTint;
   varying float vAlpha;
   varying float vSide;
+  // Along the quad (0 at the tail end, 1 at the head end), and the share of it each rounded end takes.
+  varying float vAlong;
+  varying float vEnd;
   #include <fog_pars_vertex>
   void main() {
     vec4 h = modelViewMatrix * vec4( head, 1.0 );
@@ -59,25 +73,64 @@ const VERTEX = /* glsl */ `
     vec2 across = vec2( -dir.y, dir.x );
     float pixel = max( -mvPosition.z, 0.01 ) / ( projectionMatrix[1][1] * halfHeight );
     float w = max( width, minPixels * pixel );
-    // Round the ends a little, so short streaks still read as sparks.
+    // Room past each end for a rounded cap (see capsule), so short streaks still read as sparks.
     mvPosition.xy += across * w * corner.y + dir * w * ( corner.x * 2.0 - 1.0 );
     vTint = tint;
     // Thinner than the minimum: fade instead of growing.
     vAlpha = alpha * min( 1.0, 0.4 + width / w );
     vSide = corner.y;
+    vAlong = corner.x;
+    // As drawn: across the view, not toward it (a streak pointing at the camera is short on screen).
+    vEnd = w / ( distance( h.xy, t.xy ) + 2.0 * w );
     gl_Position = projectionMatrix * mvPosition;
     #include <fog_vertex>
+  }`;
+
+/**
+ * How far a point of the quad lies from the streak's middle line, squared, in half-widths: across
+ * it, and past either end, so the ends are round (a capsule). 1 at the edge.
+ */
+const CAPSULE = /* glsl */ `
+  float capsule() {
+    float past = max( 0.0, 1.0 - vAlong / vEnd ) + max( 0.0, 1.0 - ( 1.0 - vAlong ) / vEnd );
+    return past * past + vSide * vSide;
   }`;
 
 const FRAGMENT = /* glsl */ `
   varying vec3 vTint;
   varying float vAlpha;
   varying float vSide;
+  varying float vAlong;
+  varying float vEnd;
   #include <fog_pars_fragment>
+  ${CAPSULE}
   void main() {
-    float a = vAlpha * ( 1.0 - vSide * vSide );
+    float a = vAlpha * max( 0.0, 1.0 - capsule() );
     if ( a < 0.01 ) discard;
     gl_FragColor = vec4( vTint, a );
+    #include <tonemapping_fragment>
+    #include <colorspace_fragment>
+    #include <fog_fragment>
+  }`;
+
+/**
+ * The glow: the streak's colour, warmer (a white-hot glow added onto snow would only whiten it),
+ * falling off softly from its middle line out to the edge of a wider capsule, added onto what's behind.
+ */
+const GLOW_FRAGMENT = /* glsl */ `
+  uniform float strength;
+  varying vec3 vTint;
+  varying float vAlpha;
+  varying float vSide;
+  varying float vAlong;
+  varying float vEnd;
+  #include <fog_pars_fragment>
+  ${CAPSULE}
+  void main() {
+    float d = capsule();
+    float a = vAlpha * strength * exp( -4.0 * d ) * max( 0.0, 1.0 - d );
+    if ( a < 0.004 ) discard;
+    gl_FragColor = vec4( vTint * vec3( 1.0, 0.65, 0.3 ), a );
     #include <tonemapping_fragment>
     #include <colorspace_fragment>
     #include <fog_fragment>
@@ -93,12 +146,14 @@ export class Sparks {
   private readonly velocity: Float32Array;
   private readonly age: Float32Array;
   private readonly life: Float32Array;
+  private readonly drag: Float32Array;
   private readonly head: Float32Array;
   private readonly tail: Float32Array;
   private readonly tint: Float32Array;
   private readonly alpha: Float32Array;
   private readonly geometry = new THREE.InstancedBufferGeometry();
   private readonly material: THREE.ShaderMaterial;
+  private readonly glowMaterial: THREE.ShaderMaterial;
   private readonly attributes: THREE.InstancedBufferAttribute[];
 
   constructor(
@@ -111,6 +166,7 @@ export class Sparks {
     this.velocity = new Float32Array(n * 3);
     this.age = new Float32Array(n);
     this.life = new Float32Array(n);
+    this.drag = new Float32Array(n);
     this.head = new Float32Array(n * 3);
     this.tail = new Float32Array(n * 3);
     this.tint = new Float32Array(n * 3);
@@ -140,6 +196,23 @@ export class Sparks {
     const mesh = new THREE.Mesh(this.geometry, this.material);
     mesh.frustumCulled = false;
     scene.add(mesh);
+    // The glow: the same streaks again, wider and soft, in one more draw.
+    const G = SPARK.glow;
+    this.glowMaterial = new THREE.ShaderMaterial({
+      vertexShader: VERTEX,
+      fragmentShader: GLOW_FRAGMENT,
+      uniforms: THREE.UniformsUtils.merge([
+        THREE.UniformsLib.fog,
+        { halfHeight: { value: 400 }, width: { value: G.width }, minPixels: { value: G.minPixels }, strength: { value: G.strength } },
+      ]),
+      fog: true,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const glow = new THREE.Mesh(this.geometry, this.glowMaterial);
+    glow.frustumCulled = false;
+    scene.add(glow);
   }
 
   emit(e: SparkEmission): void {
@@ -149,14 +222,16 @@ export class Sparks {
     e.velocity.toArray(this.velocity, i * 3);
     this.age[i] = 0;
     this.life[i] = e.life;
+    const [lo, hi] = Math.random() < SPARK.flecks ? SPARK.fleckDrag : SPARK.drag;
+    this.drag[i] = lo + (hi - lo) * Math.random();
   }
 
   /** @param halfHeight half the drawing-buffer height in pixels (for the minimum width) */
   update(dt: number, halfHeight: number): void {
     const S = SPARK;
     this.material.uniforms.halfHeight.value = halfHeight;
+    this.glowMaterial.uniforms.halfHeight.value = halfHeight;
     const g = GRAVITY * dt;
-    const keep = Math.max(0, 1 - S.drag * dt);
     let i = 0;
     while (i < this.count) {
       this.age[i] += dt;
@@ -168,6 +243,7 @@ export class Sparks {
       const p = this.position;
       const v = this.velocity;
       v[o + 1] -= g;
+      const keep = Math.max(0, 1 - this.drag[i] * dt);
       for (let k = 0; k < 3; k++) {
         v[o + k] *= keep;
         p[o + k] += v[o + k] * dt;
@@ -206,6 +282,7 @@ export class Sparks {
     }
     this.age[i] = this.age[last];
     this.life[i] = this.life[last];
+    this.drag[i] = this.drag[last];
   }
 }
 

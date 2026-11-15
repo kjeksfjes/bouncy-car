@@ -102,6 +102,8 @@ const _v = new THREE.Vector3();
 const _p = new THREE.Vector3();
 const _n = new THREE.Vector3();
 const _across = new THREE.Vector3();
+const _out = new THREE.Vector3();
+const _slide = new THREE.Vector3();
 const _mix: GroundMix = { snow: 0, grass: 0, dirt: 0, stone: 0 };
 const _env = emptySample();
 const _grassNormal = new THREE.Vector3();
@@ -342,15 +344,21 @@ export class Juice implements CarEvents {
     if (speed < J.sparkFrom) return;
     const n = this.take(key, (speed - J.sparkFrom) * J.sparksPerSlide * dt);
     if (n === 0) return;
-    _across.crossVectors(grind.normal, grind.slide).normalize();
+    // The surface they fly off, facing out of it: on the ground its own (a box edge landing on it
+    // reports a slanted contact normal, which would send the sparks steeply up); on anything else
+    // the contact's (which points out of the car, into it).
+    if (grind.surface === 'ground') this.field.normal(grind.at.x, grind.at.z, _out);
+    else _out.copy(grind.normal).negate();
+    // Along it: the slide laid onto the surface.
+    _slide.copy(grind.slide).addScaledVector(_out, -grind.slide.dot(_out));
+    _across.crossVectors(_out, _slide).normalize();
     for (let i = 0; i < n; i++) {
-      _v.copy(grind.slide).multiplyScalar(J.sparkCarry[0] + (J.sparkCarry[1] - J.sparkCarry[0]) * Math.random());
+      _v.copy(_slide).multiplyScalar(J.sparkCarry[0] + (J.sparkCarry[1] - J.sparkCarry[0]) * Math.random());
       _v.addScaledVector(_across, (Math.random() - 0.5) * 2 * J.sparkSpread);
-      // Off the surface: the grind's normal points out of the car, into what it grinds on.
-      _v.addScaledVector(grind.normal, -Math.random() * J.sparkLift);
+      _v.addScaledVector(_out, Math.random() * J.sparkLift);
       // Spread along the last step's slide, so a stream doesn't come out of one point, and start
       // just off the surface.
-      _p.copy(grind.at).addScaledVector(grind.slide, -Math.random() * 0.02).addScaledVector(grind.normal, -0.03);
+      _p.copy(grind.at).addScaledVector(_slide, -Math.random() * 0.02).addScaledVector(_out, 0.03);
       this.sparks.emit({ position: _p, velocity: _v, life: 0.25 + Math.random() * 0.45 });
     }
   }
