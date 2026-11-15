@@ -3,6 +3,44 @@
 Releases are named plainly after what they bring (the first three after
 game-development milestones).
 
+## v0.10.0 – "Lights, Glass and the Woods" (2026-11-15)
+
+Headlights, brake lights and a parking handbrake, glass that sounds and
+breaks like car glass, leaks you can see dripping, and an autopilot that
+finds its way through the woods.
+
+- **Lights and handbrake:** tap Space to park on all four wheels, hold
+  it to lock the rear and slide. Brake lights glow while braking (not
+  while levelling in the air). Headlights look like lamps, glow as
+  running lights, and L switches them. A brake press from rolling only
+  brakes; reverse takes a new press.
+- **Breaking glass:** sounds like toughened car glass: a sharp, weighty
+  pop and a rush of small cubes. Each shard comes with three small
+  crumbs that hang back as the shards fly on and glitter in the sun.
+- **Leaks:** slow or standing still, drops form under the radiator or
+  sump, let go and fall, staining where they land. They move with the
+  crushed body. A dead car's puddle gets drops falling into it.
+- **Sparks:** a soft warm glow and round ends; the smallest slow to
+  dashes and dots, skidding along the ground.
+- **Boulder hollows** take the stone's shape: they open at its outline
+  and slope in at about 50°, following the stone, not the grid.
+- **Trees hiding the car** thin out as a whole, in a coarse dot
+  pattern, instead of a car-sized hole.
+- **Birds:** flocks cross more often (every 15–40 s). About one crossing
+  in three is a lone bird or a pair, and stragglers wander off on their
+  own.
+- **Autopilot in the woods:** it slows for trees and plans a path
+  through the gaps to open ground, backing round to face it. It backs
+  off a trunk it has nosed into and swings its nose round it, and swaps
+  a limping car sooner. Shift+P shows what it weighs and why.
+- **Photo mode:** 1 frees the camera, 2 watches the car from where the
+  camera stands, 3 follows it. Esc pauses and plays, and C goes back to
+  your view.
+- **Controls:** the cards list the action first, with Shift variants
+  indented under it. Shift+' speeds slow motion back up.
+- **Dev mode** survives a reload: typing "dev" adds `?dev` to the
+  address. E toggles the engine sound (was Shift+M).
+
 ## v0.9.0 – "Rooks, Maps and Controls" (2026-11-14)
 
 Rooks that live in the trees and on the meadows and take off when you
