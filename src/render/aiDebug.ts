@@ -12,7 +12,9 @@ import type { PathPoint } from '../vehicle/woodsPath';
  *   wide) and where it ends (a `goalSize` m square).
  * - The cairn it's going for: a `cairn` ring; cars pulling it toward them: `pull` rings (pushing
  *   it off: `push`), `ring` m round, thicker the harder they pull.
- * - Over the car: what mainly sets the way it's going (AiDebug.reason), `labelHeight` m up.
+ * - Over the car: what mainly sets the way it's going (AiDebug.reason), `labelHeight` m up. In the
+ *   map view, which looks straight down, it hangs under the car on screen instead, `labelGap` label
+ *   heights below a box `carBox` m round it (half width, half height, half length).
  * Everything sits `lift` m over the ground and is sampled every `step` m along a strip.
  */
 const LOOK = {
@@ -34,6 +36,8 @@ const LOOK = {
   push: new THREE.Color(0xff4b2b),
   ring: 3.2,
   labelHeight: 3.2,
+  labelGap: 0.1,
+  carBox: [1, 0.8, 2.4],
   lift: 0.25,
   step: 2,
   opacity: 0.85,
@@ -53,6 +57,7 @@ export class AiDebugView {
   private readonly label: THREE.Sprite;
   private readonly labelCanvas = document.createElement('canvas');
   private labelText = '';
+  private readonly corner = new THREE.Vector3();
   private readonly positions: number[] = [];
   private readonly colours: number[] = [];
 
@@ -86,10 +91,14 @@ export class AiDebugView {
     scene.add(this.free, this.wall, this.strips, this.label);
   }
 
-  /** Draws `debug` round the car at `at`, with the woods path it follows (if any); null hides it all. */
-  update(debug: AiDebug | null, path: readonly PathPoint[] | null, at: THREE.Vector3): void {
+  /**
+   * Draws `debug` round the car (`car`, its model's root), with the woods path it follows (if any),
+   * the label under the car when `fromAbove` (the map view); null hides it all.
+   */
+  update(debug: AiDebug | null, path: readonly PathPoint[] | null, car: THREE.Object3D, fromAbove: boolean): void {
     this.strips.visible = this.free.visible = this.wall.visible = this.label.visible = debug !== null;
     if (!debug) return;
+    const at = car.position;
     const L = LOOK;
     this.positions.length = 0;
     this.colours.length = 0;
@@ -115,7 +124,7 @@ export class AiDebugView {
     ray(debug.chosen, Math.min(debug.look, 12), L.chosenWidth, L.chosen);
     if (debug.cairn) this.ring(debug.cairn.x, debug.cairn.z, L.ring, 0.5, L.cairn);
     for (const c of debug.company) this.ring(c.x, c.z, L.ring, 0.1 + 0.4 * Math.abs(c.pull), c.pull > 0 ? L.pull : L.push);
-    this.label.position.set(at.x, at.y + L.labelHeight, at.z);
+    this.placeLabel(car, fromAbove);
     this.setLabel(debug.reason);
 
     const geometry = new THREE.BufferGeometry();
@@ -148,6 +157,27 @@ export class AiDebugView {
       points.push({ x: x + Math.cos(a) * radius, z: z + Math.sin(a) * radius });
     }
     this.strip(points, width, colour);
+  }
+
+  /**
+   * Puts the label over the car, or, seen from straight above (−z up the screen), with its top just
+   * below the box corner furthest toward +z: the car's lowest point on screen.
+   */
+  private placeLabel(car: THREE.Object3D, fromAbove: boolean): void {
+    const label = this.label;
+    if (!fromAbove) {
+      label.center.set(0.5, 0.5);
+      label.position.set(car.position.x, car.position.y + LOOK.labelHeight, car.position.z);
+      return;
+    }
+    const [hx, hy, hz] = LOOK.carBox;
+    car.updateMatrixWorld();
+    label.position.set(car.position.x, car.position.y, -Infinity);
+    for (let k = 0; k < 8; k++) {
+      this.corner.set(k & 1 ? hx : -hx, k & 2 ? hy : -hy, k & 4 ? hz : -hz).applyMatrix4(car.matrixWorld);
+      if (this.corner.z > label.position.z) label.position.copy(this.corner).setX(car.position.x);
+    }
+    label.center.set(0.5, 1 + LOOK.labelGap);
   }
 
   /** Writes `text` on the label over the car, as a dark pill (redrawn only when it changes). */
