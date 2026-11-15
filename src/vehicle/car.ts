@@ -225,7 +225,7 @@ export class Car {
   forwardSpeed = 0;
   /** Controls applied in the last physics step. */
   lastInput: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false };
-  /** Braking this step (the pedal against the way it rolls, or holding it still): the brake lights are on. */
+  /** Braking on the ground this step (the pedal against the way it rolls, or holding it still): the brake lights are on. */
   braking = false;
   /** Headlights on (L switches them); a new car starts with them on. */
   headlightsOn = true;
@@ -395,7 +395,6 @@ export class Car {
       if (forwardSpeed > 1 || input.holdStill) braking = true;
       else if (this.engineAlive) drive -= input.brake * E.reverseForce * Math.max(0, 1 + forwardSpeed / E.reverseMaxSpeed);
     }
-    this.braking = braking;
     const drivenCount = this.wheels.filter((w) => w.attached && w.driven).length;
 
     const Su = cfg.suspension;
@@ -508,6 +507,9 @@ export class Car {
       wheel.slip = Math.abs(vLat);
       wheel.locked = handbrake;
     }
+
+    // Brake lights only for braking on the ground: in the air the same key levels the car.
+    this.braking = braking && grounded > 0;
 
     // --- Air control (also works when stuck on the roof: a handy self-righting tool).
     this.groundedWheels = grounded;
