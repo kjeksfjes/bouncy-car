@@ -3,6 +3,9 @@
 A big, floaty 70s coupe, an endless mountain to drive down, and nothing to do but catch air, land
 hard and lose a bumper or two. It runs in the browser.
 
+**[Play it in your browser](https://kjeksfjes.github.io/bouncy-car/)** (keyboard needed, so a
+desktop or laptop).
+
 ![Two cars tumbling down a grey rock slope, one on its side throwing sparks, the other landing nose-first, green hills behind](docs/screenshot.png)
 
 The fun is in the feel: soft, bouncy suspension with lots of body roll, big jumps and satisfying
