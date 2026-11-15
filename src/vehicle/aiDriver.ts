@@ -120,18 +120,25 @@ const AI = {
   /**
    * Getting loose (see planEscape), with the car's body as FOOTPRINT's circles. Reversing arcs are tried at
    * `backSteers`, stopping at `backStops` m (out to `maxBack`, or `maxBackLater` from the second
-   * attempt); from each, forward arcs at `outSteers`, out to `outLength` m in `outStep` m steps,
+   * attempt); from the stops at `swapStops`, it also tries backing on with the steering the other
+   * way (pulling the nose off a trunk, then swinging it round); from each stop, forward arcs at
+   * `outSteers`, out to `outLength` m in `outStep` m steps,
    * turning at most `outTurn` rad before going straight. A way out runs clear at least `minOut`
    * m; it scores its clear run (up to outLength), `exitRoute` × how well it heads the way the
    * route goes, less `costBack` per m reversed. While backing it stops short of a trunk
    * `backLookout` m behind its tail. Driving out it creeps at `outSpeed` m/s for up to `outDistance`
    * m, then holds that heading `exitHold` s. `replans` more reverses are tried before it counts as stuck again.
    * Ground rising more than `maxClimb` (rise per m) the way it's going, at its leading edge, blocks
-   * an arc like a trunk does: it can't drive up a rock face.
+   * an arc like a trunk does: it can't drive up a rock face. On every arc the body keeps `planMargin`
+   * m more off the trunks than touching (the car doesn't follow an arc that exactly), or as much of it,
+   * in `planMarginStep` m steps, as it has where the arc starts.
    */
   backSteers: [-1, -0.5, 0, 0.5, 1],
   backStops: [1.5, 3, 4.5, 6, 8, 10, 12],
   backStep: 0.5,
+  swapStops: [1.5, 3],
+  planMargin: 0.3,
+  planMarginStep: 0.1,
   maxBack: 8,
   maxBackLater: 12,
   outSteers: [-1, -0.5, 0, 0.5, 1],
@@ -291,13 +298,16 @@ export interface AiDecision {
 }
 
 /**
- * Getting loose: backing `back` m along the arc at `backSteer`, then driving out `out` m along the
- * arc at `outSteer` toward `exitYaw`. `from` is where the current phase started, `time` how long it's run.
+ * Getting loose: backing `back` m along the arc at `backSteer` (then on `back2` m at `backSteer2`),
+ * then driving out `out` m along the arc at `outSteer` toward `exitYaw`. `from` is where the current
+ * phase (or part of the reverse) started, `time` how long it's run.
  */
 interface Manoeuvre {
   phase: 'back' | 'out';
   back: number;
   backSteer: number;
+  back2: number;
+  backSteer2: number;
   outSteer: number;
   exitYaw: number;
   out: number;
@@ -615,6 +625,11 @@ export class AiDriver {
       this.debug.fan.length = 0;
     }
     const idle: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false };
+    if (m.phase === 'back' && m.back2 > 0 && pos.distanceTo(m.from) >= m.back) {
+      // On to the reverse's second part, steering the other way.
+      Object.assign(m, { back: m.back2, backSteer: m.backSteer2, back2: 0, time: 0 });
+      m.from.copy(pos);
+    }
     const moved = pos.distanceTo(m.from);
     if (m.phase === 'back') {
       // Its tail, and a little further back: stop before backing into a trunk.
@@ -665,37 +680,58 @@ export class AiDriver {
   /**
    * Plans a way loose from (pos, yaw): a reverse (or none) and the arc to drive out along. Each
    * reversing arc runs until its tail would touch a trunk; from points along it, the forward arcs
-   * are looked over (see bestOut), and the best pair wins, shorter reverses preferred. With its tail
-   * against a trunk it can't reverse at all (nor drive out forwards with its nose against one: see
-   * bestOut). Null if no way out runs clear far enough. `routeWeight`: how much heading the route's way counts (see bestOut).
+   * are looked over (see bestOut), and the best pair wins, shorter reverses preferred. A reverse can
+   * also swap its steering partway (see AI.swapStops). With its tail against a trunk it can't
+   * reverse at all (nor drive out forwards with its nose against one: see bestOut). Null if no way
+   * out runs clear far enough. `routeWeight`: how much heading the route's way counts (see bestOut).
    */
   private planEscape(car: Car, pos: THREE.Vector3, yaw: number, maxBack: number, routeWeight = AI.exitRoute): Manoeuvre | null {
     const A = AI;
-    let best: { score: number; back: number; backSteer: number } | null = null;
+    const pick: { best: { score: number; back: number; backSteer: number; back2: number; backSteer2: number } | null } = { best: null };
+    const consider = (pose: { x: number; z: number; yaw: number }, back: number, backSteer: number, back2: number, backSteer2: number) => {
+      const out = this.bestOut(car, pose.x, pose.z, pose.yaw, routeWeight);
+      if (!out || out.clear < A.minOut) return;
+      const score = out.score - A.costBack * (back + back2);
+      if (!pick.best || score > pick.best.score) pick.best = { score, back, backSteer, back2, backSteer2 };
+    };
     // Driving straight out, without reversing, if a way is open.
-    const direct = this.bestOut(car, pos.x, pos.z, yaw, routeWeight);
-    if (direct && direct.clear >= A.minOut) best = { score: direct.score, back: 0, backSteer: 0 };
+    consider({ x: pos.x, z: pos.z, yaw }, 0, 0, 0, 0);
     const F = FOOTPRINT.circles;
     const tailAgainst = circleBlocked(this.obstacles, pos.x, pos.z, yaw, F[F.length - 1]);
     for (const backSteer of tailAgainst ? [] : A.backSteers) {
-      const armed = this.armed(pos.x, pos.z, yaw);
-      const pose = { x: pos.x, z: pos.z, yaw };
-      let stop = 0;
-      for (let d = A.backStep; d <= maxBack + 1e-6; d += A.backStep) {
-        this.advance(car, pose, -A.backStep, backSteer, Math.PI);
-        if (this.footprintBlocked(pose.x, pose.z, pose.yaw, armed) || this.tooSteep(pose.x, pose.z, pose.yaw, -1)) break;
-        if (Math.abs(d - A.backStops[stop]) > 1e-6) continue;
-        stop++;
-        const out = this.bestOut(car, pose.x, pose.z, pose.yaw, routeWeight);
-        if (out && out.clear >= A.minOut) {
-          const score = out.score - A.costBack * d;
-          if (!best || score > best.score) best = { score, back: d, backSteer };
-        }
-        if (stop >= A.backStops.length) break;
-      }
+      this.backArc(car, { x: pos.x, z: pos.z, yaw }, this.armed(pos.x, pos.z, yaw), backSteer, maxBack, (pose, armed, d) => {
+        consider(pose, d, backSteer, 0, 0);
+        if (backSteer === 0 || !A.swapStops.includes(d)) return;
+        this.backArc(car, { ...pose }, [...armed], -backSteer, maxBack - d, (then, _, d2) => consider(then, d, backSteer, d2, -backSteer));
+      });
     }
+    const best = pick.best;
     if (!best) return null;
-    return { phase: 'back', back: best.back, backSteer: best.backSteer, outSteer: 0, exitYaw: yaw, out: 0, from: pos.clone(), time: 0, routeWeight };
+    return { phase: 'back', ...best, outSteer: 0, exitYaw: yaw, out: 0, from: pos.clone(), time: 0, routeWeight };
+  }
+
+  /**
+   * Backs `pose` along the arc at `steer` until the body (`armed`, see footprintBlocked) would touch
+   * a trunk or the ground behind it is too steep, out to `maxBack` m, calling `visit` at each of
+   * AI.backStops on the way (with the pose and arming there, and how far it has backed).
+   */
+  private backArc(
+    car: Car,
+    pose: { x: number; z: number; yaw: number },
+    armed: number[],
+    steer: number,
+    maxBack: number,
+    visit: (pose: { x: number; z: number; yaw: number }, armed: number[], d: number) => void,
+  ): void {
+    const A = AI;
+    let stop = 0;
+    for (let d = A.backStep; d <= maxBack + 1e-6 && stop < A.backStops.length; d += A.backStep) {
+      this.advance(car, pose, -A.backStep, steer, Math.PI);
+      if (this.footprintBlocked(pose.x, pose.z, pose.yaw, armed) || this.tooSteep(pose.x, pose.z, pose.yaw, -1)) return;
+      if (Math.abs(d - A.backStops[stop]) > 1e-6) continue;
+      stop++;
+      visit(pose, armed, d);
+    }
   }
 
   /**
@@ -736,19 +772,32 @@ export class AiDriver {
     pose.z += -Math.cos(pose.yaw) * ds;
   }
 
-  /** Which of the body's circles (FOOTPRINT) are clear where it stands: one already against a trunk doesn't count until it's off it. */
-  private armed(x: number, z: number, yaw: number): boolean[] {
-    return FOOTPRINT.circles.map((local) => !circleBlocked(this.obstacles, x, z, yaw, local));
+  /**
+   * How far each of the body's circles (FOOTPRINT) keeps off the trunks on an arc from (x, z, yaw):
+   * its clearance plus AI.planMargin, or as much of the margin as it has there (see AI.planMarginStep);
+   * 0 for one already against a trunk, which doesn't count until it's off it.
+   */
+  private armed(x: number, z: number, yaw: number): number[] {
+    const A = AI;
+    const base = FOOTPRINT.clearance;
+    return FOOTPRINT.circles.map((local) => {
+      for (let m = A.planMargin; m > -1e-6; m -= A.planMarginStep) {
+        if (!circleBlocked(this.obstacles, x, z, yaw, local, base + m)) return base + Math.max(0, m);
+      }
+      return 0;
+    });
   }
 
-  /** Whether the body at (x, z, yaw) touches a trunk with any of its armed circles (arming those that have come clear). */
-  private footprintBlocked(x: number, z: number, yaw: number, armed: boolean[]): boolean {
+  /**
+   * Whether the body at (x, z, yaw) comes closer to a trunk than its circles keep (see armed),
+   * arming those that have come clear (at no margin).
+   */
+  private footprintBlocked(x: number, z: number, yaw: number, armed: number[]): boolean {
     const F = FOOTPRINT.circles;
     for (let i = 0; i < F.length; i++) {
-      const blocked = circleBlocked(this.obstacles, x, z, yaw, F[i]);
-      if (!armed[i]) {
-        if (!blocked) armed[i] = true;
-      } else if (blocked) return true;
+      if (armed[i] === 0) {
+        if (!circleBlocked(this.obstacles, x, z, yaw, F[i])) armed[i] = FOOTPRINT.clearance;
+      } else if (circleBlocked(this.obstacles, x, z, yaw, F[i], armed[i])) return true;
     }
     return false;
   }
