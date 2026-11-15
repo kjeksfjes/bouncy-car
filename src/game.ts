@@ -305,11 +305,10 @@ export class Game {
         this.placeCar(across, start);
         this.hud.toast(`start=${start} x=${across}`);
         // The address follows, so a reload starts there (see main.ts).
-        const url = new URL(location.href);
-        url.searchParams.set('start', String(start));
-        url.searchParams.set('x', String(across));
-        // URLSearchParams writes a bare ?dev as ?dev=; keep it as typed.
-        history.replaceState(null, '', url.href.replace(/([?&]dev)=(?=&|$)/, '$1'));
+        setAddress((params) => {
+          params.set('start', String(start));
+          params.set('x', String(across));
+        });
       });
     }
     // Dev: a rook flock in front of the car to drive into (G), or set off right away (Shift+G).
@@ -475,9 +474,13 @@ export class Game {
     this.hud.setPhotoLock(this.photo.lock);
   }
 
-  /** Dev mode on, or off and the game back as it plays: no inspection, map or silenced engines. */
+  /**
+   * Dev mode on, or off and the game back as it plays: no inspection, map or silenced engines. The
+   * address gains or loses ?dev, so a reload keeps it (see DEV_FROM_URL).
+   */
   private setDevMode(on: boolean): void {
     this.devMode = on;
+    setAddress((params) => (on ? params.set('dev', '') : params.delete('dev')));
     this.hud.setDevMode(on);
     this.hud.toast(on ? 'DEV MODE ON' : 'DEV MODE OFF');
     if (on) return;
@@ -673,4 +676,12 @@ function fanOut(...targets: Partial<CarEvents>[]): CarEvents {
     clank: (...args) => targets.forEach((t) => t.clank?.(...args)),
     land: (...args) => targets.forEach((t) => t.land?.(...args)),
   };
+}
+
+/** Changes the address's query with `change`, in place (no new history entry, no reload). */
+function setAddress(change: (params: URLSearchParams) => void): void {
+  const url = new URL(location.href);
+  change(url.searchParams);
+  // URLSearchParams writes a bare ?dev as ?dev=; keep it as typed.
+  history.replaceState(null, '', url.href.replace(/([?&]dev)=(?=&|$)/, '$1'));
 }
