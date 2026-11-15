@@ -29,6 +29,9 @@
       }
       .speed { font-size: 36px; font-weight: 800; font-variant-numeric: tabular-nums; line-height: 1; }
       .speed small { font-size: 14px; font-weight: 600; opacity: 0.6; }
+      /* The handbrake light, as on a dashboard: on while the handbrake is on. */
+      #handbrake { position: absolute; top: 12px; right: 12px; width: 28px; height: 28px; color: var(--bad); display: none; }
+      #handbrake.on { display: block; }
       .bar { margin-top: 10px; height: 8px; border-radius: 4px; background: rgb(0 0 0 / 0.12); overflow: hidden; }
       #integrity { height: 100%; width: 100%; background: var(--ok); transition: width 0.2s, background 0.2s; }
       #integrity[data-level='warn'] { background: var(--warn); }
@@ -174,9 +177,9 @@
         </header>
         <ul class="actions">
           <li>Throttle<span class="how-to"><kbd>↑</kbd><span class="or">or</span><kbd>W</kbd></span></li>
-          <li>Brake and reverse<span class="how-to"><kbd>↓</kbd><span class="or">or</span><kbd>S</kbd></span></li>
+          <li>Brake and reverse<span class="how-to"><kbd>↓</kbd><span class="or">or</span><kbd>S</kbd></span><span class="aside">press again to reverse</span></li>
           <li>Steer<span class="how-to"><kbd>←</kbd><kbd>→</kbd><span class="or">or</span><kbd>A</kbd><kbd>D</kbd></span></li>
-          <li>Handbrake<span class="how-to"><kbd>Space</kbd></span></li>
+          <li>Handbrake<span class="how-to"><kbd>Space</kbd></span><span class="aside">hold to slide, tap to park</span></li>
           <li>Level out in the air<span class="how-to"><kbd>↓</kbd><span class="or">or</span><kbd>S</kbd></span></li>
           <li>Roll in the air<span class="how-to"><kbd>←</kbd><kbd>→</kbd><span class="or">or</span><kbd>A</kbd><kbd>D</kbd></span></li>
         </ul>
@@ -251,6 +254,7 @@
       <div id="error" hidden></div>
       <div class="panel">
         <div class="speed"><span id="speed">0</span> <small>km/h</small></div>
+        <svg id="handbrake" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-label="Handbrake on" role="img"><circle cx="12" cy="12" r="6.5"/><path d="M4.5 6.5a9.5 9.5 0 0 0 0 11M19.5 6.5a9.5 9.5 0 0 1 0 11M10.5 15.5v-7h2a2 2 0 0 1 0 4h-2"/></svg>
         <div class="bar"><div id="integrity"></div></div>
         <div id="status"></div>
         <div id="where" hidden></div>

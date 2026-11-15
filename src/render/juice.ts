@@ -232,7 +232,7 @@ export class Juice implements CarEvents {
 
   private tyreSpray(dt: number, car: Car): void {
     const speed = Math.abs(car.forwardSpeed);
-    const boost = car.lastInput.handbrake ? 1.5 : 1;
+    const boost = car.lastInput.handbrake || car.lastInput.parkingBrake ? 1.5 : 1;
     for (const tyre of car.tyres) {
       if (!tyre.attached || !tyre.grounded) continue;
       const rate = (tyre.slip * JUICE.sprayPerSlip + Math.max(0, speed - JUICE.sprayFromSpeed) * JUICE.sprayPerSpeed) * boost;

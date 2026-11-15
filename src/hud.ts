@@ -25,6 +25,7 @@ export class Hud {
   private readonly integrity = document.getElementById('integrity')!;
   private readonly status = document.getElementById('status')!;
   private readonly autopilot = document.getElementById('autopilot')!;
+  private readonly handbrake = document.getElementById('handbrake')!;
   private readonly paused = document.getElementById('paused')!;
   private readonly slow = document.getElementById('slow')!;
   private readonly toastBox = document.getElementById('toast')!;
@@ -181,6 +182,7 @@ export class Hud {
 
   update(car: Car, autopilot: boolean): void {
     this.autopilot.classList.toggle('visible', autopilot);
+    this.handbrake.classList.toggle('on', car.lastInput.handbrake || !!car.lastInput.parkingBrake);
     this.speed.textContent = Math.round(Math.abs(car.forwardSpeed) * 3.6).toString();
     const pct = Math.round(car.integrity * 100);
     this.integrity.style.width = `${pct}%`;

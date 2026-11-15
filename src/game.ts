@@ -250,6 +250,7 @@ export class Game {
     const nextBiome = this.input.consume('KeyB');
     const jumpBiome = this.input.consume('shift:KeyB');
     const autopilot = this.input.consume('KeyP');
+    const headlights = this.input.consume('KeyL');
     // Typing the dev word turns dev mode on or off; its letters' own keys do nothing this time.
     if (this.input.typed(DEV_WORD)) {
       this.setDevMode(!this.devMode);
@@ -264,6 +265,7 @@ export class Game {
       else if (nextBiome) this.startNextBiome();
       if (autopilot) this.toggleAutopilot(this.input.shift);
       if (tip) this.car.blast();
+      if (headlights) this.car.headlightsOn = !this.car.headlightsOn;
     }
     if (this.input.consume('KeyM')) this.audio.toggleMute();
     // Dev: E silences the engines, to hear the rest better (not the E in typing the dev word).
@@ -344,7 +346,7 @@ export class Game {
     }
 
     const controls = new Map<Car, CarInput>();
-    controls.set(this.car, this.autopilot ? this.drive(this.ai, this.car, gt) : this.input.car());
+    controls.set(this.car, this.autopilot ? this.drive(this.ai, this.car, gt) : this.input.car(this.car.forwardSpeed));
     for (const a of this.traffic.cars) controls.set(a.car, this.drive(a.driver, a.car, gt));
 
     const cars = this.allCars;

@@ -18,12 +18,30 @@ import { sample } from './blueprint';
 import { Smoke } from '../render/smoke';
 import { crackTexture } from '../render/crackTexture';
 
+/**
+ * The taillights' glow: dim red (as the shared taillight material, see carModel), and bright while
+ * braking. Feel values.
+ */
+/** The headlamps' own glow while on (see the headlight material in carModel); off, none. */
+const HEADLIGHT_ON = 0.7;
+
+const BRAKE_LIGHT = {
+  off: { colour: new THREE.Color('#7a0a10'), intensity: 0.5 },
+  // Strong, but not so strong that tone mapping washes the red out toward orange.
+  on: { colour: new THREE.Color('#ff140a'), intensity: 1 },
+};
+
 export interface CarInput {
   throttle: number;
   brake: number;
   /** +1 = left, −1 = right. */
   steer: number;
+  /** Locks the rear wheels (held: for sliding the tail round). */
   handbrake: boolean;
+  /** Locks all four wheels (set: stops the car and keeps it parked). */
+  parkingBrake?: boolean;
+  /** Brake only, never back up: held on from braking, it stops the car and holds it (the player's keys, see Input.car). */
+  holdStill?: boolean;
 }
 
 /** What a body contact touched: snow/rock ground, a tree trunk, a boulder, or another moving body. */
@@ -207,6 +225,10 @@ export class Car {
   forwardSpeed = 0;
   /** Controls applied in the last physics step. */
   lastInput: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false };
+  /** Braking this step (the pedal against the way it rolls, or holding it still): the brake lights are on. */
+  braking = false;
+  /** Headlights on (L switches them); a new car starts with them on. */
+  headlightsOn = true;
   /** Average sideways slip of the grounded tyres (m/s). */
   slip = 0;
   /** What the tyres carry together, in car weights: 1 standing still, more in compressions, less over crests. */
@@ -370,9 +392,10 @@ export class Car {
       else if (this.engineAlive) drive += input.throttle * E.force * Math.max(0, 1 - forwardSpeed / E.maxSpeed);
     }
     if (input.brake > 0) {
-      if (forwardSpeed > 1) braking = true;
+      if (forwardSpeed > 1 || input.holdStill) braking = true;
       else if (this.engineAlive) drive -= input.brake * E.reverseForce * Math.max(0, 1 + forwardSpeed / E.reverseMaxSpeed);
     }
+    this.braking = braking;
     const drivenCount = this.wheels.filter((w) => w.attached && w.driven).length;
 
     const Su = cfg.suspension;
@@ -448,17 +471,24 @@ export class Car {
       const vLat = _vel.dot(_rg);
       const stopLong = (Math.abs(vLong) * mEff) / dt; // force that would stop rolling this step
 
-      const handbrake = input.handbrake && !wheel.front;
-      let grip = (wheel.front ? Ti.gripFront : Ti.gripRear) * surfaceGrip;
-      if (handbrake) grip *= Ti.handbrakeRearGrip;
+      const handbrake = (input.handbrake && !wheel.front) || !!input.parkingBrake;
+      let fLat: number;
+      let fLong: number;
+      let maxF = Ti.mu * surfaceGrip * load;
+      if (handbrake) {
+        // Locked: no rolling direction, so it slides, its friction against the whole slip (and,
+        // once stopped, holds still up to that friction). The engine can't turn it.
+        fLat = (-vLat * mEff) / dt;
+        fLong = (-vLong * mEff) / dt;
+        maxF *= Ti.lockedSlide;
+      } else {
+        const grip = (wheel.front ? Ti.gripFront : Ti.gripRear) * surfaceGrip;
+        fLat = (-vLat * mEff * grip) / dt;
+        fLong = wheel.driven && drivenCount > 0 ? drive / drivenCount : 0;
+        if (braking) fLong -= Math.sign(vLong) * Math.min(E.brakeForce / 4, stopLong);
+        fLong -= Math.sign(vLong) * Math.min(Ti.rollingResistance * load, stopLong);
+      }
 
-      let fLat = (-vLat * mEff * grip) / dt;
-      let fLong = wheel.driven && drivenCount > 0 ? drive / drivenCount : 0;
-      if (braking) fLong -= Math.sign(vLong) * Math.min(E.brakeForce / 4, stopLong);
-      if (handbrake) fLong -= Math.sign(vLong) * Math.min(E.handbrakeForce / 2, stopLong);
-      fLong -= Math.sign(vLong) * Math.min(Ti.rollingResistance * load, stopLong);
-
-      const maxF = Ti.mu * surfaceGrip * load;
       const total = Math.hypot(fLat, fLong);
       if (total > maxF) {
         const k = maxF / total;
@@ -1099,6 +1129,13 @@ export class Car {
 
   /** Interpolates the visual between the last two physics states. */
   syncVisual(alpha: number, frameDt: number): void {
+    const lamp = this.braking ? BRAKE_LIGHT.on : BRAKE_LIGHT.off;
+    this.model.brakeLight.emissive.copy(lamp.colour);
+    this.model.brakeLight.emissiveIntensity = lamp.intensity;
+    this.model.headLight.emissiveIntensity = this.headlightsOn ? HEADLIGHT_ON : 0;
+    for (const { glow, lens, lamp, brake } of this.model.lampGlows) {
+      glow.visible = lens.material === lamp && (brake ? this.braking : this.headlightsOn);
+    }
     const root = this.model.root;
     root.position.lerpVectors(this.prevPos, this.currPos, alpha);
     root.quaternion.slerpQuaternions(this.prevQuat, this.currQuat, alpha);
@@ -1296,6 +1333,9 @@ export class Car {
     this.model.root.traverse((o) => {
       if (o instanceof THREE.Mesh) o.geometry.dispose();
     });
+    this.model.brakeLight.dispose();
+    this.model.headLight.dispose();
+    for (const material of new Set(this.model.lampGlows.map(({ glow }) => glow.material))) material.dispose();
   }
 
   private captureTransform(): void {

@@ -49,7 +49,11 @@ export interface CarConfig {
     gripRear: number;
     /** Friction coefficient: max tyre force = mu × load. */
     mu: number;
-    handbrakeRearGrip: number;
+    /**
+     * A tyre locked by the handbrake slides with this share of mu: rubber's sliding friction lies a
+     * little under its peak grip. Its friction works against the whole slip, along and across alike.
+     */
+    lockedSlide: number;
     rollingResistance: number;
     /** 0 = tyre forces act at the CoM height (no roll), 1 = at the contact patch (full roll). */
     rollInfluence: number;
@@ -66,7 +70,6 @@ export interface CarConfig {
     reverseForce: number;
     reverseMaxSpeed: number;
     brakeForce: number;
-    handbrakeForce: number;
   };
 
   steering: {
@@ -328,7 +331,9 @@ export const COUPE_70S: CarConfig = {
     gripFront: 0.55,
     gripRear: 0.5,
     mu: 1.2,
-    handbrakeRearGrip: 0.12,
+    // By feel: holds the car on the slopes (rear load × 1.2 × 0.85 ≈ 7.6 kN against ≈5.4 kN of slope
+    // pull at 18°), while the rear still swings out when it locks at speed.
+    lockedSlide: 0.85,
     rollingResistance: 0.015,
     rollInfluence: 0.45,
     // By feel: snow stays the arcade baseline (real packed snow would be far slipperier), and the
@@ -345,7 +350,6 @@ export const COUPE_70S: CarConfig = {
     // Above what snow can take (mu 1.2 × 1600 kg × g ≈ 19 kN), so braking on snow is limited by
     // grip, and bites harder on the grippier bare grounds.
     brakeForce: 22000,
-    handbrakeForce: 6000,
   },
 
   steering: { maxAngle: 0.55, minAngle: 0.13, fullSpeed: 40, rate: 2.6 },

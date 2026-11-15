@@ -6,6 +6,66 @@ import type { LightFixtureDef, LightKind } from './lights';
 import { engineParts } from './engine';
 import { addWearAttributes, paintWithWear } from './paintWear';
 import { Linkage, underbodyParts } from './underbody';
+import { softDotTexture } from '../render/smoke';
+
+/**
+ * The glow round a lit lamp (there's no bloom to give one): light falling on the body round the
+ * lens, a soft patch lying flat on it in the lens's plane, `size` times the lens, added onto what's
+ * there at `opacity`. Drawn just in front of the body (so its facets don't cut it). The brake
+ * lights glow while braking; the headlights, on all the time (as running lights), softly and warm.
+ * Feel values.
+ */
+const BRAKE_GLOW = { colour: '#ff1a0a', size: { x: 1.4, y: 2.4 }, opacity: 0.6 };
+const HEAD_GLOW = { colour: '#ffe2a8', size: 3.2, opacity: 0.45 };
+
+/**
+ * A round headlamp seen through its glass, drawn once and shared: a dark rim, the reflector
+ * brightening toward the middle, the glass's faint rings and flutes, and the bulb's bright spot.
+ */
+let headlampLook: THREE.Texture | null = null;
+function headlampTexture(): THREE.Texture {
+  if (headlampLook) return headlampLook;
+  const n = 128;
+  const c = n / 2;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = n;
+  const g = canvas.getContext('2d')!;
+  const reflector = g.createRadialGradient(c, c, 0, c, c, c);
+  reflector.addColorStop(0, '#fffaf0');
+  reflector.addColorStop(0.5, '#eee7d6');
+  reflector.addColorStop(0.86, '#b9b1a0');
+  reflector.addColorStop(0.94, '#77716a');
+  reflector.addColorStop(1, '#4a4743');
+  g.fillStyle = reflector;
+  g.fillRect(0, 0, n, n);
+  g.save();
+  g.beginPath();
+  g.arc(c, c, c * 0.88, 0, Math.PI * 2);
+  g.clip();
+  g.strokeStyle = 'rgb(90 80 60 / 0.3)';
+  g.lineWidth = 1.5;
+  for (const r of [0.22, 0.4, 0.58, 0.74]) {
+    g.beginPath();
+    g.arc(c, c, c * r, 0, Math.PI * 2);
+    g.stroke();
+  }
+  g.strokeStyle = 'rgb(90 80 60 / 0.14)';
+  for (let x = 6; x < n; x += 9) {
+    g.beginPath();
+    g.moveTo(x, 0);
+    g.lineTo(x, n);
+    g.stroke();
+  }
+  g.restore();
+  const bulb = g.createRadialGradient(c, c, 0, c, c, c * 0.2);
+  bulb.addColorStop(0, 'rgb(255 255 255 / 1)');
+  bulb.addColorStop(1, 'rgb(255 255 255 / 0)');
+  g.fillStyle = bulb;
+  g.fillRect(0, 0, n, n);
+  headlampLook = new THREE.CanvasTexture(canvas);
+  headlampLook.colorSpace = THREE.SRGBColorSpace;
+  return headlampLook;
+}
 
 /** A dentable mesh on the car. Detachable pieces can be knocked off. */
 export interface CarPiece {
@@ -82,6 +142,15 @@ export interface CarModel {
   lights: LightFixtureDef[];
   /** Lens material once a light is smashed, per kind. */
   smashedLens: Record<LightKind, THREE.Material>;
+  /** The taillight lenses' own lamp, this car's alone, lit while it brakes (see Car.syncVisual). */
+  brakeLight: THREE.MeshStandardMaterial;
+  /** The headlight lenses' own lamp, this car's alone, lit while its headlights are on. */
+  headLight: THREE.MeshStandardMaterial;
+  /**
+   * A glow round each lamp, with its lens and the lens's lit material (it glows only while the lens
+   * has that: not once smashed); the brake lights' only while braking, the headlights' while on.
+   */
+  lampGlows: { glow: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>; lens: THREE.Mesh; lamp: THREE.Material; brake: boolean }[];
   /** Axle, driveshaft and A-arms that follow the wheels (see Linkage). */
   linkage: Linkage;
 }
@@ -236,7 +305,7 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
       steel: std('#4b5056', { roughness: 0.5, metalness: 0.6 }),
       dark: std('#1c1d20', { roughness: 0.7 }),
       tire: std('#1a1a1c', { roughness: 0.9 }),
-      headlight: std('#fff6d8', { emissive: '#fff1c4', emissiveIntensity: 0.6 }),
+      headlight: std('#ffffff', { map: headlampTexture(), emissive: '#ffe9bd', emissiveMap: headlampTexture(), emissiveIntensity: 0.7, roughness: 0.25 }),
       taillight: std('#a3121b', { emissive: '#7a0a10', emissiveIntensity: 0.5 }),
       marker: std('#e08a1e', { emissive: '#7a4208', emissiveIntensity: 0.4 }),
       brokenHead: std('#c3c9cf', { roughness: 0.35, metalness: 0.8 }),
@@ -568,6 +637,39 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, curveSegments: 3 });
   const disc = (r: number, depth: number) => new THREE.CylinderGeometry(r, r, depth, 10).rotateX(Math.PI / 2);
   const forward = new THREE.Vector3(0, 0, -1);
+  const lampGlows: CarModel['lampGlows'] = [];
+  const glowMaterial = (look: { colour: string; opacity: number }) =>
+    new THREE.MeshBasicMaterial({
+      map: softDotTexture(),
+      color: look.colour,
+      blending: THREE.AdditiveBlending,
+      transparent: true,
+      opacity: look.opacity,
+      depthWrite: false,
+      toneMapped: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -4,
+      polygonOffsetUnits: -4,
+    });
+  /**
+   * Adds a glow (`geometry`, built round the mount in car-local orientation) for the fixture just
+   * made. On the body at the lamp's mount rather than in the lamp, so the lamp's size (its hit box,
+   * see CarLights) stays its own; and light, not a thing, so the photo camera's point picking looks past it.
+   */
+  const addGlow = (geometry: THREE.PlaneGeometry, material: THREE.MeshBasicMaterial, brake: boolean) => {
+    const { group, lens } = lights[lights.length - 1];
+    const glow = new THREE.Mesh(geometry, material);
+    glow.visible = false;
+    glow.raycast = () => {};
+    glow.position.copy(group.position);
+    root.add(glow);
+    lampGlows.push({ glow, lens, lamp: lens.material as THREE.Material, brake });
+  };
+  // On the flat surround, behind the lens and ring (so they cover its middle): nothing to win against.
+  // This car's own, so its headlights switch on and off by themselves (see Car.syncVisual).
+  const headLight = (mat.headlight as THREE.MeshStandardMaterial).clone();
+  const headGlow = glowMaterial(HEAD_GLOW);
+  headGlow.polygonOffset = false;
   // Headlights at the surround's face: a dark bucket reaching back to the recess's back wall (so
   // they don't float in the cavity), a chrome ring and the lens. The ring is a torus with a
   // 4-sided (diamond) tube, faceted so it catches light: a flat chrome face reads as pale plastic.
@@ -579,8 +681,10 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
       fixture(`headlight-${x}`, 'head', onEnd(x, head.h, bp.front), forward, [
         [new THREE.CylinderGeometry(r * 1.05, r * 1.05, 0.045, 10).rotateX(Math.PI / 2), mat.dark, new THREE.Vector3(0, 0, 0.035)],
         [new THREE.TorusGeometry(r * 1.08, 0.009, 4, 10), mat.chrome, new THREE.Vector3(0, 0, -0.004)],
-        [disc(r * 0.98, 0.03), mat.headlight, new THREE.Vector3(0, 0, 0.01)],
+        [disc(r * 0.98, 0.03), headLight, new THREE.Vector3(0, 0, 0.01)],
       ]);
+      // Facing forward (−Z), just in front of the surround's face, behind the lens's.
+      addGlow(new THREE.PlaneGeometry(r * HEAD_GLOW.size, r * HEAD_GLOW.size).rotateY(Math.PI).translate(0, 0, -0.002), headGlow, false);
     }
   }
   // Taillights: a red lens in two sections (upper and lower, with a seam where the dark recess
@@ -589,6 +693,8 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   // leaning tail panel (built facing +Z, then tilted).
   const tail = bp.openings.tail;
   const origin = new THREE.Vector3();
+  const brakeLight = (mat.taillight as THREE.MeshStandardMaterial).clone();
+  const brakeGlow = glowMaterial(BRAKE_GLOW);
   const SEAM = 0.006;
   for (const side of [-1, 1]) {
     const tilt = endTilt(bp.rear, side * tail.x, tail.h);
@@ -600,9 +706,12 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     const lens = mergeGeometries(halves);
     halves.forEach((g) => g.dispose());
     if (!lens) throw new Error('Taillight lens failed to merge');
-    fixture(`taillight-${side}`, 'tail', onEnd(side * tail.x, tail.h, bp.rear), facingAt(tilt), [
-      [lens.rotateX(tilt), mat.taillight, origin],
+    const facing = facingAt(tilt);
+    fixture(`taillight-${side}`, 'tail', onEnd(side * tail.x, tail.h, bp.rear), facing, [
+      [lens.rotateX(tilt), brakeLight, origin],
     ]);
+    // Built facing +Z like the lens, at the panel's face (the lens stands 8 mm proud of it), then tilted.
+    addGlow(new THREE.PlaneGeometry(tail.width * BRAKE_GLOW.size.x, tail.height * BRAKE_GLOW.size.y).translate(0, 0, 0.002).rotateX(tilt), brakeGlow, true);
   }
   for (const side of [-1, 1]) {
     const out = new THREE.Vector3(side, 0, 0);
@@ -772,6 +881,9 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     wheels,
     lights,
     smashedLens: { head: mat.brokenHead, tail: mat.brokenTail, marker: mat.brokenMarker },
+    brakeLight,
+    headLight,
+    lampGlows,
     linkage,
   };
 }

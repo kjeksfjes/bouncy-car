@@ -4,6 +4,16 @@ const BLOCKED = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Spa
 /** A word counts as typed (see typed) only when all of it comes within this long (ms), first letter to last. */
 const TYPING_WINDOW = 700;
 
+/**
+ * The pedals, as the player's keys work them (see car):
+ * - A press of Space shorter than `tap` ms sets the handbrake as a parking brake on all four
+ *   wheels, or releases it if it was set; a longer one locks the rear wheels only while held, and
+ *   leaves it released.
+ * - A brake press that starts while the car rolls forward faster than `reverseFrom` m/s only brakes,
+ *   down to a stop and holding it there: backing up takes a new press.
+ */
+const PEDALS = { tap: 250, reverseFrom: 1 };
+
 /** Keyboard state with edge-triggered actions. */
 export class Input {
   private readonly held = new Set<string>();
@@ -15,6 +25,12 @@ export class Input {
    * layout map where it has one (Chrome, Edge), and from each key as it's pressed.
    */
   private readonly charKeys = new Map<string, Set<string>>();
+  /** The handbrake set by a tap (see PEDALS), and the Space press under way: when, and whether it was set then. */
+  private handbrakeSet = false;
+  private spaceDown = { at: 0, wasSet: false };
+  /** The brake key held last time car() looked, and whether this press only brakes (see PEDALS). */
+  private brakeHeld = false;
+  private brakeOnly = false;
 
   constructor() {
     const keyboard = (navigator as Navigator & { keyboard?: { getLayoutMap(): Promise<Map<string, string>> } }).keyboard;
@@ -36,11 +52,17 @@ export class Input {
         // before the frame reads it.
         if (e.shiftKey) this.pressed.add(`shift:${e.code}`);
         else if (e.key.length === 1) this.learn(e.key, e.code);
+        if (e.code === 'Space') this.spaceDown = { at: e.timeStamp, wasSet: this.handbrakeSet };
         if (e.key.length === 1) this.typing = [...this.typing, { key: e.key.toLowerCase(), at: e.timeStamp }].slice(-16);
       }
       this.held.add(e.code);
     });
-    window.addEventListener('keyup', (e) => this.held.delete(e.code));
+    window.addEventListener('keyup', (e) => {
+      this.held.delete(e.code);
+      if (e.code === 'Space' && !(e.target instanceof HTMLInputElement)) {
+        this.handbrakeSet = e.timeStamp - this.spaceDown.at < PEDALS.tap ? !this.spaceDown.wasSet : false;
+      }
+    });
     window.addEventListener('blur', () => this.held.clear());
   }
 
@@ -48,12 +70,18 @@ export class Input {
     return codes.some((c) => this.held.has(c));
   }
 
-  car(): CarInput {
+  /** The car's controls from the keys, the pedals worked as PEDALS says; `forwardSpeed` is the car's (m/s). */
+  car(forwardSpeed = 0): CarInput {
+    const brake = this.any('KeyS', 'ArrowDown');
+    if (brake && !this.brakeHeld) this.brakeOnly = forwardSpeed > PEDALS.reverseFrom;
+    this.brakeHeld = brake;
     return {
       throttle: this.any('KeyW', 'ArrowUp') ? 1 : 0,
-      brake: this.any('KeyS', 'ArrowDown') ? 1 : 0,
+      brake: brake ? 1 : 0,
       steer: (this.any('KeyA', 'ArrowLeft') ? 1 : 0) - (this.any('KeyD', 'ArrowRight') ? 1 : 0),
       handbrake: this.any('Space'),
+      parkingBrake: this.handbrakeSet,
+      holdStill: brake && this.brakeOnly,
     };
   }
 
