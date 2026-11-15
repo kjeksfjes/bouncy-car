@@ -171,8 +171,16 @@ export interface CarConfig {
     leakSpacingMin: number;
     /** Dripping while standing still, as if driving this fast (m/s). */
     leakIdle: number;
-    /** A dead, stopped car's oil puddle grows to this size (m) at this rate (m/s), draining this much oil (l/s). */
+    /**
+     * Under this speed (m/s), and with the car upright enough (its up axis at least `dropsUpright`
+     * up), drops are seen forming under it and falling (see Fluids.hangDrop); otherwise they land
+     * as stains at once.
+     */
+    dropsSeenBelow: number;
+    dropsUpright: number;
+    /** A dead, stopped car's oil puddle grows to this size (m) at this rate (m/s), draining this much oil (l/s), a drop falling into it every `puddleDrip` s. */
     puddleMax: number;
+    puddleDrip: number;
     puddleGrowth: number;
     puddleDrain: number;
     /** Hinged panels: see PanelTuning. */
@@ -429,7 +437,10 @@ export const COUPE_70S: CarConfig = {
     leakSpacingMax: 3,
     leakSpacingMin: 0.35,
     leakIdle: 0.4,
+    dropsSeenBelow: 5,
+    dropsUpright: 0.6,
     puddleMax: 1.3,
+    puddleDrip: 0.7,
     puddleGrowth: 0.04,
     puddleDrain: 0.08,
     tearHp: 70,

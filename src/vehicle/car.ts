@@ -199,8 +199,9 @@ export class Car {
   private oilLeft: number;
   /** Distance (m) driven since each stream's last drop. */
   private readonly leakDistance = { coolant: 0, oil: 0 };
-  /** The oil puddle growing under a dead, stopped car. */
+  /** The oil puddle growing under a dead, stopped car, and the time (s) to the next drop into it. */
   private puddle: FluidStain | null = null;
+  private puddleDrip = 0;
   /** Wheel rays skip this car's own hanging panels. */
   private readonly rayFilter = (c: RAPIER.Collider) => !this.panels.owns(c);
   /** Front and rear crumple zones. */
@@ -1198,9 +1199,19 @@ export class Car {
       }
       this.puddle.size = Math.min(d.puddleMax, this.puddle.size + d.puddleGrowth * dt);
       this.oilLeft -= d.puddleDrain * dt;
+      this.puddleDrip -= dt;
+      if (this.puddleDrip <= 0 && this.upright() >= d.dropsUpright) {
+        this.puddleDrip = d.puddleDrip * (0.6 + Math.random() * 0.8);
+        this.debris.fluids.hangDrop(this.model.root, this.crush.displace(_tmp.copy(this.sumpDrip)), 'oil', 0.15 + Math.random() * 0.1, 0, false);
+      }
     } else {
       this.puddle = null;
     }
+  }
+
+  /** How far the car's up axis points up: 1 upright, 0 on its side, −1 on its roof. */
+  private upright(): number {
+    return _up.copy(UP).applyQuaternion(this.model.root.quaternion).y;
   }
 
   /** One leak's drops for this frame, at `rate` (0..1) from car-local `source`; returns litres lost. */
@@ -1214,7 +1225,14 @@ export class Car {
       this.leakDistance[kind] -= spacing;
       const size = (0.08 + Math.random() * 0.14) * (0.6 + rate);
       lost += d.dropVolume * (size / 0.15) ** 2;
-      const at = this.model.root.localToWorld(_pt.copy(source)).add(_tmp.set((Math.random() - 0.5) * 0.3, 0, (Math.random() - 0.5) * 0.3));
+      // Where the radiator or sump is now, after any crush.
+      const from = this.crush.displace(_tmp.copy(source).add(_pt.set((Math.random() - 0.5) * 0.3, 0, (Math.random() - 0.5) * 0.3)));
+      // Slow and upright, it's seen forming under the car and falling, landing where it falls.
+      if (speed < d.dropsSeenBelow && this.upright() >= d.dropsUpright) {
+        this.debris.fluids.hangDrop(this.model.root, from, kind, size, speed);
+        continue;
+      }
+      const at = this.model.root.localToWorld(from);
       // Only on the ground: drops shaken off mid-air would land somewhere unpredictable.
       if (at.y - field.height(at.x, at.z) > 1) continue;
       this.debris.fluids.drip(at.x, at.z, kind, size, velocity, 1 + Math.min(speed, 30) * 0.08);
