@@ -5,6 +5,7 @@ import { GameAudio } from './audio/audio';
 import { Hud } from './hud';
 import { MapOverlay } from './mapOverlay';
 import { Input } from './input';
+import { AiDebugView } from './render/aiDebug';
 import { OrbitCamera } from './render/orbitCamera';
 import { HeliCamera } from './render/heliCamera';
 import { MapCamera } from './render/mapCamera';
@@ -16,7 +17,7 @@ import { Juice } from './render/juice';
 import { Stage } from './render/stage';
 import { Visibility } from './render/visibility';
 import { Traffic } from './traffic';
-import { AiDriver } from './vehicle/aiDriver';
+import { AiDriver, emptyAiDebug } from './vehicle/aiDriver';
 import { Car, crashWarmUpObjects, type CarEvents, type CarInput } from './vehicle/car';
 import { clearPose, type Pose } from './vehicle/clearPose';
 import { COUPE_70S } from './vehicle/carConfig';
@@ -120,12 +121,12 @@ export class Game {
   private readonly obstacles: Obstacles;
   /** Drives the player's car while the autopilot is on. */
   private readonly ai: AiDriver;
-  /** Shows the AI's chosen heading while the autopilot drives. */
-  private readonly aiArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, -1), new THREE.Vector3(), 6, 0x2b7de9, 1.2, 0.7);
+  /** What the autopilot weighs, drawn on the ground while it drives (see AiDebugView). */
+  private readonly aiDebug: AiDebugView;
   private autopilot = false;
   /** The autopilot has asked for a new car (see drive). */
   private autopilotWantsCar = false;
-  private showAiHeading = false;
+  private showAiDebug = false;
   private accumulator = 0;
   private lastTime = 0;
 
@@ -146,8 +147,7 @@ export class Game {
     this.terrain = new Terrain(this.field, this.stage.scene, this.world, this.trees, this.rocks);
     this.section = FEATURES.groundSection ? new GroundSection(this.stage.scene, (x, z) => this.terrain.surfaceHeight(x, z)) : null;
     this.ai = new AiDriver(this.field, obstacles);
-    this.aiArrow.visible = false;
-    this.stage.scene.add(this.aiArrow);
+    this.aiDebug = new AiDebugView(this.stage.scene, (x, z) => this.terrain.surfaceHeight(x, z));
     this.debris = new Debris(this.stage.scene, this.world, this.field);
     this.traffic = new Traffic(this.field, obstacles, this.terrain, (at, yaw, paint) => this.newCar(at, yaw, paint));
     // Both cameras orbit with the mouse; only the active one takes the input.
@@ -399,11 +399,8 @@ export class Game {
     this.traffic.update(gt, pos, this.view);
     this.stage.follow(pos);
     this.updateWarmth(dt);
-    this.aiArrow.visible = this.autopilot && this.showAiHeading;
-    if (this.aiArrow.visible) {
-      this.aiArrow.position.copy(pos).setY(pos.y + 1.6);
-      this.aiArrow.setDirection(this.ai.heading);
-    }
+    this.ai.debug = this.autopilot && this.showAiDebug ? (this.ai.debug ?? emptyAiDebug()) : null;
+    this.aiDebug.update(this.ai.debug, this.ai.woodsPath, pos);
     // Traffic may have despawned cars just now; again use a fresh list.
     const live = this.allCars;
     this.juice.update(gt, live, this.stage.renderer.getDrawingBufferSize(this.bufferSize).y / 2);
@@ -552,14 +549,14 @@ export class Game {
     (this.cameraMode === 'orbit' ? this.orbit : this.heli).reset();
   }
 
-  /** P toggles the autopilot; Shift+P toggles its heading arrow (switching the autopilot on if needed). */
-  private toggleAutopilot(withHeading: boolean): void {
-    if (withHeading) {
-      this.showAiHeading = !this.autopilot || !this.showAiHeading;
+  /** P toggles the autopilot; Shift+P toggles its debug view (switching the autopilot on if needed). */
+  private toggleAutopilot(withDebug: boolean): void {
+    if (withDebug) {
+      this.showAiDebug = !this.autopilot || !this.showAiDebug;
       this.autopilot = true;
     } else {
       this.autopilot = !this.autopilot;
-      this.showAiHeading = false;
+      this.showAiDebug = false;
     }
   }
 

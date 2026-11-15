@@ -124,7 +124,6 @@ export class TreeLayout {
     this.cache.clear();
   }
 
-  /** Nearest tree whose trunk comes within `clearance` of (x, z), or null. */
   /** How many trees stand within `radius` m of (x, z) (by their middles). */
   countWithin(x: number, z: number, radius: number): number {
     let n = 0;
@@ -137,6 +136,7 @@ export class TreeLayout {
     return n;
   }
 
+  /** Nearest tree whose trunk comes within `clearance` of (x, z), or null. */
   blocking(x: number, z: number, clearance: number): Tree | null {
     const reach = clearance + MAX_REACH;
     let best: Tree | null = null;

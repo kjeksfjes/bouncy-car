@@ -4,6 +4,7 @@ import type { Varde } from '../world/landmarks';
 import type { TerrainField } from '../world/terrainField';
 import type { Car, CarInput } from './car';
 import { circleBlocked, FOOTPRINT } from './clearPose';
+import { WoodsPlanner, WOODS, type PathPoint } from './woodsPath';
 
 /**
  * Tuning for the AI driver. Yaw is measured from straight downhill (−Z),
@@ -33,6 +34,12 @@ const AI = {
   costCompany: 1.2,
   companyRange: 100,
   personalSpace: 10,
+  /**
+   * A cairn or car to go for has to be in sight: no trunk or boulder within `goalSight` m of the
+   * straight way to it (checked every sampleStep m, each time the route is planned). A cairn that
+   * goes out of sight is given up; a car out of sight doesn't pull (but one too close still pushes).
+   */
+  goalSight: 1.6,
   /**
    * Long range: every `routeEvery` s the route is planned `routeRange` m out, along `routeCandidates`
    * headings ±`routeSpread` around downhill, sampled every `routeStep` m in a corridor ±`routeWidth`
@@ -181,6 +188,23 @@ const AI = {
   forestTreeClearance: 1.6,
   costForestTree: 9,
   /**
+   * In forest mode it plans a way out of the wood through the gaps (see WoodsPlanner) every
+   * routeEvery s, and follows it, steering for the furthest point of the path within `pathLook` m
+   * that it can see past the trunks (keeping `pathSight` m off them). Should that point lie more
+   * than `pathBehind` rad off the way the car faces, it brakes to under `pathTurnSpeed` m/s, then
+   * backs and turns to face it (see planEscape, the path's way weighing `exitPath` there), trying
+   * that at most every `pathTurnEvery` s. It creeps where the path bends more than `pathBend` rad within `pathBendLook` m.
+   * With no way out within reach, it seeks open ground along straight lines instead (see seekOpen).
+   */
+  pathLook: 8,
+  pathSight: 1.15,
+  pathBehind: 1.9,
+  pathTurnSpeed: 3,
+  exitPath: 6,
+  pathTurnEvery: 1.5,
+  pathBend: 0.6,
+  pathBendLook: 10,
+  /**
    * Seeking open ground: `openCandidates` headings ±`openSpread` round downhill, walked out to
    * `openRange` m in `openStep` m steps; open ground is a spot with no trunk within `openRadius`
    * m (checked at its middle and `openRing` spots round it). Each heading costs how far its open
@@ -208,6 +232,46 @@ const AI = {
   brokenTime: 5,
 };
 
+/**
+ * What the driver weighed, for the debug view: filled only while `AiDriver.debug` is set.
+ * - `fan`: the headings it tried this frame (yaw) and how far each ran clear of trees, out to `look` m.
+ * - `chosen`: the heading it went for; `route`: the long-range route's.
+ * - `squares`: the squares the woods planner last looked at (blocked by a trunk or not), and `plans`
+ *   counts the plans, so a view knows when they've changed.
+ * - `reason`: what mainly sets the way it's going (see RouteReason); `cairn`: the cairn it's going
+ *   for; `company`: the cars pulling it toward them (pull > 0) or pushing it off (< 0).
+ */
+export interface AiDebug {
+  fan: { yaw: number; clear: number }[];
+  look: number;
+  chosen: number;
+  route: number;
+  squares: { x: number; z: number; blocked: boolean }[];
+  plans: number;
+  reason: string;
+  cairn: { x: number; z: number } | null;
+  company: { x: number; z: number; pull: number }[];
+}
+
+/** An empty AiDebug, to hand a driver. */
+export function emptyAiDebug(): AiDebug {
+  return { fan: [], look: 0, chosen: 0, route: 0, squares: [], plans: 0, reason: '', cairn: null, company: [] };
+}
+
+/**
+ * What mainly sets the long-range route's way (see planRoute): downhill, a cairn, or what makes
+ * straight downhill dearer (trees, rock face, a tipping side slope, the heading it got stuck on);
+ * or none of those, when it keeps a route that's no longer the cheapest (AI.routeKeep).
+ */
+type RouteReason = 'downhill' | 'cairn' | 'round the trees' | 'off rock' | 'off side slope' | 'away from where it got stuck' | 'keeping its route';
+
+/** What a heading runs through (see pathCost), each part as it adds to the cost. */
+interface PathParts {
+  trees: number;
+  rock: number;
+  tilt: number;
+}
+
 export interface AiDecision {
   input: CarInput;
   /**
@@ -233,6 +297,8 @@ interface Manoeuvre {
   out: number;
   from: THREE.Vector3;
   time: number;
+  /** How much heading the route's way counts for, choosing the way out (see bestOut). */
+  routeWeight: number;
 }
 
 const _fwd = new THREE.Vector3();
@@ -243,12 +309,13 @@ const _n = new THREE.Vector3();
  * Look-ahead driver. A long-range route (a few times a second) finds the open way far ahead: lanes
  * through forest or round it, off rock faces and steep side slopes, or at a cairn to knock over.
  * Each frame it picks the clearest heading near that route and steers for it, at a speed for the
- * grip under its tyres. Among many trees it slows right down, seeks the nearest open ground and
- * picks its way between the trunks with a closer, finer look. Stuck, it tries something new each time.
+ * grip under its tyres. Among many trees it slows right down and follows a path it plans through
+ * the gaps between the trunks to the nearest open ground, backing and turning first if that path
+ * lies behind it. Stuck, it tries something new each time.
  */
 export class AiDriver {
-  /** Chosen heading as a world-space direction, for the debug arrow. */
-  readonly heading = new THREE.Vector3(0, 0, -1);
+  /** Set it to have the driver report what it weighs (see AiDebug); null, the default, costs nothing. */
+  debug: AiDebug | null = null;
   /** The long-range route's yaw, when it was last planned, and how far along it the first hazard is (m). */
   private routeYaw = 0;
   /** Starts at a random point of its period, so the cars don't all plan in the same frame. */
@@ -280,21 +347,43 @@ export class AiDriver {
   private forest = false;
   /** The speed the trees about allow, here and ahead (m/s; see AI.treeSpeeds). */
   private treeCap = Infinity;
+  /** Cars it can't see for trees (their positions, as the others list hands them over; see AI.goalSight). */
+  private readonly hidden = new Set<THREE.Vector3>();
+  /** What mainly sets the route's way, worked out only for the debug view. */
+  private routeReason: RouteReason = 'downhill';
   /** How long the car has lain broken and still (s). */
   private wrecked = 0;
+  /** In forest mode, the way out of the wood it's following (see AI.pathLook), and the point of it nearest the car. */
+  private readonly woods: WoodsPlanner;
+  private path: PathPoint[] | null = null;
+  private pathAt = 0;
+  /** Seconds until it may back and turn to face its path again. */
+  private turnWait = 0;
 
   /** @param cruiseSpeed preferred speed on snow in m/s; varies per car so traffic spreads out */
   constructor(
     private readonly field: TerrainField,
     private readonly obstacles: Obstacles,
     private readonly cruiseSpeed = AI.cruiseSpeed,
-  ) {}
+  ) {
+    this.woods = new WoodsPlanner(
+      (x, z, clearance) => !obstacles.blocking(x, z, clearance),
+      (x, z) => field.height(x, z),
+      (x, z) => this.open(x, z),
+    );
+  }
+
+  /** The way out of the wood it's following, for the debug view. */
+  get woodsPath(): readonly PathPoint[] | null {
+    return this.forest ? this.path : null;
+  }
 
   /** @param others world positions of the other cars (the player included) */
   update(dt: number, car: Car, others: readonly THREE.Vector3[]): AiDecision {
     this.time += dt;
     this.tabooLeft = Math.max(0, this.tabooLeft - dt);
     this.escape = Math.max(0, this.escape - dt);
+    this.turnWait = Math.max(0, this.turnWait - dt);
     const q = car.model.root.quaternion;
     _fwd.set(0, 0, -1).applyQuaternion(q);
     _up.set(0, 1, 0).applyQuaternion(q);
@@ -335,15 +424,50 @@ export class AiDriver {
     this.routeTimer -= dt;
     if (this.routeTimer <= 0) {
       this.routeTimer = AI.routeEvery;
+      this.hidden.clear();
+      for (const o of others) {
+        const d = Math.hypot(o.x - pos.x, o.z - pos.z);
+        if (d < AI.companyRange && d >= AI.personalSpace && !this.inSightOf(pos, o.x, o.z)) this.hidden.add(o);
+      }
       const trees = this.obstacles.treesWithin(pos.x, pos.z, AI.forestRadius);
       this.treeCap = this.treeLimit(pos, car.velocity, trees);
       this.forest = trees >= (this.forest ? AI.forestExit : AI.forestEnter);
       if (this.forest) {
         this.cairn = null;
-        this.seekOpen(pos);
+        this.path = this.woods.plan(pos.x, pos.z, AI.forestTreeClearance);
+        this.pathAt = 0;
+        if (this.debug) {
+          const squares: AiDebug['squares'] = [];
+          this.woods.forEachSquare((x, z, blocked) => squares.push({ x, z, blocked }));
+          this.debug.squares = squares;
+          this.debug.plans++;
+        }
+        if (this.path) this.hazardAt = Infinity;
+        else this.seekOpen(pos);
       } else {
+        this.path = null;
         this.pickCairn(pos);
         this.planRoute(pos);
+      }
+    }
+
+    // In the wood with a way out: follow it, first backing and turning to face it if it lies behind.
+    const way = this.forest && this.path ? this.followPath(pos) : null;
+    const behind = way !== null && Math.abs(wrapAngle(way.yaw - carYaw)) > AI.pathBehind;
+    // Swinging round at speed would throw it into the trunks: straight on, braking, first.
+    if (behind && Math.abs(speed) > AI.pathTurnSpeed) {
+      this.madeProgress(pos);
+      return { input: { ...idle, brake: speed > 0 ? 1 : 0, throttle: speed < 0 ? 1 : 0 }, reset: false };
+    }
+    if (behind && this.turnWait <= 0) {
+      this.turnWait = AI.pathTurnEvery;
+      this.routeYaw = way.yaw;
+      const plan = this.planEscape(car, pos, carYaw, AI.maxBack, AI.exitPath);
+      if (plan) {
+        this.manoeuvre = plan;
+        this.replanned = 0;
+        const decision = this.loosen(0, car, pos, carYaw);
+        if (decision) return decision;
       }
     }
 
@@ -355,13 +479,19 @@ export class AiDriver {
     const candidates = forest ? AI.forestCandidates : AI.candidates;
     const spread = this.escape > 0 ? AI.escapeSpread : forest ? AI.forestSpread : AI.spread;
     const costTree = forest ? AI.costForestTree : AI.costTree;
-    let bestYaw = this.routeYaw;
+    let bestYaw = way ? way.yaw : this.routeYaw;
     let bestCost = Infinity;
     let bestTreeDist = Infinity;
-    for (let i = 0; i < candidates; i++) {
+    const debug = this.debug;
+    if (debug) {
+      debug.fan.length = 0;
+      debug.look = look;
+    }
+    for (let i = 0; i < (way ? 0 : candidates); i++) {
       const off = -spread + (2 * spread * i) / (candidates - 1);
       const yaw = wrapAngle(this.routeYaw + off);
       const treeDist = this.firstTree(pos, yaw, look, step, clearance);
+      debug?.fan.push({ yaw, clear: Math.min(treeDist, look) });
       const cost =
         Math.abs(off) * AI.costOffRoute +
         Math.abs(wrapAngle(yaw - carYaw)) * AI.costTurn +
@@ -374,7 +504,18 @@ export class AiDriver {
         bestTreeDist = treeDist;
       }
     }
-    this.heading.set(-Math.sin(bestYaw), 0, -Math.cos(bestYaw));
+    if (debug) {
+      debug.chosen = bestYaw;
+      debug.route = this.routeYaw;
+      debug.reason = this.escape > 0 ? 'escaping, any way it can' : way ? 'path out of the woods' : forest ? 'to open ground' : this.routeReason;
+      debug.cairn = this.cairn && { x: this.cairn.x, z: this.cairn.z };
+      debug.company.length = 0;
+      for (const o of others) {
+        const d = Math.hypot(o.x - pos.x, o.z - pos.z);
+        if (d >= AI.companyRange || d < 0.1 || this.hidden.has(o)) continue;
+        debug.company.push({ x: o.x, z: o.z, pull: d < AI.personalSpace ? -(1 - d / AI.personalSpace) : 1 - d / AI.companyRange });
+      }
+    }
 
     const error = wrapAngle(bestYaw - carYaw);
     const steer = THREE.MathUtils.clamp(error * AI.steerGain, -1, 1);
@@ -385,8 +526,9 @@ export class AiDriver {
     const cautious = bestTreeDist < AI.cautionDistance && !hunting;
     let target = (cautious ? AI.cautiousSpeed : this.cruiseSpeed) * Math.pow(grip, AI.gripSpeed);
     if (this.hazardAt < AI.hazardDistance && !hunting) target *= AI.hazardSlow;
-    // Among many trees: slowly, creeping past a trunk close ahead.
-    if (forest) target = Math.min(target, bestTreeDist < AI.forestCaution ? AI.forestCreep : AI.forestSpeed * Math.pow(grip, AI.gripSpeed));
+    // Among many trees: slowly, creeping past a trunk close ahead or round a bend in its path.
+    const creep = way ? way.bend > AI.pathBend : bestTreeDist < AI.forestCaution;
+    if (forest) target = Math.min(target, creep ? AI.forestCreep : AI.forestSpeed * Math.pow(grip, AI.gripSpeed));
     // Trees about, here and ahead: slow enough to be down to their cap by the time it's there.
     else target = Math.min(target, this.treeCap);
     target *= 1 - Math.min(0.5, (Math.abs(error) * AI.cornerSlow) / grip);
@@ -453,6 +595,10 @@ export class AiDriver {
     const m = this.manoeuvre!;
     const A = AI;
     m.time += dt;
+    if (this.debug) {
+      this.debug.reason = m.phase === 'back' ? 'getting loose: backing' : 'getting loose: driving out';
+      this.debug.fan.length = 0;
+    }
     const idle: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false };
     const moved = pos.distanceTo(m.from);
     if (m.phase === 'back') {
@@ -464,10 +610,10 @@ export class AiDriver {
         return { input: { ...idle, brake: 1, steer: m.backSteer }, reset: false };
       }
       // Look over the ways out from where it actually ended up.
-      const out = this.bestOut(car, pos.x, pos.z, yaw);
+      const out = this.bestOut(car, pos.x, pos.z, yaw, m.routeWeight);
       if (!out || out.clear < A.minOut) {
         if (this.replanned++ < A.replans) {
-          const again = this.planEscape(car, pos, yaw, A.maxBackLater);
+          const again = this.planEscape(car, pos, yaw, A.maxBackLater, m.routeWeight);
           if (again) {
             this.manoeuvre = again;
             return this.loosen(0, car, pos, yaw);
@@ -505,13 +651,13 @@ export class AiDriver {
    * Plans a way loose from (pos, yaw): a reverse (or none) and the arc to drive out along. Each
    * reversing arc runs until its tail would touch a trunk; from points along it, the forward arcs
    * are looked over (see bestOut), and the best pair wins, shorter reverses preferred. Null if no
-   * way out runs clear far enough.
+   * way out runs clear far enough. `routeWeight`: how much heading the route's way counts (see bestOut).
    */
-  private planEscape(car: Car, pos: THREE.Vector3, yaw: number, maxBack: number): Manoeuvre | null {
+  private planEscape(car: Car, pos: THREE.Vector3, yaw: number, maxBack: number, routeWeight = AI.exitRoute): Manoeuvre | null {
     const A = AI;
     let best: { score: number; back: number; backSteer: number } | null = null;
     // Driving straight out, without reversing, if a way is open.
-    const direct = this.bestOut(car, pos.x, pos.z, yaw);
+    const direct = this.bestOut(car, pos.x, pos.z, yaw, routeWeight);
     if (direct && direct.clear >= A.minOut) best = { score: direct.score, back: 0, backSteer: 0 };
     for (const backSteer of A.backSteers) {
       const armed = this.armed(pos.x, pos.z, yaw);
@@ -522,7 +668,7 @@ export class AiDriver {
         if (this.footprintBlocked(pose.x, pose.z, pose.yaw, armed) || this.tooSteep(pose.x, pose.z, pose.yaw, -1)) break;
         if (Math.abs(d - A.backStops[stop]) > 1e-6) continue;
         stop++;
-        const out = this.bestOut(car, pose.x, pose.z, pose.yaw);
+        const out = this.bestOut(car, pose.x, pose.z, pose.yaw, routeWeight);
         if (out && out.clear >= A.minOut) {
           const score = out.score - A.costBack * d;
           if (!best || score > best.score) best = { score, back: d, backSteer };
@@ -531,15 +677,15 @@ export class AiDriver {
       }
     }
     if (!best) return null;
-    return { phase: 'back', back: best.back, backSteer: best.backSteer, outSteer: 0, exitYaw: yaw, out: 0, from: pos.clone(), time: 0 };
+    return { phase: 'back', back: best.back, backSteer: best.backSteer, outSteer: 0, exitYaw: yaw, out: 0, from: pos.clone(), time: 0, routeWeight };
   }
 
   /**
    * The best arc to drive off along from (x, z, yaw): each of AI.outSteers held until it has
    * turned AI.outTurn, then straight, as far as it runs clear (up to AI.outLength). It scores that
-   * run, how well it ends up heading the route's way, and none toward the shunned heading.
+   * run, how well it ends up heading the route's way (× `routeWeight`), and none toward the shunned heading.
    */
-  private bestOut(car: Car, x: number, z: number, yaw: number): { steer: number; clear: number; exitYaw: number; score: number } | null {
+  private bestOut(car: Car, x: number, z: number, yaw: number, routeWeight: number): { steer: number; clear: number; exitYaw: number; score: number } | null {
     const A = AI;
     let best: { steer: number; clear: number; exitYaw: number; score: number } | null = null;
     for (const steer of A.outSteers) {
@@ -551,7 +697,7 @@ export class AiDriver {
         if (this.footprintBlocked(pose.x, pose.z, pose.yaw, armed) || this.tooSteep(pose.x, pose.z, pose.yaw, 1)) break;
         clear = d;
       }
-      const score = clear + A.exitRoute * Math.cos(wrapAngle(pose.yaw - this.routeYaw)) - this.tabooCost(pose.yaw);
+      const score = clear + routeWeight * Math.cos(wrapAngle(pose.yaw - this.routeYaw)) - this.tabooCost(pose.yaw);
       if (!best || score > best.score) best = { steer, clear, exitYaw: pose.yaw, score };
     }
     return best;
@@ -604,14 +750,15 @@ export class AiDriver {
     this.sinceProgress = 0;
   }
 
-  /** Keeps the cairn it's going for, or looks for a new one ahead. */
+  /** Keeps the cairn it's going for while it's in sight, or looks for a new one ahead in sight (see AI.goalSight). */
   private pickCairn(pos: THREE.Vector3): void {
     const A = AI;
     const landmarks = this.field.landmarks;
     if (this.cairn) {
       this.cairnTime += A.routeEvery;
       const passed = this.cairn.z > pos.z + A.cairnPassed;
-      if (!landmarks.standing(this.cairn) || passed || this.cairnTime > A.cairnGiveUp) this.cairn = null;
+      const hidden = !this.inSightOf(pos, this.cairn.x, this.cairn.z, this.cairn);
+      if (!landmarks.standing(this.cairn) || passed || hidden || this.cairnTime > A.cairnGiveUp) this.cairn = null;
       return;
     }
     const [near, far] = A.cairnRange;
@@ -623,6 +770,7 @@ export class AiDriver {
       const d = Math.hypot(dx, dz);
       if (d < near || d > far || d >= bestDist) continue;
       if (Math.abs(Math.atan2(-dx, -dz)) > A.cairnCone) continue;
+      if (!this.inSightOf(pos, v.x, v.z, v)) continue;
       best = v;
       bestDist = d;
     }
@@ -646,9 +794,11 @@ export class AiDriver {
     const yaws = Array.from({ length: A.routeCandidates }, (_, i) => -spread + (2 * spread * i) / (A.routeCandidates - 1));
     yaws.push(this.routeYaw);
     if (cairn) yaws.push(cairnYaw);
+    const parts: PathParts[] = [];
     for (let i = 0; i < yaws.length; i++) {
       const yaw = yaws[i];
-      const { cost: path, hazard } = this.pathCost(pos, yaw, Math.min(A.routeRange, cairnDist));
+      const { cost: path, hazard, parts: through } = this.pathCost(pos, yaw, Math.min(A.routeRange, cairnDist));
+      parts.push(through);
       let cost = path + this.tabooCost(yaw);
       cost += Math.abs(yaw) * A.costRouteOff * (cairn ? A.cairnDownhill : 1);
       if (cairn) cost += Math.abs(wrapAngle(yaw - cairnYaw)) * A.costCairn;
@@ -666,17 +816,42 @@ export class AiDriver {
       this.routeYaw = best;
       this.hazardAt = bestHazard;
     } else this.hazardAt = currentHazard;
+    if (this.debug) this.routeReason = this.reasonFor(yaws, parts);
+  }
+
+  /**
+   * Why the route goes the way it does (see RouteReason): what costs straight downhill (the
+   * candidate nearest it) more than the route's own heading, by the most.
+   */
+  private reasonFor(yaws: readonly number[], parts: readonly PathParts[]): RouteReason {
+    if (this.cairn) return 'cairn';
+    if (Math.abs(this.routeYaw) < 0.15) return 'downhill';
+    const nearest = (target: number) => {
+      let best = 0;
+      for (let i = 1; i < yaws.length; i++) if (Math.abs(wrapAngle(yaws[i] - target)) < Math.abs(wrapAngle(yaws[best] - target))) best = i;
+      return best;
+    };
+    const down = parts[nearest(0)];
+    const route = parts[nearest(this.routeYaw)];
+    const extra: [RouteReason, number][] = [
+      ['round the trees', down.trees - route.trees],
+      ['off rock', down.rock - route.rock],
+      ['off side slope', down.tilt - route.tilt],
+      ['away from where it got stuck', this.tabooCost(0) - this.tabooCost(this.routeYaw)],
+    ];
+    extra.sort((a, b) => b[1] - a[1]);
+    return extra[0][1] > 0 ? extra[0][0] : 'keeping its route';
   }
 
   /**
    * What heading `yaw` runs through out to `range` m (nearer counts more): forest, bare rock face
    * and side slopes that tip the car; and how far along the first rock face or tipping slope is.
    */
-  private pathCost(from: THREE.Vector3, yaw: number, range: number): { cost: number; hazard: number } {
+  private pathCost(from: THREE.Vector3, yaw: number, range: number): { cost: number; hazard: number; parts: PathParts } {
     const A = AI;
     const dx = -Math.sin(yaw);
     const dz = -Math.cos(yaw);
-    let sum = 0;
+    const parts: PathParts = { trees: 0, rock: 0, tilt: 0 };
     let weights = 0;
     let hazard = Infinity;
     for (let d = A.routeStep; d <= range; d += A.routeStep) {
@@ -692,10 +867,17 @@ export class AiDriver {
       const rock = 1 - THREE.MathUtils.smoothstep(n.y, A.rockFull, A.rockFrom);
       if ((rock > 0.5 || tilt > 0.5) && hazard === Infinity) hazard = d;
       const w = 1 - (0.5 * d) / A.routeRange;
-      sum += w * ((trees / 3) * A.costRouteTrees + rock * A.costRouteRock + tilt * A.costRouteTilt);
+      parts.trees += w * (trees / 3) * A.costRouteTrees;
+      parts.rock += w * rock * A.costRouteRock;
+      parts.tilt += w * tilt * A.costRouteTilt;
       weights += w;
     }
-    return { cost: weights > 0 ? sum / weights : 0, hazard };
+    if (weights > 0) {
+      parts.trees /= weights;
+      parts.rock /= weights;
+      parts.tilt /= weights;
+    }
+    return { cost: parts.trees + parts.rock + parts.tilt, hazard, parts };
   }
 
   /** The heading round the car with the longest clear run, leaning toward its route: where a reset faces. */
@@ -724,14 +906,14 @@ export class AiDriver {
     return off < this.tabooWidth ? (1 - off / this.tabooWidth) * AI.costTaboo : 0;
   }
 
-  /** Yaw toward each nearby car and how strongly it pulls (+) or pushes (−). */
+  /** Yaw toward each nearby car and how strongly it pulls (+) or pushes (−); cars out of sight for trees don't pull. */
   private companyBearings(from: THREE.Vector3, others: readonly THREE.Vector3[]): { yaw: number; pull: number }[] {
     const out: { yaw: number; pull: number }[] = [];
     for (const o of others) {
       const dx = o.x - from.x;
       const dz = o.z - from.z;
       const d = Math.hypot(dx, dz);
-      if (d >= AI.companyRange || d < 0.1) continue;
+      if (d >= AI.companyRange || d < 0.1 || this.hidden.has(o)) continue;
       const pull = d < AI.personalSpace ? -(1 - d / AI.personalSpace) : 1 - d / AI.companyRange;
       out.push({ yaw: Math.atan2(-dx, -dz), pull });
     }
@@ -743,6 +925,19 @@ export class AiDriver {
     let cost = 0;
     for (const c of company) cost += (Math.abs(wrapAngle(yaw - c.yaw)) / Math.PI) * c.pull * AI.costCompany;
     return cost;
+  }
+
+  /**
+   * Whether no trunk or boulder comes within AI.goalSight m of the straight way from `from` to
+   * (x, z), short of its last couple of m (the cairn `except` doesn't count).
+   */
+  private inSightOf(from: THREE.Vector3, x: number, z: number, except?: Varde): boolean {
+    const dist = Math.hypot(x - from.x, z - from.z);
+    for (let d = AI.sampleStep; d < dist - 2; d += AI.sampleStep) {
+      const t = d / dist;
+      if (this.obstacles.blocking(from.x + (x - from.x) * t, from.z + (z - from.z) * t, AI.goalSight, except)) return false;
+    }
+    return true;
   }
 
   /**
@@ -776,6 +971,48 @@ export class AiDriver {
       if (at < Infinity) limit = Math.min(limit, Math.sqrt(at * at + 2 * A.woodsBrake * d));
     }
     return limit;
+  }
+
+  /**
+   * Where to steer along the path out of the wood: the yaw to the furthest point of it within
+   * AI.pathLook m that it can see past the trunks, and how sharply the path bends after that point
+   * (rad). Null once it has come to the path's end.
+   */
+  private followPath(pos: THREE.Vector3): { yaw: number; bend: number } | null {
+    const A = AI;
+    const path = this.path!;
+    // The point nearest the car, from the last one on: it moves along the path.
+    let near = this.pathAt;
+    let nearDist = Infinity;
+    for (let i = this.pathAt; i < Math.min(path.length, this.pathAt + (4 * A.pathLook) / WOODS.cell); i++) {
+      const d = Math.hypot(path[i].x - pos.x, path[i].z - pos.z);
+      if (d < nearDist) {
+        nearDist = d;
+        near = i;
+      }
+    }
+    this.pathAt = near;
+    if (near >= path.length - 1) return null;
+    let aim = near + 1;
+    for (let i = near + 1; i < path.length; i++) {
+      const d = Math.hypot(path[i].x - pos.x, path[i].z - pos.z);
+      if (d > A.pathLook) break;
+      if (this.inSight(pos, path[i], d)) aim = i;
+    }
+    const to = path[aim];
+    const yaw = Math.atan2(-(to.x - pos.x), -(to.z - pos.z));
+    const on = path[Math.min(path.length - 1, aim + Math.round(A.pathBendLook / WOODS.cell))];
+    const bend = on === to ? 0 : Math.abs(wrapAngle(Math.atan2(-(on.x - to.x), -(on.z - to.z)) - yaw));
+    return { yaw, bend };
+  }
+
+  /** Whether the straight way from `from` to `to`, `dist` m off, keeps AI.pathSight m off every trunk (from 1 m out). */
+  private inSight(from: THREE.Vector3, to: PathPoint, dist: number): boolean {
+    for (let d = 1; d < dist; d += 0.5) {
+      const t = d / dist;
+      if (this.obstacles.blocking(from.x + (to.x - from.x) * t, from.z + (to.z - from.z) * t, AI.pathSight)) return false;
+    }
+    return true;
   }
 
   /** Whether (x, z) is open ground: no trunk within AI.openRadius of it. */
