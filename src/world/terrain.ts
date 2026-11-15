@@ -145,7 +145,7 @@ export class Terrain {
    * never while holding one of them.
    */
   imprint(rock: Rock, shape: RockShape, ground: BedGround): void {
-    const m = this.imprints.add(rock, shape, ground);
+    const m = this.imprints.add(rock, shape, ground, (x, z) => meshHeight(this.field, x, z));
     for (let cz = Math.floor((rock.z - m.reach) / CHUNK_SIZE); cz <= Math.floor((rock.z + m.reach) / CHUNK_SIZE); cz++) {
       for (let cx = Math.floor((rock.x - m.reach) / CHUNK_SIZE); cx <= Math.floor((rock.x + m.reach) / CHUNK_SIZE); cx++) {
         const k = key(cx, cz);
@@ -160,9 +160,8 @@ export class Terrain {
 
   /** The drawn ground's height at (x, z), imprints included (see meshHeight), for things laid on it. */
   surfaceHeight(x: number, z: number): number {
-    const ground = meshHeight(this.field, x, z);
-    let h = ground;
-    for (const m of this.imprints.within(x, z, 0)) h += m.offset(x, z, ground);
+    let h = meshHeight(this.field, x, z);
+    for (const m of this.imprints.within(x, z, 0)) h += m.offset(x, z);
     return h;
   }
 
@@ -215,6 +214,8 @@ export class Terrain {
     const cells = this.imprintCells(x0, z0, step);
     const points: number[] = Array.from(verts);
     const offsets: number[] = new Array(n * n).fill(0);
+    /** How far inside a hollow's rim each point lies (m; negative outside: see Imprint.rimSide). */
+    const rims: number[] = new Array(n * n).fill(-1);
     const faces: number[] = [];
     const coarse: number[] = [];
     /** Finer faces in a cell with a hollow in rock. */
@@ -234,7 +235,7 @@ export class Terrain {
         const imprints = cells.get(j * CHUNK_RES + i);
         if (imprints) {
           const first = faces.length / 3;
-          addImprintCell(imprints, bc, [a, b, c, d], t, x0 + i * step, z0 + j * step, step, env.heights, points, offsets, faces, coarse);
+          addImprintCell(imprints, bc, [a, b, c, d], t, x0 + i * step, z0 + j * step, step, env.heights, points, offsets, rims, faces, coarse);
           // Hollows in rock stay rock-coloured (see IMPRINT.rockShade).
           if (imprints.some((m) => m.ground === 'rock')) for (let k = first; k < faces.length / 3; k++) inRock.add(k);
           for (let k = first; k < faces.length / 3; k++) faceImprints.set(k, imprints);
@@ -294,24 +295,18 @@ export class Terrain {
       }
       col.copy(ground);
       // Imprints: bare soil in the hollow (darker deeper), or darker rock in rock. A face is in the
-      // hollow, and shaded, by the depth at its centre, measured against the boulder's shape (by its
-      // corners' average instead, long faces with one corner inside the rim reached far out past it);
-      // a face sloping down into it (any corner pushed down) is its wall, bare soil too.
+      // hollow by its corners lying inside the rim, and shaded by their depth; faces the rim ran
+      // through were cut along it (see rimCutter), so they lie wholly on one side of it.
       const over = faceImprints.get(f / 3);
       let moved = 0;
-      let wall = false;
+      let hollow = false;
       if (over) {
-        wall = Math.min(offsets[indices[f]], offsets[indices[f + 1]], offsets[indices[f + 2]]) < -0.01;
-        const ia = indices[f] * 3, ib = indices[f + 1] * 3, ic = indices[f + 2] * 3;
-        const x = (vertices[ia] + vertices[ib] + vertices[ic]) / 3;
-        const z = (vertices[ia + 2] + vertices[ib + 2] + vertices[ic + 2]) / 3;
-        // The ground there before the imprint: the corners' heights less how far they were moved.
-        const before = (vertices[ia + 1] + vertices[ib + 1] + vertices[ic + 1] - offsets[indices[f]] - offsets[indices[f + 1]] - offsets[indices[f + 2]]) / 3;
-        for (const m of over) moved += m.offset(x, z, before);
+        moved = (offsets[indices[f]] + offsets[indices[f + 1]] + offsets[indices[f + 2]]) / 3;
+        hollow = rims[indices[f]] + rims[indices[f + 1]] + rims[indices[f + 2]] > 0;
       }
-      if ((moved < -0.01 || wall) && inRock.has(f / 3)) {
+      if (hollow && inRock.has(f / 3)) {
         col.multiplyScalar(IMPRINT.rockShade + (IMPRINT.rockDeep - IMPRINT.rockShade) * Math.min(1, -moved / 0.25));
-      } else if (moved < -0.01 || wall) {
+      } else if (hollow) {
         col.copy(IMPRINT.soil).lerp(IMPRINT.soilDark, Math.min(1, -moved / 0.25));
       }
 
@@ -428,6 +423,7 @@ function addImprintCell(
   heights: Float32Array,
   points: number[],
   offsets: number[],
+  rims: number[],
   faces: number[],
   coarse: number[],
 ): void {
@@ -439,9 +435,14 @@ function addImprintCell(
       const z = cellZ + (sj / N) * step;
       const ground = planeHeight(bc, heights[a], heights[b], heights[c], heights[d], si / N, sj / N);
       let moved = 0;
-      for (const m of imprints) moved += m.offset(x, z, ground);
+      let rim = -Infinity;
+      for (const m of imprints) {
+        moved += m.offset(x, z);
+        rim = Math.max(rim, m.rimSide(x, z));
+      }
       points.push(x, ground + moved, z);
       offsets.push(moved);
+      rims.push(rim);
     }
   }
   const at = (si: number, sj: number) => base + sj * (N + 1) + si;
@@ -451,6 +452,7 @@ function addImprintCell(
     const tz = tz3 / (3 * N);
     return (bc ? tx + tz <= 1 : tz >= tx) ? t : t + 1;
   };
+  const cut = rimCutter(points, offsets, rims);
   for (let sj = 0; sj < N; sj++) {
     for (let si = 0; si < N; si++) {
       const A = at(si, sj);
@@ -458,12 +460,53 @@ function addImprintCell(
       const C = at(si + 1, sj);
       const D = at(si + 1, sj + 1);
       if (bc) {
-        faces.push(A, B, C, C, B, D);
-        coarse.push(side(3 * si + 1, 3 * sj + 1), side(3 * si + 2, 3 * sj + 2));
+        cut(A, B, C, side(3 * si + 1, 3 * sj + 1), faces, coarse);
+        cut(C, B, D, side(3 * si + 2, 3 * sj + 2), faces, coarse);
       } else {
-        faces.push(A, B, D, A, D, C);
-        coarse.push(side(3 * si + 1, 3 * sj + 2), side(3 * si + 2, 3 * sj + 1));
+        cut(A, B, D, side(3 * si + 1, 3 * sj + 2), faces, coarse);
+        cut(A, D, C, side(3 * si + 2, 3 * sj + 1), faces, coarse);
       }
     }
   }
+}
+
+/**
+ * Adds faces to a cell's mesh, cutting each that a hollow's rim (see Imprint.rimSide) runs through
+ * along it: the rim then follows the boulder's outline, not the grid. The point where the rim
+ * crosses a side is found along it from its ends' distances inside, so the face on the side's other
+ * side (in this cell or the next) cuts it at the same point and they still meet. It lies on the
+ * ground as it was (the rim is where the hollow starts).
+ */
+function rimCutter(points: number[], offsets: number[], rims: number[]) {
+  const crossings = new Map<number, number>();
+  const crossing = (p: number, q: number): number => {
+    const key = p < q ? p * 1e7 + q : q * 1e7 + p;
+    const known = crossings.get(key);
+    if (known !== undefined) return known;
+    const s = rims[p] / (rims[p] - rims[q]);
+    const v = points.length / 3;
+    const lerp = (k: number) => points[p * 3 + k] + (points[q * 3 + k] - points[p * 3 + k]) * s;
+    const groundY = points[p * 3 + 1] - offsets[p] + (points[q * 3 + 1] - offsets[q] - points[p * 3 + 1] + offsets[p]) * s;
+    points.push(lerp(0), groundY, lerp(2));
+    offsets.push(0);
+    rims.push(0);
+    crossings.set(key, v);
+    return v;
+  };
+  return (p: number, q: number, r: number, side: number, faces: number[], coarse: number[]): void => {
+    const ins = [p, q, r].map((v) => rims[v] > 0);
+    const count = ins.filter(Boolean).length;
+    if (count === 0 || count === 3) {
+      faces.push(p, q, r);
+      coarse.push(side);
+      return;
+    }
+    // The corner on its own side of the rim first, keeping the winding.
+    const lone = ins.findIndex((v) => v === (count === 1));
+    const [u, v, w] = lone === 0 ? [p, q, r] : lone === 1 ? [q, r, p] : [r, p, q];
+    const uv = crossing(u, v);
+    const uw = crossing(u, w);
+    faces.push(u, uv, uw, uv, v, w, uv, w, uw);
+    coarse.push(side, side, side);
+  };
 }
