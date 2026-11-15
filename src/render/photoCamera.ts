@@ -66,6 +66,12 @@ const PHOTO = {
    * radian swung (1: ground rising up to ≈45° across the swing); steeper, it stops.
    */
   slideSteepest: 1,
+  /**
+   * Looking at the car (see PhotoLock): while it moves faster than `centreFrom` m/s, the camera
+   * brings it in toward the middle of the frame, about two thirds of the way in `centreTime` s.
+   */
+  centreFrom: 0.5,
+  centreTime: 1.2,
 };
 
 const UP = new THREE.Vector3(0, 1, 0);
@@ -95,6 +101,17 @@ interface Move {
 }
 
 const still = (): Move => ({ yaw: 0, pitch: 0, across: 0, over: 0, right: 0, up: 0, forward: 0, ahead: 0, zoom: 0 });
+
+/**
+ * What the camera keeps to (keys 1, 2, 3 in photo mode):
+ * - `free`: stays where it's left.
+ * - `look`: stands where it is and turns to keep the car where it is in the frame, bringing it in
+ *   to the middle as it moves.
+ * - `follow`: moves with the car, keeping its distance and direction to it (and so the frame).
+ * Locked (look or follow), a drag orbits the car and scrolling moves toward it; whatever the mouse
+ * and keys change is kept to from then on.
+ */
+export type PhotoLock = 'free' | 'look' | 'follow';
 
 /**
  * Photo mode's free camera, used while paused: it takes over from wherever the camera is, orbits
@@ -134,6 +151,14 @@ export class PhotoCamera {
    */
   noTurning = false;
   private readonly step = still();
+  /** What the camera keeps to (see PhotoLock). */
+  lock: PhotoLock = 'free';
+  /** Locked: where the car lies in the view (as a look's yaw and pitch, rad), and the camera's offset from it (m). */
+  private aimYaw = 0;
+  private aimPitch = 0;
+  private readonly offset = new THREE.Vector3();
+  /** Where the car was last frame, for how fast it moves. */
+  private readonly lastSubject = new THREE.Vector3();
 
   /**
    * @param surfaceAt the first surface under a screen point, or null for open sky (see Stage.surfaceAt)
@@ -155,6 +180,13 @@ export class PhotoCamera {
     this.grabHeight = this.pointer.height;
     this.pending = still();
     this.dollyAt.set(Infinity, Infinity, Infinity);
+    this.lock = 'free';
+  }
+
+  /** Keeps the camera to the car from here on as `lock` says, starting from the shot as it is. */
+  setLock(lock: PhotoLock, subject: THREE.Vector3): void {
+    this.lock = lock;
+    this.keep(subject);
   }
 
   /** Puts the field of view back. */
@@ -175,6 +207,20 @@ export class PhotoCamera {
     const P = PHOTO;
     const cam = this.camera;
     const input = this.pointer.take(dt);
+    // Keep to the car where it has gone since: carried along with it, or turned to it.
+    const locked = this.lock !== 'free';
+    // Lifted clear of the ground first, so the turn to the car makes up for it.
+    if (this.lock === 'follow') {
+      cam.position.copy(subject).add(this.offset);
+      this.keepAboveGround();
+    }
+    if (this.lock === 'look' && dt > 0 && subject.distanceTo(this.lastSubject) / dt > P.centreFrom) {
+      const share = 1 - Math.exp(-dt / P.centreTime);
+      this.aimYaw -= this.aimYaw * share;
+      this.aimPitch -= this.aimPitch * share;
+    }
+    this.lastSubject.copy(subject);
+    if (locked) this.aim(subject);
     // New grabs, of the scene as it stood when the mouse went down: how deep a pan grabbed, and the
     // point an orbit turns round (open sky: as far off as the car, along the mouse's ray).
     if (input.grab || input.dragGrab) cam.getWorldDirection(_forward);
@@ -187,7 +233,9 @@ export class PhotoCamera {
       this.grabDepth = THREE.MathUtils.clamp(depth, P.grabNearest, Math.max(P.grabFarthest, subjectDistance));
       this.grabHeight = panGrab.height;
     }
-    if (input.dragGrab) {
+    // Locked, every orbit turns round the car, wherever it has got to.
+    if (locked) this.orbitAt.copy(subject);
+    else if (input.dragGrab) {
       if (!this.surfaceAt(input.dragGrab.ndc, this.orbitAt)) {
         _ray.setFromCamera(input.dragGrab.ndc, cam);
         _ray.ray.at(subjectDistance, this.orbitAt);
@@ -224,7 +272,9 @@ export class PhotoCamera {
     if (input.scrollAt) {
       _hit.copy(this.dollyAt).project(cam);
       const under = _hit.z < 1 && Math.hypot(_hit.x - input.scrollAt.x, _hit.y - input.scrollAt.y) < P.dollyStillUnder;
-      if (!under) {
+      // Locked, scrolling moves toward the car.
+      if (locked) this.dollyAt.copy(subject);
+      else if (!under) {
         if (!this.surfaceAt(input.scrollAt, this.dollyAt)) {
           _ray.setFromCamera(input.scrollAt, cam);
           _ray.ray.at(subjectDistance, this.dollyAt);
@@ -255,6 +305,37 @@ export class PhotoCamera {
     this.fov = THREE.MathUtils.clamp(this.fov * Math.exp(d.zoom), P.fovMin, P.fovMax);
     this.keepAboveGround();
     this.place();
+    // Moved by hand: that's the shot to keep from now on. (Not otherwise, so the frame doesn't
+    // creep with what aim leaves over, and the ground lifting the camera clear doesn't stick.)
+    if (locked && Object.values(d).some((v) => v !== 0)) this.keep(subject);
+  }
+
+  /** Locked: takes the shot as it now is as the one to keep (where the car lies in it, and the offset). */
+  private keep(subject: THREE.Vector3): void {
+    this.place();
+    this.offset.subVectors(this.camera.position, subject);
+    [this.aimYaw, this.aimPitch] = this.lookOf(subject);
+  }
+
+  /**
+   * Turns the camera so `subject` lies where it's kept in the view (aimYaw, aimPitch). Turning
+   * about the vertical isn't quite turning about the view's own up when it's tilted, so it closes
+   * in over a few steps.
+   */
+  private aim(subject: THREE.Vector3): void {
+    for (let i = 0; i < 4; i++) {
+      this.place();
+      const [yaw, pitch] = this.lookOf(subject);
+      this.yaw += yaw - this.aimYaw;
+      this.pitch = THREE.MathUtils.clamp(this.pitch + pitch - this.aimPitch, -PHOTO.pitchMax, PHOTO.pitchMax);
+    }
+    this.place();
+  }
+
+  /** Where `point` lies in the view, as the yaw and pitch (rad) of the camera's own look at it. */
+  private lookOf(point: THREE.Vector3): [number, number] {
+    const v = this.camera.worldToLocal(_point.copy(point)).normalize();
+    return [Math.atan2(-v.x, -v.z), Math.asin(THREE.MathUtils.clamp(v.y, -1, 1))];
   }
 
   /** Lifts the camera clear of the ground, unless it may go under (see groundAt). */

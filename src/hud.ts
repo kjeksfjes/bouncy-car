@@ -146,6 +146,11 @@ export class Hud {
     this.paused.classList.toggle('visible', paused);
   }
 
+  /** Lights up the photo camera's mode on its card (see PhotoLock). */
+  setPhotoLock(lock: string): void {
+    for (const row of this.legend.querySelectorAll<HTMLElement>('[data-lock]')) row.classList.toggle('active', row.dataset.lock === lock);
+  }
+
   /** Photo mode hides all the UI but its controls (and an error report). */
   setPhotoMode(on: boolean): void {
     document.getElementById('hud')!.classList.toggle('photo', on);

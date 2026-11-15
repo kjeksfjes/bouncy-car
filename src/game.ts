@@ -272,6 +272,13 @@ export class Game {
     if (this.devMode && this.input.consume('KeyE') && !this.input.startsTyping(DEV_WORD)) {
       this.hud.toast(this.audio.toggleEngines() ? 'ENGINES OFF' : 'ENGINES ON');
     }
+    // Photo mode: 1, 2 and 3 set what the camera keeps to (see PhotoLock).
+    const lock = this.input.consume('Digit1') ? 'free' : this.input.consume('Digit2') ? 'look' : this.input.consume('Digit3') ? 'follow' : null;
+    if (lock && this.photoMode && lock !== this.photo.lock) {
+      this.photo.setLock(lock, this.car.position);
+      this.hud.setPhotoLock(lock);
+      this.hud.toast(lock === 'free' ? 'FREE CAMERA' : lock === 'look' ? 'LOOKING AT THE CAR' : 'FOLLOWING THE CAR');
+    }
     // C cycles the cameras; in photo mode it goes back to the one you had.
     if (this.input.consume('KeyC')) {
       if (this.photoMode) this.setPhotoMode(false);
@@ -468,6 +475,7 @@ export class Game {
       return;
     }
     this.photo.begin();
+    this.hud.setPhotoLock(this.photo.lock);
   }
 
   /** Dev mode on, or off and the game back as it plays: no inspection, map or silenced engines. */

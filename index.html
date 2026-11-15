@@ -23,6 +23,7 @@
       #hud.photo > :not(#error) { display: none; }
       #hud.photo > #slow.visible.flash { display: block; }
       #hud.photo > #legend { display: block; }
+      #hud.photo > #toast { display: block; }
       .panel {
         position: absolute; right: 16px; bottom: 16px; min-width: 200px; padding: 12px 14px;
         border-radius: 10px; background: var(--panel);
@@ -105,6 +106,9 @@
       .legend .how-to { display: flex; align-items: center; gap: 4px; color: rgb(255 255 255 / 0.6); white-space: nowrap; }
       .legend .how-to .or { margin: 0 3px; font-size: 12px; color: rgb(255 255 255 / 0.45); }
       .legend .aside { display: flex; align-items: center; gap: 4px; font-size: 12px; color: rgb(255 255 255 / 0.45); white-space: nowrap; }
+      /* One of a few modes (photo mode's camera): the others dimmed, the one that's on lit up behind. */
+      .legend .actions li[data-lock] { margin: 0 -6px; padding: 1px 6px; border-radius: 6px; color: rgb(255 255 255 / 0.6); }
+      .legend .actions li[data-lock].active { color: #fff; background: rgb(255 255 255 / 0.14); }
       /* A variant of the action above it (another key for more of the same), indented under it behind an elbow. */
       .legend .actions .sub { padding-left: 5px; color: rgb(255 255 255 / 0.6); }
       .legend .actions .sub kbd { color: rgb(255 255 255 / 0.65); background: rgb(255 255 255 / 0.06); border-color: rgb(255 255 255 / 0.11); }
@@ -220,6 +224,12 @@
           <li>Pan<span class="how-to"><kbd data-key="shift">⇧</kbd> Drag<span class="or">or</span><kbd>←</kbd><kbd>→</kbd></span></li>
           <li>Forward and back<span class="how-to">Scroll<span class="or">or</span><kbd>↑</kbd><kbd>↓</kbd></span></li>
           <li>Zoom the lens<span class="how-to"><kbd data-key="shift">⇧</kbd> Scroll</span></li>
+        </ul>
+        <hr />
+        <ul class="actions">
+          <li data-lock="free">Free camera<span class="how-to"><kbd>1</kbd></span></li>
+          <li data-lock="look">Look at the car<span class="how-to"><kbd>2</kbd></span></li>
+          <li data-lock="follow">Follow the car<span class="how-to"><kbd>3</kbd></span></li>
         </ul>
         <div class="feature keys">
           <kbd>Esc</kbd><strong>Play and pause</strong>
