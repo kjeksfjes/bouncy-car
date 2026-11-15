@@ -224,12 +224,18 @@ const AI = {
   /** Upside down / on its side for this long → reset. */
   flippedTime: 1.5,
   /**
-   * Broken (engine dead, or `brokenWheelsLost` wheels gone) and lying still (slower than
-   * `stillSpeed` m/s) for `brokenTime` s: ask for a new car.
+   * Engine dead and lying still (slower than `stillSpeed` m/s) for `brokenTime` s: ask for a new car.
    */
-  brokenWheelsLost: 2,
   stillSpeed: 1.5,
   brokenTime: 5,
+  /**
+   * Limping on lost wheels: with n gone, `limp[n − 1]` (the last entry for more). `after` s from
+   * losing the latest, it asks for a new car as soon as it's slower than `speed` m/s; going well, it limps on.
+   */
+  limp: [
+    { after: 15, speed: 5 },
+    { after: 5, speed: 8 },
+  ],
 };
 
 /**
@@ -280,7 +286,7 @@ export interface AiDecision {
    */
   reset: boolean;
   resetTo?: { x: number; z: number; yaw: number };
-  /** The car is wrecked and has come to rest: it wants a new one. */
+  /** The car is wrecked (come to rest with its engine dead, or limping too slowly on lost wheels): it wants a new one. */
   newCar?: boolean;
 }
 
@@ -351,8 +357,11 @@ export class AiDriver {
   private readonly hidden = new Set<THREE.Vector3>();
   /** What mainly sets the route's way, worked out only for the debug view. */
   private routeReason: RouteReason = 'downhill';
-  /** How long the car has lain broken and still (s). */
+  /** How long the car has lain with its engine dead and still (s). */
   private wrecked = 0;
+  /** How many wheels the car had lost when last looked, and how long since it lost the latest (s; see AI.limp). */
+  private wheelsLost = 0;
+  private limping = 0;
   /** In forest mode, the way out of the wood it's following (see AI.pathLook), and the point of it nearest the car. */
   private readonly woods: WoodsPlanner;
   private path: PathPoint[] | null = null;
@@ -391,10 +400,16 @@ export class AiDriver {
     const speed = car.forwardSpeed;
     const idle: CarInput = { throttle: 0, brake: 0, steer: 0, handbrake: false };
 
-    // Wrecked and come to rest: ask for a new car (a car that limps on isn't still, so it keeps trying).
-    const broken = !car.engineAlive || car.wheelsLost >= AI.brokenWheelsLost;
-    this.wrecked = broken && car.velocity.length() < AI.stillSpeed ? this.wrecked + dt : 0;
-    if (this.wrecked > AI.brokenTime) {
+    // Engine dead and come to rest: ask for a new car (one rolling on downhill isn't still, so it keeps going).
+    const moving = car.velocity.length();
+    this.wrecked = !car.engineAlive && moving < AI.stillSpeed ? this.wrecked + dt : 0;
+    // On lost wheels: a while to limp on, then a new car unless it's going well (see AI.limp).
+    if (car.wheelsLost !== this.wheelsLost) {
+      this.wheelsLost = car.wheelsLost;
+      this.limping = 0;
+    } else this.limping += dt;
+    const limp = this.wheelsLost > 0 ? AI.limp[Math.min(this.wheelsLost, AI.limp.length) - 1] : null;
+    if (this.wrecked > AI.brokenTime || (limp && this.limping > limp.after && moving < limp.speed)) {
       this.wrecked = 0;
       return { input: idle, reset: false, newCar: true };
     }
