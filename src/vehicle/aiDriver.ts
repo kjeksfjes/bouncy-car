@@ -665,8 +665,9 @@ export class AiDriver {
   /**
    * Plans a way loose from (pos, yaw): a reverse (or none) and the arc to drive out along. Each
    * reversing arc runs until its tail would touch a trunk; from points along it, the forward arcs
-   * are looked over (see bestOut), and the best pair wins, shorter reverses preferred. Null if no
-   * way out runs clear far enough. `routeWeight`: how much heading the route's way counts (see bestOut).
+   * are looked over (see bestOut), and the best pair wins, shorter reverses preferred. With its tail
+   * against a trunk it can't reverse at all (nor drive out forwards with its nose against one: see
+   * bestOut). Null if no way out runs clear far enough. `routeWeight`: how much heading the route's way counts (see bestOut).
    */
   private planEscape(car: Car, pos: THREE.Vector3, yaw: number, maxBack: number, routeWeight = AI.exitRoute): Manoeuvre | null {
     const A = AI;
@@ -674,7 +675,9 @@ export class AiDriver {
     // Driving straight out, without reversing, if a way is open.
     const direct = this.bestOut(car, pos.x, pos.z, yaw, routeWeight);
     if (direct && direct.clear >= A.minOut) best = { score: direct.score, back: 0, backSteer: 0 };
-    for (const backSteer of A.backSteers) {
+    const F = FOOTPRINT.circles;
+    const tailAgainst = circleBlocked(this.obstacles, pos.x, pos.z, yaw, F[F.length - 1]);
+    for (const backSteer of tailAgainst ? [] : A.backSteers) {
       const armed = this.armed(pos.x, pos.z, yaw);
       const pose = { x: pos.x, z: pos.z, yaw };
       let stop = 0;
@@ -698,10 +701,13 @@ export class AiDriver {
   /**
    * The best arc to drive off along from (x, z, yaw): each of AI.outSteers held until it has
    * turned AI.outTurn, then straight, as far as it runs clear (up to AI.outLength). It scores that
-   * run, how well it ends up heading the route's way (× `routeWeight`), and none toward the shunned heading.
+   * run, how well it ends up heading the route's way (× `routeWeight`), and none toward the shunned
+   * heading. Null with its nose against a trunk: pulling on would only push into it (the body's
+   * other circles may start against one, and count once they've come clear).
    */
   private bestOut(car: Car, x: number, z: number, yaw: number, routeWeight: number): { steer: number; clear: number; exitYaw: number; score: number } | null {
     const A = AI;
+    if (circleBlocked(this.obstacles, x, z, yaw, FOOTPRINT.circles[0])) return null;
     let best: { steer: number; clear: number; exitYaw: number; score: number } | null = null;
     for (const steer of A.outSteers) {
       const armed = this.armed(x, z, yaw);
