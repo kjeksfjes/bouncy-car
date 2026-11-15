@@ -4,13 +4,22 @@ import type { TerrainField } from './terrainField';
 
 /** Feel values for glass shards. Tuned for readability on snow, not realism (tempered glass is ~1 cm crumbs). */
 const SHARDS = {
-  capacity: 600,
+  capacity: 2000,
   /** Seconds a shard lives; the last `fadeTime` of it is spent shrinking away. */
   lifetime: 10,
   fadeTime: 1.5,
   /** Scale of the unit triangle (≈1 m across), so shards are 6–16 cm. */
   sizeMin: 0.06,
   sizeMax: 0.16,
+  /**
+   * Crumbs: with each shard `crumbs` small ones, `crumbSize` (min..max) across, that scatter
+   * wider and lose their speed sooner (× `crumbScatter`, × `crumbDrag`). They tumble fast and
+   * catch the sun like glitter.
+   */
+  crumbs: 3,
+  crumbSize: [0.015, 0.04] as const,
+  crumbScatter: 1.5,
+  crumbDrag: 1.8,
   /** Speed (m/s) thrown out from the pane, on top of the car's own velocity, plus random scatter. */
   eject: 3,
   scatter: 3,
@@ -40,6 +49,8 @@ interface Shard {
   spinAxis: THREE.Vector3;
   spin: number;
   size: number;
+  /** Air drag (1/s). */
+  drag: number;
   age: number;
   tint: THREE.Color;
 }
@@ -86,28 +97,40 @@ export class Shards {
   }
 
   /**
-   * Bursts shards from `points` (world space), carried along with `velocity` and
-   * thrown out along `outward` (unit vector away from the car body). `tint` defaults to window glass.
+   * Bursts shards, and crumbs with them, from `points` (world space), carried along with
+   * `velocity` and thrown out along `outward` (unit vector away from the car body). `tint`
+   * defaults to window glass.
    */
   burst(points: readonly THREE.Vector3[], velocity: THREE.Vector3, outward: THREE.Vector3, tint = SHARDS.tint): void {
     const S = SHARDS;
     for (const p of points) {
-      if (this.shards.length >= S.capacity) this.shards.shift();
-      const v = velocity
-        .clone()
-        .addScaledVector(outward, S.eject * (0.5 + Math.random()))
-        .add(new THREE.Vector3((Math.random() - 0.5) * S.scatter, Math.random() * S.scatter, (Math.random() - 0.5) * S.scatter));
-      this.shards.push({
-        position: p.clone(),
-        velocity: v,
-        rotation: new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.random() * 6, Math.random() * 6, Math.random() * 6)),
-        spinAxis: new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize(),
-        spin: 6 + Math.random() * 14,
-        size: THREE.MathUtils.lerp(S.sizeMin, S.sizeMax, Math.random()),
-        age: 0,
-        tint,
-      });
+      this.add(p, velocity, outward, THREE.MathUtils.lerp(S.sizeMin, S.sizeMax, Math.random()), 1, S.drag, tint);
+      for (let i = 0; i < S.crumbs; i++) {
+        this.add(p, velocity, outward, THREE.MathUtils.lerp(S.crumbSize[0], S.crumbSize[1], Math.random()), S.crumbScatter, S.drag * S.crumbDrag, tint);
+      }
     }
+  }
+
+  /** One shard `size` across from `at`, its scatter × `scatter`. */
+  private add(at: THREE.Vector3, velocity: THREE.Vector3, outward: THREE.Vector3, size: number, scatter: number, drag: number, tint: THREE.Color): void {
+    const S = SHARDS;
+    if (this.shards.length >= S.capacity) this.shards.shift();
+    const spread = S.scatter * scatter;
+    const v = velocity
+      .clone()
+      .addScaledVector(outward, S.eject * (0.5 + Math.random()))
+      .add(new THREE.Vector3((Math.random() - 0.5) * spread, Math.random() * spread, (Math.random() - 0.5) * spread));
+    this.shards.push({
+      position: at.clone(),
+      velocity: v,
+      rotation: new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.random() * 6, Math.random() * 6, Math.random() * 6)),
+      spinAxis: new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize(),
+      spin: 6 + Math.random() * 14,
+      size,
+      drag,
+      age: 0,
+      tint,
+    });
   }
 
   /**
@@ -125,13 +148,12 @@ export class Shards {
 
   update(dt: number): void {
     const S = SHARDS;
-    const drag = Math.exp(-S.drag * dt);
     let n = 0;
     for (let i = 0; i < this.shards.length; i++) {
       const s = this.shards[i];
       s.age += dt;
       if (s.age >= S.lifetime) continue;
-      s.velocity.multiplyScalar(drag);
+      s.velocity.multiplyScalar(Math.exp(-s.drag * dt));
       s.velocity.y -= GRAVITY * dt;
       s.position.addScaledVector(s.velocity, dt);
       const ground = this.field.height(s.position.x, s.position.z) + 0.01;
