@@ -5,6 +5,7 @@ import { SOD_AREA, type Clods } from '../world/clods';
 import { emptySample } from '../world/environment';
 import type { TerrainField } from '../world/terrainField';
 import { GroundScars } from './groundScars';
+import { IceGlints } from './iceGlints';
 import type { OrbitCamera } from './orbitCamera';
 import { Particles } from './particles';
 import { Sparks } from './sparks';
@@ -13,6 +14,23 @@ import { Sparks } from './sparks';
 const JUICE = {
   /** Only cars this close to the camera throw particles (m). */
   effectRange: 120,
+  /**
+   * Thrown-up snow ("føyke"): powder clouds `snowCloud` × the other grounds' powder in size,
+   * growing `snowGrow` m/s as they drift, hanging `snowHang` × as long; light enough to float
+   * (`snowAir`: the share of gravity it feels and its drag, 1/s); ice crystals glittering in it,
+   * `iceCrystals` with each puff on average.
+   */
+  snowCloud: 2.2,
+  snowGrow: 1.6,
+  snowHang: 3.2,
+  snowAir: { gravity: 0.015, drag: 1.4 },
+  /**
+   * A snow puff fades while it overlaps a car's body (see clearOfCars): counting `puffCore` of its
+   * radius as solid (its soft edge is nearly clear), it shows fully once `puffClear` m clear.
+   */
+  puffCore: 0.6,
+  puffClear: 0.5,
+  iceCrystals: 3,
   /** Tyre spray, particles per second per tyre. */
   sprayPerSlip: 9,
   sprayPerSpeed: 0.7,
@@ -94,6 +112,7 @@ const COLOR = {
 };
 
 const _v = new THREE.Vector3();
+const _m = new THREE.Matrix4();
 const _p = new THREE.Vector3();
 const _n = new THREE.Vector3();
 const _across = new THREE.Vector3();
@@ -112,8 +131,14 @@ type Ground = keyof GroundMix;
  * shake and a landing dip. (What a hit tree drops is the Litter's.)
  */
 export class Juice implements CarEvents {
-  /** Light stuff that hangs in the air: snow powder, dust, leaves. */
+  /** Light stuff that hangs in the air: dust. */
   private readonly snow: Particles;
+  /** Snow powder, lighter still: it floats and drifts. */
+  private readonly powder: Particles;
+  /** Ice crystals glittering in the thrown-up snow. */
+  private readonly ice: IceGlints;
+  /** Each car's body box in its own space (see bodyBox). */
+  private readonly bodyBoxes = new WeakMap<Car, THREE.Box3>();
   /** Heavy bits that fall straight back: turf, soil clods, stone chips. */
   private readonly clods: Particles;
   private readonly sparks: Sparks;
@@ -144,8 +169,10 @@ export class Juice implements CarEvents {
       field.biome.colour(x, z, field.normal(x, z, _grassNormal), field.environment.at(x, z, _grassEnv), out),
     );
     this.snow = new Particles(scene, field, { capacity: 2500, blending: THREE.NormalBlending, gravity: 0.25, drag: 2.5 });
+    this.powder = new Particles(scene, field, { capacity: 4500, blending: THREE.NormalBlending, ...JUICE.snowAir });
     this.clods = new Particles(scene, field, { capacity: 1500, blending: THREE.NormalBlending, gravity: 1, drag: 0.6 });
     this.sparks = new Sparks(scene, field, 1500);
+    this.ice = new IceGlints(scene);
   }
 
   update(dt: number, cars: readonly Car[], halfHeight: number): void {
@@ -158,8 +185,50 @@ export class Juice implements CarEvents {
     }
     this.scars.update();
     this.snow.update(dt, halfHeight);
+    this.powder.update(dt, halfHeight, this.clearOfCars(cars));
+    this.ice.update(dt);
     this.clods.update(dt, halfHeight);
     this.sparks.update(dt, halfHeight);
+  }
+
+  /**
+   * How clear of the cars near the camera a puff at (x, y, z), `radius` m round, is (see
+   * Particles.update): it fades while it overlaps a car's body (its box, see bodyBox) and shows once
+   * it has drifted `JUICE.puffClear` m past touching, so no flat sprite cuts through the paint.
+   */
+  private clearOfCars(cars: readonly Car[]): (x: number, y: number, z: number, radius: number) => number {
+    const near = cars.filter((c) => c.position.distanceTo(this.camera.position) < JUICE.effectRange);
+    const toLocal = near.map((c) => new THREE.Matrix4().copy(c.model.root.matrixWorld).invert());
+    const boxes = near.map((c) => this.bodyBox(c));
+    return (x, y, z, radius) => {
+      let clear = 1;
+      for (let k = 0; k < near.length; k++) {
+        _p.set(x, y, z).applyMatrix4(toLocal[k]);
+        const gap = boxDistance(_p, boxes[k]) - radius * JUICE.puffCore;
+        clear = Math.min(clear, THREE.MathUtils.smoothstep(gap, 0, JUICE.puffClear));
+      }
+      return clear;
+    };
+  }
+
+  /** The car's body as a box in its own space (measured once from its model). */
+  private bodyBox(car: Car): THREE.Box3 {
+    let box = this.bodyBoxes.get(car);
+    if (!box) {
+      box = new THREE.Box3();
+      const root = car.model.root;
+      root.updateMatrixWorld(true);
+      const toLocal = new THREE.Matrix4().copy(root.matrixWorld).invert();
+      const part = new THREE.Box3();
+      root.traverse((o) => {
+        if (!(o instanceof THREE.Mesh) || !o.visible) return;
+        o.geometry.computeBoundingBox();
+        part.copy(o.geometry.boundingBox!).applyMatrix4(_m.multiplyMatrices(toLocal, o.matrixWorld));
+        box!.union(part);
+      });
+      this.bodyBoxes.set(car, box);
+    }
+    return box;
   }
 
   // --- CarEvents
@@ -391,7 +460,19 @@ export class Juice implements CarEvents {
       this.snow.emit({ position: at, velocity, size: size * scale * (1 + Math.random() * 0.8), grow: 1, life: life * (0.8 + Math.random() * 0.6), color, alpha });
     const clod = (color: THREE.Color) =>
       this.clods.emit({ position: at, velocity, size: 0.07 + Math.random() * 0.07, grow: 0, life: 0.7 + Math.random() * 0.5, color, alpha: 1 });
-    if (ground === 'snow') powder(r < 0.5 ? COLOR.snow : COLOR.snowShade, 1, 0.7, 1);
+    if (ground === 'snow') {
+      const J = JUICE;
+      this.powder.emit({
+        position: at,
+        velocity,
+        size: size * J.snowCloud * (1 + Math.random() * 0.8),
+        grow: J.snowGrow,
+        life: J.snowHang * (0.8 + Math.random() * 0.6),
+        color: r < 0.5 ? COLOR.snow : COLOR.snowShade,
+        alpha: 0.7,
+      });
+      this.ice.emit(at, velocity, Math.floor(JUICE.iceCrystals + Math.random()));
+    }
     else if (ground === 'grass') r < 0.7 ? clod(r < 0.45 ? COLOR.turf : COLOR.soil) : powder(COLOR.grassDust, 1, 0.3, 0.9);
     else if (ground === 'dirt') r < 0.4 ? clod(COLOR.soil) : powder(COLOR.dirtDust, 1.4, 0.5, 1.6);
     else r < 0.5 ? clod(COLOR.stoneChip) : powder(COLOR.rockDust, 0.9, 0.5, 0.9);
@@ -435,6 +516,15 @@ export class Juice implements CarEvents {
   private near(at: THREE.Vector3): boolean {
     return at.distanceTo(this.camera.position) < JUICE.effectRange;
   }
+}
+
+/** How far `p` is outside `box` (m; negative inside). */
+function boxDistance(p: THREE.Vector3, box: THREE.Box3): number {
+  const dx = Math.max(box.min.x - p.x, p.x - box.max.x);
+  const dy = Math.max(box.min.y - p.y, p.y - box.max.y);
+  const dz = Math.max(box.min.z - p.z, p.z - box.max.z);
+  const outside = Math.hypot(Math.max(dx, 0), Math.max(dy, 0), Math.max(dz, 0));
+  return outside + Math.min(Math.max(dx, dy, dz), 0);
 }
 
 /** Mostly grass or dirt, not hard ground (stone counts 1 there on top of its cover): ground that tears. */

@@ -127,8 +127,12 @@ export class Particles {
     this.baseAlpha[i] = e.alpha;
   }
 
-  /** @param halfHeight half the drawing-buffer height in pixels (for point sizing) */
-  update(dt: number, halfHeight: number): void {
+  /**
+   * @param halfHeight half the drawing-buffer height in pixels (for point sizing)
+   * @param clear how clear of solid things a particle at (x, y, z), `radius` m round, is: 0 (into
+   *   one) .. 1 (clear); it shows that much. A flat sprite cutting through a solid shows a hard edge.
+   */
+  update(dt: number, halfHeight: number, clear?: (x: number, y: number, z: number, radius: number) => number): void {
     this.material.uniforms.halfHeight.value = halfHeight;
     const g = GRAVITY * this.opts.gravity * dt;
     const keep = Math.max(0, 1 - this.opts.drag * dt);
@@ -156,6 +160,7 @@ export class Particles {
       this.size[i] += this.grow[i] * dt;
       const t = this.age[i] / this.life[i];
       this.alpha[i] = this.baseAlpha[i] * (1 - t) * Math.min(1, t * 10 + 0.3);
+      if (clear) this.alpha[i] *= clear(this.position[o], this.position[o + 1], this.position[o + 2], this.size[i] / 2);
       i++;
     }
     this.geometry.setDrawRange(0, this.count);
