@@ -29,6 +29,7 @@ import { LOAD_RADIUS, Terrain, type StreamCenter } from './world/terrain';
 import { TerrainField } from './world/terrainField';
 import { Boulders } from './world/boulders';
 import { Birds } from './world/birds';
+import { Litter } from './world/litter';
 import { Clods } from './world/clods';
 import { Obstacles, RockLayout } from './world/details';
 import { TreeLayout } from './world/trees';
@@ -117,6 +118,8 @@ export class Game {
   private readonly clods: Clods;
   /** Rooks, that burst out of rookery trees when a car hits one. */
   private readonly birds: Birds;
+  /** Leaves and twigs shaken out of the trees cars hit. */
+  private readonly litter: Litter;
   /** Trees, boulders and tors: what resets keep a car clear of. */
   private readonly obstacles: Obstacles;
   /** Drives the player's car while the autopilot is on. */
@@ -162,8 +165,9 @@ export class Game {
       up: (birds) => this.audio.birdsUp(birds),
       call: (at) => this.audio.birdCall(at),
     });
+    this.litter = new Litter(this.stage.scene, this.trees, ground);
     this.juice = new Juice(
-      this.stage.scene, this.field, this.trees, this.orbit, this.stage.camera,
+      this.stage.scene, this.field, this.orbit, this.stage.camera,
       (car) => car === this.car,
       ground,
       this.clods,
@@ -187,7 +191,7 @@ export class Game {
 
   private newCar(position: THREE.Vector3, yaw: number, paint?: string): Car {
     const car = new Car(COUPE_70S, this.world, this.stage.scene, this.debris, position, yaw, paint);
-    car.events = fanOut(this.audio, this.juice, this.birds);
+    car.events = fanOut(this.audio, this.juice, this.birds, this.litter);
     // Dev only: ?nohood leaves the hood off (only its look: it still collides), to see into the bay.
     if (import.meta.env.DEV && NO_HOOD) car.model.pieces.find((p) => p.name === 'hood')!.mesh.visible = false;
     return car;
@@ -395,6 +399,7 @@ export class Game {
     this.debris.update(gt, pos, this.view, alpha);
     this.clods.update(gt);
     this.birds.update(gt, this.stage.camera.position, pos, this.allCars);
+    this.litter.update(gt, this.stage.camera.position, this.allCars);
     this.traffic.update(gt, pos, this.view);
     this.stage.follow(pos);
     this.updateWarmth(dt);
@@ -668,7 +673,7 @@ export class Game {
   }
 }
 
-/** Forwards every car event to several listeners (sound, visual effects, birds), each taking the ones it handles. */
+/** Forwards every car event to several listeners (sound, visual effects, birds, litter), each taking the ones it handles. */
 function fanOut(...targets: Partial<CarEvents>[]): CarEvents {
   return {
     impact: (...args) => targets.forEach((t) => t.impact?.(...args)),

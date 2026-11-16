@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Stand } from './biome';
+import { FOOTPRINT } from '../vehicle/clearPose';
 import { emptySample, type EnvGrid } from './environment';
 import { hash2 } from './noise';
 import type { TerrainField } from './terrainField';
@@ -48,7 +49,11 @@ export interface Tree {
   oak: boolean;
 }
 
+/** A car touches a tree when one of its body's circles (FOOTPRINT) comes within this much more than touching (m). */
+const TOUCH_MARGIN = 0.15;
+
 const _n = new THREE.Vector3();
+const _touch = new THREE.Vector3();
 const _env = emptySample();
 const _stand: Stand = { chance: 0, maturity: 0 };
 
@@ -154,6 +159,24 @@ export class TreeLayout {
     }
     return best;
   }
+
+  /**
+   * Calls `visit` with each tree a car's body touches, however gently: one of its footprint circles
+   * (see FOOTPRINT) at `position`, turned by `quaternion`, within TOUCH_MARGIN of the trunk. A tree
+   * two circles touch comes twice.
+   */
+  touching(position: THREE.Vector3, quaternion: THREE.Quaternion, visit: (tree: Tree) => void): void {
+    for (const local of FOOTPRINT.circles) {
+      _touch.set(0, 0, local).applyQuaternion(quaternion).add(position);
+      const tree = this.blocking(_touch.x, _touch.z, FOOTPRINT.clearance + TOUCH_MARGIN);
+      if (tree) visit(tree);
+    }
+  }
+}
+
+/** A key for `tree` by its position, for remembering what happened to it. */
+export function treeKey(tree: Tree): string {
+  return `${Math.round(tree.x * 10)}:${Math.round(tree.z * 10)}`;
 }
 
 /** Cantor-free key: cells stay well inside ±2^20 for any reachable distance. */

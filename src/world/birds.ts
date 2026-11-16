@@ -1,12 +1,11 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type { Car, ContactSurface } from '../vehicle/car';
-import { FOOTPRINT } from '../vehicle/clearPose';
 import type { GroundMix } from './biome';
 import { emptySample } from './environment';
 import { hash2 } from './noise';
 import type { TerrainField } from './terrainField';
-import type { Tree, TreeLayout } from './trees';
+import { treeKey, type Tree, type TreeLayout } from './trees';
 
 /**
  * The rook: glossy black, with the pale bare face at the base of its bill and dark legs. Model-local
@@ -123,9 +122,6 @@ const STANCE = { height: 0.13, fold: 0.62 };
 /** Most birds at once, on the ground and in the air. */
 const CAPACITY = 192;
 
-/** A car touches a tree when one of its body's circles (FOOTPRINT) comes within this much more than touching (m). */
-const TOUCH_MARGIN = 0.15;
-
 /**
  * Dev testing (see Birds.devFlock): a flock of `birds` put down `ahead` m in front of the car (beyond
  * startling range, to drive into), or `near` m in front and set off at once.
@@ -200,7 +196,6 @@ const _flap = new THREE.Matrix4();
 const _fold = new THREE.Matrix4();
 const _foldScale = new THREE.Matrix4().makeScale(STANCE.fold, 1, 1);
 const _want = new THREE.Vector3();
-const _touch = new THREE.Vector3();
 const _n = new THREE.Vector3();
 const _env = emptySample();
 const _mix: GroundMix = { snow: 0, grass: 0, dirt: 0, stone: 0 };
@@ -304,14 +299,7 @@ export class Birds {
    */
   update(dt: number, eye: THREE.Vector3, player: THREE.Vector3, cars: readonly Car[]): void {
     // Any touch on a tree, however gentle (impacts only report hits over the car's toughness).
-    for (const car of cars) {
-      const q = car.model.root.quaternion;
-      for (const local of FOOTPRINT.circles) {
-        _touch.set(0, 0, local).applyQuaternion(q).add(car.position);
-        const tree = this.trees.blocking(_touch.x, _touch.z, FOOTPRINT.clearance + TOUCH_MARGIN);
-        if (tree) this.shakeTree(car.position, tree);
-      }
-    }
+    for (const car of cars) this.trees.touching(car.position, car.model.root.quaternion, (tree) => this.shakeTree(car.position, tree));
     if ((this.lookOver -= dt) <= 0) {
       this.lookOver = FLOCKS.every;
       this.placeFlocks(player);
@@ -638,10 +626,6 @@ function newBird(pos: THREE.Vector3): Bird {
     leaveIn: -1,
     leaveYaw: 0,
   };
-}
-
-function treeKey(tree: Tree): string {
-  return `${Math.round(tree.x * 10)}:${Math.round(tree.z * 10)}`;
 }
 
 /** Colours every vertex of `geometry` (non-indexed). */

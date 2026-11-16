@@ -4,7 +4,6 @@ import type { GroundMix } from '../world/biome';
 import { SOD_AREA, type Clods } from '../world/clods';
 import { emptySample } from '../world/environment';
 import type { TerrainField } from '../world/terrainField';
-import type { TreeLayout } from '../world/trees';
 import { GroundScars } from './groundScars';
 import type { OrbitCamera } from './orbitCamera';
 import { Particles } from './particles';
@@ -91,10 +90,6 @@ const COLOR = {
   grassDust: new THREE.Color('#b9b48f'),
   dirtDust: new THREE.Color('#9a7a5a'),
   stoneChip: new THREE.Color('#7f7b74'),
-  /** Leaves and needles knocked off bare trees. */
-  leaf: new THREE.Color('#5d8f37'),
-  leafDark: new THREE.Color('#467429'),
-  needle: new THREE.Color('#2f5a3c'),
   rockDust: new THREE.Color('#9a9ca3'),
 };
 
@@ -113,8 +108,8 @@ type Ground = keyof GroundMix;
 /**
  * "Juice": feedback that makes driving and crashing feel physical. Spray from
  * tyres and puffs on landings and impacts that match the ground (snow powder,
- * torn turf, dirt, stone dust), sparks from metal on rock or metal, snow,
- * leaves or needles shaken off trees, screen shake and a landing dip.
+ * torn turf, dirt, stone dust), sparks from metal on rock or metal, screen
+ * shake and a landing dip. (What a hit tree drops is the Litter's.)
  */
 export class Juice implements CarEvents {
   /** Light stuff that hangs in the air: snow powder, dust, leaves. */
@@ -137,7 +132,6 @@ export class Juice implements CarEvents {
   constructor(
     scene: THREE.Scene,
     private readonly field: TerrainField,
-    private readonly trees: TreeLayout,
     private readonly orbit: OrbitCamera,
     private readonly camera: THREE.Camera,
     private readonly isPlayer: (car: Car) => boolean,
@@ -176,11 +170,10 @@ export class Juice implements CarEvents {
       if (surface === 'metal' || surface === 'rock' || (surface === 'ground' && this.isHard(at))) {
         this.burstSparks(at, car.velocity, JUICE.hitSparks + Math.round(JUICE.hitSparksPerSeverity * severity));
         if (surface !== 'metal') this.burstDust(at, car.velocity, 6, 1.5, COLOR.rockDust);
-      } else {
+      } else if (surface !== 'tree') {
         this.burstGround(at, car.velocity, 8 + Math.round(40 * k), 2 + 4 * k);
         if (surface === 'ground' && severity > JUICE.gougeFrom && grassy(this.groundAt(at))) this.gouges(car, at, severity);
       }
-      if (surface === 'tree') this.treeShower(at);
     }
 
     const J = JUICE;
@@ -412,27 +405,6 @@ export class Juice implements CarEvents {
       _v.y += 1 + Math.random() * 5;
       _v.z += (Math.random() - 0.5) * 10;
       this.sparks.emit({ position: at, velocity: _v, life: 0.25 + Math.random() * 0.5 });
-    }
-  }
-
-  /**
-   * Whatever the hit tree carries drifts down around the trunk: snow from a snowy spruce, leaves
-   * from a broadleaf tree, a few needles from a bare conifer.
-   */
-  private treeShower(at: THREE.Vector3): void {
-    const tree = this.trees.blocking(at.x, at.z, 2);
-    const kind = !tree || tree.snowy ? 'snow' : tree.species === 'broadleaf' ? 'leaves' : 'needles';
-    const count = kind === 'needles' ? 12 : 40;
-    for (let i = 0; i < count; i++) {
-      _p.set(at.x + (Math.random() - 0.5) * 3, at.y + 2 + Math.random() * 3.5, at.z + (Math.random() - 0.5) * 3);
-      _v.set((Math.random() - 0.5) * 0.6, -0.3 - Math.random() * 0.5, (Math.random() - 0.5) * 0.6);
-      if (kind === 'snow') {
-        this.snow.emit({ position: _p, velocity: _v, size: 0.35 + Math.random() * 0.3, grow: 0.4, life: 2 + Math.random(), color: COLOR.snow, alpha: 0.8 });
-      } else {
-        // Leaves and needles flutter down slowly and don't grow.
-        const color = kind === 'leaves' ? (Math.random() < 0.5 ? COLOR.leaf : COLOR.leafDark) : COLOR.needle;
-        this.snow.emit({ position: _p, velocity: _v.multiplyScalar(0.6), size: 0.12 + Math.random() * 0.1, grow: 0, life: 2.5 + Math.random() * 1.5, color, alpha: 1 });
-      }
     }
   }
 

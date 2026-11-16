@@ -8,7 +8,7 @@ import { blendedField, chain, surfaceNets, type Segment } from './sdfMesh';
 import { OAK, SPECIES, TREE_CELL, type Tree, type TreeLayout } from './trees';
 import type { EnvGrid } from './environment';
 
-const COLORS = {
+export const COLORS = {
   trunk: new THREE.Color('#5b4636'),
   needles: new THREE.Color('#2f5a46'),
   needlesDark: new THREE.Color('#244838'),
