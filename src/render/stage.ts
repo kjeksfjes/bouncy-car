@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { fogFade, fogSky, fogSun, installFogFade, SUN_GLOW } from './fogFade';
+import { fogFade, fogSky, fogSun, fogThick, installFogFade, SUN_GLOW } from './fogFade';
 import { createSunFlare } from './sunFlare';
 
 const PALETTE = {
@@ -35,8 +35,10 @@ const GROUND_BOUNCE = { snow: '#c2c5ca', grass: '#596d4a' };
  * the snowy ground's light bounces back into; the sun hidden, through thinning cloud first a pale
  * disc (`hazyDisc`) in a soft halo, its sharp disc, glow and flare coming back only as the cloud
  * clears; its light down to `sunLight` of its strength (no sharp shadows), more of the light from
- * the sky all round (the ambient × `ambient`); shadows softer (`shadowRadius`); the haze closing in
- * to `fogFar` of the view.
+ * the sky all round (the ambient × `ambient`); shadows softer (`shadowRadius`); the haze closing in:
+ * starting `hazeNear` m from the camera, building over `hazeScale` m (in place of the clear air's,
+ * see fogFade) all the way to white (`hazeReach`), everything gone by `fogFar` of the view. At
+ * full: ≈20% haze at 50 m, ≈65% at 100 m, nearly white by 200 m, as in heavy snow.
  */
 const OVERCAST = {
   skyTop: '#c9d1da',
@@ -48,6 +50,9 @@ const OVERCAST = {
   ambient: 1.6,
   shadowRadius: 8,
   fogFar: 0.55,
+  hazeNear: 8,
+  hazeScale: 70,
+  hazeReach: 1,
 };
 /** The renderer's exposure, looking anywhere but into the sun. */
 const EXPOSURE = 1.05;
@@ -179,12 +184,15 @@ export class Stage {
   private bakedOvercast = 0;
   /** How overcast it is (0 clear .. 1 thick cloud: see setOvercast). */
   private overcast = 0;
+  /** The haze's build-up and reach in clear air (see fogThick), read once it's installed. */
+  private readonly clearHaze: { scale: number; reach: number };
   /** Bound only while compiling shaders for render targets (see compileForTargets). */
   private readonly compileTarget = new THREE.WebGLRenderTarget(1, 1);
   private readonly raycaster = new THREE.Raycaster();
 
   constructor(container: HTMLElement) {
     installFogFade();
+    this.clearHaze = { scale: fogThick.scale.value, reach: fogThick.reach.value };
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     renderer.setPixelRatio(pixelRatio());
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -296,8 +304,13 @@ export class Stage {
     // The glow round the sun, in the sky and in the haze.
     (this.sky.material as THREE.ShaderMaterial).uniforms.glowColor.value.copy(SUN_GLOW_COLOR).multiplyScalar(clear * clear);
     fogSun.color.value.copy(SUN_GLOW_COLOR).multiplyScalar(clear * clear);
+    fogThick.scale.value = THREE.MathUtils.lerp(this.clearHaze.scale, O.hazeScale, k);
+    fogThick.reach.value = THREE.MathUtils.lerp(this.clearHaze.reach, O.hazeReach, k);
     const fog = this.scene.fog as THREE.Fog;
-    if (fog.near !== CLEAR_AIR) fog.far = this.viewDistance * THREE.MathUtils.lerp(1, O.fogFar, k);
+    if (fog.near !== CLEAR_AIR) {
+      fog.near = THREE.MathUtils.lerp(HAZE_NEAR, O.hazeNear, k);
+      fog.far = this.viewDistance * THREE.MathUtils.lerp(1, O.fogFar, k);
+    }
   }
 
   private bakeEnvironment(): void {

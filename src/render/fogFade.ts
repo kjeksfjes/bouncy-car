@@ -13,6 +13,11 @@ export const fogSun = { dir: { value: new THREE.Vector3(0, 1, 0) }, color: { val
  * the sky behind them, a little above or below the horizon line, instead of standing out as a
  * band of plain horizon colour.
  */
+/**
+ * How thick the haze is (Stage sets it, thicker as it snows): the distance it builds over (m, see
+ * HAZE.scale) and how far toward full it gets (see HAZE.reach).
+ */
+export const fogThick = { scale: { value: 0 }, reach: { value: 0 } };
 export const fogSky = { top: { value: new THREE.Color(1, 1, 1) }, below: { value: new THREE.Color(1, 1, 1) }, curve: { value: 1 } };
 
 /**
@@ -63,6 +68,8 @@ export const SUN_GLOW = { amount: 0.28, power: 7 };
  */
 export function installFogFade(): void {
   const H = HAZE;
+  fogThick.scale.value = H.scale;
+  fogThick.reach.value = H.reach;
   const replace = (chunk: keyof typeof THREE.ShaderChunk, from: string, to: string) => {
     const before = THREE.ShaderChunk[chunk];
     if (!before.includes(from)) throw new Error(`Fog haze: three.js ${chunk} changed, patch did not apply`);
@@ -73,15 +80,15 @@ export function installFogFade(): void {
   replace(
     'fog_pars_fragment',
     'uniform vec3 fogColor;',
-    'uniform vec3 fogColor;\n\tuniform float fogFade;\n\tuniform vec3 fogSunDir;\n\tuniform vec3 fogSunColor;\n\tuniform vec3 fogSkyTop;\n\tuniform vec3 fogSkyBelow;\n\tuniform float fogSkyCurve;\n\tvarying vec3 vFogPosition;',
+    'uniform vec3 fogColor;\n\tuniform float fogScale;\n\tuniform float fogReach;\n\tuniform float fogFade;\n\tuniform vec3 fogSunDir;\n\tuniform vec3 fogSunColor;\n\tuniform vec3 fogSkyTop;\n\tuniform vec3 fogSkyBelow;\n\tuniform float fogSkyCurve;\n\tvarying vec3 vFogPosition;',
   );
   replace(
     'fog_fragment',
     'float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );',
     /* glsl */ `float fogDistance = length( vFogPosition );
 		float fogEdgeStart = fogFar * ${(1 - H.edge).toFixed(3)};
-		float fogBuilt = max( fogDistance - fogNear, 0.0 ) / ${H.scale.toFixed(1)};
-		float fogFactor = ${H.reach.toFixed(3)} * ( 1.0 - exp( - pow( fogBuilt, ${H.power.toFixed(2)} ) ) );
+		float fogBuilt = max( fogDistance - fogNear, 0.0 ) / fogScale;
+		float fogFactor = fogReach * ( 1.0 - exp( - pow( fogBuilt, ${H.power.toFixed(2)} ) ) );
 		float fogEdge = smoothstep( fogEdgeStart, fogFar, fogDistance );
 		fogFactor = max( fogFactor, fogEdge );`,
   );
@@ -102,6 +109,8 @@ export function installFogFade(): void {
   // Every material compiled from here on gets the shared uniforms (their fog chunks now read them).
   THREE.Material.prototype.onBeforeCompile = (shader) => {
     shader.uniforms.fogFade = fogFade;
+    shader.uniforms.fogScale = fogThick.scale;
+    shader.uniforms.fogReach = fogThick.reach;
     shader.uniforms.fogSunDir = fogSun.dir;
     shader.uniforms.fogSunColor = fogSun.color;
     shader.uniforms.fogSkyTop = fogSky.top;
