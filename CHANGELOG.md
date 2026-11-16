@@ -3,6 +3,40 @@
 Releases are named plainly after what they bring (the first three after
 game-development milestones).
 
+## v0.11.0 – "Into the Snowstorm" (2026-11-16)
+
+The top of the mountain gets real weather: a gusting snowstorm under a
+grey sky that clears on the way down, snow that settles on the car and
+glitters in the air, and trees that drop their leaves when hit. The game
+is also playable online.
+
+- **Snowfall:** heavy snow at the top in big clumps falling fast, easing
+  toward the thaw into small crystals that flutter and flicker. Flakes
+  streak as you drive into them and glow toward the sun.
+- **Storm and sky:** a gusting wind blows the snow sideways at the top,
+  with a roaring, faintly howling sound, easing to a light breeze by
+  1.5 km. While it snows the sky turns grey-white, the sun hides and
+  then shows as a pale disc, light goes flat, shadows soft, and the
+  view closes in to a couple of hundred metres.
+- **Hush:** heavy snow muffles the world: distant sounds fade and dull
+  faster, the whole mix dips a little.
+- **Snow on the car:** the tyres' spray builds up textured snow on the
+  sides, arches, front and rear (glass, bumpers and trim too), creeping
+  a little over the edges, never on the roof, underside or inside. It
+  melts from the thaw down and blows off at speed.
+- **Snow spray:** the powder thrown up is bigger and floats; ice
+  crystals in it glint in the sun and settle out, fluttering, onto the
+  ground.
+- **Snowy trees:** spruces wear snow mantles with wavy hems, heavier where
+  the land holds snow, the first ones nearly buried.
+- **Falling leaves:** hitting a tree shakes loose leaves that flutter
+  down like real ones, and twigs, cones and snow lumps that tumble.
+  They stay where they land.
+- **Buried boulders** throw their snow when hit or scraped, with the
+  sparks.
+- **Online:** a README with a screenshot, and the game deploys to GitHub
+  Pages on every push.
+
 ## v0.10.0 – "Lights, Glass and the Woods" (2026-11-15)
 
 Headlights, brake lights and a parking handbrake, glass that sounds and
