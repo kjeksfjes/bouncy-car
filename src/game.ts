@@ -30,6 +30,7 @@ import { TerrainField } from './world/terrainField';
 import { Boulders } from './world/boulders';
 import { Birds } from './world/birds';
 import { Litter } from './world/litter';
+import { Snowfall } from './render/snowfall';
 import { Clods } from './world/clods';
 import { Obstacles, RockLayout } from './world/details';
 import { TreeLayout } from './world/trees';
@@ -62,6 +63,18 @@ const AI_STREAM_RADIUS = 1;
 
 /** Dev only: ?nohood (see newCar). */
 const NO_HOOD = import.meta.env.DEV && new URLSearchParams(location.search).has('nohood');
+
+/**
+ * The weather: it snows as hard as `strength` × the biome's snowfall where the camera is (full at
+ * the top, easing off toward the thaw: see Biome.snowing); the wind drifts round at `wind` m/s.
+ */
+const WEATHER = {
+  strength: 1,
+  wind: 1.5,
+};
+/** ?snow=0..1 holds the snowfall at that strength (for looking at it). */
+const SNOW_PARAM = new URLSearchParams(location.search).get('snow');
+const SNOW_FIXED = SNOW_PARAM === null ? null : THREE.MathUtils.clamp(Number(SNOW_PARAM) || 0, 0, 1);
 
 export class Game {
   readonly stage: Stage;
@@ -120,6 +133,11 @@ export class Game {
   private readonly birds: Birds;
   /** Leaves and twigs shaken out of the trees cars hit. */
   private readonly litter: Litter;
+  /** Falling snow round the camera. */
+  private readonly snowfall: Snowfall;
+  private readonly wind = new THREE.Vector3();
+  /** Game time for the wind's turning (s). */
+  private snowClock = 0;
   /** Trees, boulders and tors: what resets keep a car clear of. */
   private readonly obstacles: Obstacles;
   /** Drives the player's car while the autopilot is on. */
@@ -166,6 +184,7 @@ export class Game {
       call: (at) => this.audio.birdCall(at),
     });
     this.litter = new Litter(this.stage.scene, this.trees, ground);
+    this.snowfall = new Snowfall(this.stage.scene);
     this.juice = new Juice(
       this.stage.scene, this.field, this.orbit, this.stage.camera,
       (car) => car === this.car,
@@ -400,6 +419,8 @@ export class Game {
     this.clods.update(gt);
     this.birds.update(gt, this.stage.camera.position, pos, this.allCars);
     this.litter.update(gt, this.stage.camera.position, this.allCars);
+    this.snowClock += gt;
+    this.snowfall.update(gt, this.stage.camera.position, this.snowAmount(), this.windNow());
     this.traffic.update(gt, pos, this.view);
     this.stage.follow(pos);
     this.updateWarmth(dt);
@@ -437,8 +458,25 @@ export class Game {
     return `start=${Math.round(-z)} x=${Math.round(x)} · ${name} · ${woods}`;
   }
 
-  /** Eases the sky and fog toward the warmth of the biome the car is in (so Shift+B doesn't jump it). */
+  /** How hard it snows now, where the camera is (see WEATHER). */
+  private snowAmount(): number {
+    if (SNOW_FIXED !== null) return SNOW_FIXED;
+    return WEATHER.strength * this.field.biome.snowing(this.stage.camera.position.z);
+  }
+
+  /** The wind now: slowly turning (see WEATHER). */
+  private windNow(): THREE.Vector3 {
+    const a = this.snowClock / 47;
+    return this.wind.set(Math.cos(a), 0, Math.sin(a * 0.7)).multiplyScalar(WEATHER.wind);
+  }
+
+  /**
+   * Eases the sky and fog toward the warmth of the biome the car is in (so Shift+B doesn't jump it),
+   * overcast as hard as it snows.
+   */
   private updateWarmth(dt: number): void {
+    // Snow falls from cloud: as hard as it snows, the sky is overcast.
+    this.stage.setOvercast(this.snowAmount());
     const target = this.field.biome.warmth(this.car.position.z);
     this.warmth += (target - this.warmth) * (1 - Math.exp(-WARMTH_EASE * dt));
     if (Math.abs(target - this.warmth) < 0.002) this.warmth = target;

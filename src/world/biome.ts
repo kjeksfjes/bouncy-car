@@ -12,6 +12,12 @@ const BIOME = {
   /** The thaw: snow starts breaking up here (m downhill) and is all gone by `thawEnd`. */
   thawStart: 3500,
   thawEnd: 5000,
+  /**
+   * Snowfall: full from the top, easing off from `snowfallFrom` m downhill and gone `snowfallPast`
+   * m into the thaw.
+   */
+  snowfallFrom: 1500,
+  snowfallPast: 300,
   /** Snow patches: noise scales (m) and how much they shift where the snow lingers. */
   patchScale: 46,
   patchDetailScale: 13,
@@ -424,6 +430,11 @@ export class Biome {
    */
   shift(from: number, amount: number, length: number): void {
     this.shifts.push({ from, length, amount });
+  }
+
+  /** How hard it snows here (1 full .. 0 none; see BIOME.snowfallFrom). */
+  snowing(z: number): number {
+    return 1 - smoothstep(BIOME.snowfallFrom, BIOME.thawStart + BIOME.snowfallPast, this.distance(z));
   }
 
   /** How warm the air is here (0 in the snow, 1 in the grassland), for the sky and fog. */

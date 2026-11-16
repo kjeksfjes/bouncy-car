@@ -121,13 +121,22 @@ function flareTexture(kind: Kind): THREE.Texture {
  * the car) by sampling the frame where the sun is. Keep the returned object at the sun's
  * direction from the camera each frame (see Stage.follow).
  */
-export function createSunFlare(pixelRatio: number, sunColor: THREE.Color): THREE.Object3D {
+export function createSunFlare(pixelRatio: number, sunColor: THREE.Color): THREE.Object3D & { setStrength(k: number): void } {
   const textures = new Map<Kind, THREE.Texture>();
   const flare = new Lensflare();
+  const elements: { element: LensflareElement; color: THREE.Color }[] = [];
   for (const [kind, size, distance, color] of ELEMENTS) {
     let texture = textures.get(kind);
     if (!texture) textures.set(kind, (texture = flareTexture(kind)));
-    flare.addElement(new LensflareElement(texture, size * pixelRatio, distance, color === 'sun' ? sunColor : new THREE.Color(color)));
+    const base = color === 'sun' ? sunColor : new THREE.Color(color);
+    const element = new LensflareElement(texture, size * pixelRatio, distance, base.clone());
+    flare.addElement(element);
+    elements.push({ element, color: base });
   }
-  return flare;
+  /** Dims the whole flare to `k` (0..1) of its strength, as when cloud hides the sun. */
+  const setStrength = (k: number) => {
+    for (const { element, color } of elements) element.color.copy(color).multiplyScalar(k);
+    flare.visible = k > 0.01;
+  };
+  return Object.assign(flare, { setStrength });
 }

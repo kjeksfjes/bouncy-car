@@ -30,6 +30,25 @@ const WARM = {
  * (≈0.2, greenish) far less.
  */
 const GROUND_BOUNCE = { snow: '#c2c5ca', grass: '#596d4a' };
+/**
+ * Overcast, as when it snows (Stage.setOvercast): a flat grey-white sky, brightest overhead, that
+ * the snowy ground's light bounces back into; the sun hidden, through thinning cloud first a pale
+ * disc (`hazyDisc`) in a soft halo, its sharp disc, glow and flare coming back only as the cloud
+ * clears; its light down to `sunLight` of its strength (no sharp shadows), more of the light from
+ * the sky all round (the ambient × `ambient`); shadows softer (`shadowRadius`); the haze closing in
+ * to `fogFar` of the view.
+ */
+const OVERCAST = {
+  skyTop: '#c9d1da',
+  horizon: '#dbe1e7',
+  belowHorizon: '#cfd5dc',
+  curve: 1.4,
+  hazyDisc: 0.45,
+  sunLight: 0.3,
+  ambient: 1.6,
+  shadowRadius: 8,
+  fogFar: 0.55,
+};
 /** The renderer's exposure, looking anywhere but into the sun. */
 const EXPOSURE = 1.05;
 /**
@@ -48,7 +67,7 @@ const COOL_CURVE = 0.6;
 const HAZE_NEAR = 30;
 /** Fog pushed out beyond anything the camera reaches (m): no haze at all (see setHaze). */
 const CLEAR_AIR = 1e6;
-/** The ambient light (baked from the sky) is re-baked when the warmth has moved this much. */
+/** The ambient light (baked from the sky) is re-baked when the warmth or overcast has moved this much. */
 const REBAKE_STEP = 0.1;
 
 /** Colour of sunlight (the sun light, its disc in the sky, glints and flares). */
@@ -71,6 +90,10 @@ const SUN_GLOW_COLOR = (() => {
 })();
 
 const SHADOW_EXTENT = 45;
+/** The sun light's strength, the ambient light's (baked from the sky), and the shadows' blur, in clear weather. */
+const SUN_LIGHT = 2.6;
+const AMBIENT = 0.75;
+const SHADOW_RADIUS = 2;
 const _warm = new THREE.Color();
 const _view = new THREE.Vector3();
 /** The lens flare's anchor sits this far from the camera toward the sun: inside the sky dome and the far plane. */
@@ -88,9 +111,10 @@ function makeSky(radius: number): THREE.Mesh {
       horizon: { value: new THREE.Color(PALETTE.horizon) },
       below: { value: new THREE.Color(PALETTE.belowHorizon) },
       sunColor: { value: new THREE.Color(PALETTE.sun) },
-      glowColor: { value: SUN_GLOW_COLOR },
+      glowColor: { value: SUN_GLOW_COLOR.clone() },
       sunDir: { value: SUN_DIR },
       curve: { value: COOL_CURVE },
+      overcast: { value: 0 },
     },
     vertexShader: /* glsl */ `
       varying vec3 vDir;
@@ -106,6 +130,7 @@ function makeSky(radius: number): THREE.Mesh {
       uniform vec3 glowColor;
       uniform vec3 sunDir;
       uniform float curve;
+      uniform float overcast;
       varying vec3 vDir;
       void main() {
         vec3 d = normalize(vDir);
@@ -115,7 +140,11 @@ function makeSky(radius: number): THREE.Mesh {
         vec3 col = mix(horizon, top, pow(h, curve) * smoothstep(0.0, 0.06, h));
         col = mix(col, below, smoothstep(0.0, -0.2, d.y));
         float s = max(dot(d, sunDir), 0.0);
-        col += sunColor * pow(s, 900.0) * 3.0;
+        // The sun's disc; through thin cloud a pale, soft-edged disc in a halo instead; behind thick cloud nothing.
+        float clear = 1.0 - overcast;
+        float hazy = overcast * clear * 4.0;
+        col += sunColor * pow(s, 900.0) * 3.0 * clear * clear * clear;
+        col += sunColor * (smoothstep(0.99955, 0.9999, s) * ${OVERCAST.hazyDisc.toFixed(3)} + pow(s, 60.0) * 0.12) * hazy;
         gl_FragColor = vec4(col, 1.0);
         #include <colorspace_fragment>
         // The glow around the sun, in output space like the haze's (see SUN_GLOW_COLOR).
@@ -143,10 +172,13 @@ export class Stage {
   readonly viewDistance = 1000;
   private readonly sun: THREE.DirectionalLight;
   private readonly sky: THREE.Mesh;
-  private readonly flare: THREE.Object3D;
+  private readonly flare: THREE.Object3D & { setStrength(k: number): void };
   /** The sky the ambient light is baked from, and the warmth it was last baked at. */
   private readonly envSky: THREE.Mesh;
   private bakedWarmth = 0;
+  private bakedOvercast = 0;
+  /** How overcast it is (0 clear .. 1 thick cloud: see setOvercast). */
+  private overcast = 0;
   /** Bound only while compiling shaders for render targets (see compileForTargets). */
   private readonly compileTarget = new THREE.WebGLRenderTarget(1, 1);
   private readonly raycaster = new THREE.Raycaster();
@@ -180,9 +212,9 @@ export class Stage {
     this.envSky = makeSky(50);
     (this.envSky.material as THREE.ShaderMaterial).uniforms.below.value.set(GROUND_BOUNCE.snow);
     this.bakeEnvironment();
-    this.scene.environmentIntensity = 0.75;
+    this.scene.environmentIntensity = AMBIENT;
 
-    const sun = new THREE.DirectionalLight(PALETTE.sun, 2.6);
+    const sun = new THREE.DirectionalLight(PALETTE.sun, SUN_LIGHT);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
     const cam = sun.shadow.camera;
@@ -194,10 +226,11 @@ export class Stage {
     cam.far = 300;
     sun.shadow.bias = -0.0004;
     sun.shadow.normalBias = 0.04;
-    sun.shadow.radius = 2;
+    sun.shadow.radius = SHADOW_RADIUS;
     this.scene.add(sun, sun.target);
     this.sun = sun;
     this.flare = createSunFlare(pixelRatio(), SUN_COLOR);
+    this.setStrengths();
     this.scene.add(this.flare);
 
     window.addEventListener('resize', () => {
@@ -216,10 +249,12 @@ export class Stage {
     const t = THREE.MathUtils.clamp(warmth, 0, 1);
     for (const sky of [this.sky, this.envSky]) {
       const u = (sky.material as THREE.ShaderMaterial).uniforms;
-      u.top.value.set(PALETTE.skyTop).lerp(_warm.set(WARM.skyTop), t);
-      u.horizon.value.set(PALETTE.horizon).lerp(_warm.set(WARM.horizon), t);
-      u.below.value.set(PALETTE.belowHorizon).lerp(_warm.set(WARM.belowHorizon), t);
-      u.curve.value = THREE.MathUtils.lerp(COOL_CURVE, WARM.curve, t);
+      const k = this.overcast;
+      u.top.value.set(PALETTE.skyTop).lerp(_warm.set(WARM.skyTop), t).lerp(_warm.set(OVERCAST.skyTop), k);
+      u.horizon.value.set(PALETTE.horizon).lerp(_warm.set(WARM.horizon), t).lerp(_warm.set(OVERCAST.horizon), k);
+      u.below.value.set(PALETTE.belowHorizon).lerp(_warm.set(WARM.belowHorizon), t).lerp(_warm.set(OVERCAST.belowHorizon), k);
+      u.curve.value = THREE.MathUtils.lerp(THREE.MathUtils.lerp(COOL_CURVE, WARM.curve, t), OVERCAST.curve, k);
+      u.overcast.value = k;
     }
     // The ambient light sees the ground below the horizon, not the haze.
     (this.envSky.material as THREE.ShaderMaterial).uniforms.below.value.set(GROUND_BOUNCE.snow).lerp(_warm.set(GROUND_BOUNCE.grass), t);
@@ -231,10 +266,38 @@ export class Stage {
     sky.below.value.getRGB(fogSky.below.value, THREE.SRGBColorSpace);
     fogSky.curve.value = sky.curve.value;
     fogFade.value = t;
-    if (Math.abs(t - this.bakedWarmth) >= REBAKE_STEP || (t !== this.bakedWarmth && (t === 0 || t === 1))) {
+    const k = this.overcast;
+    const settled = (now: number, baked: number) => Math.abs(now - baked) < REBAKE_STEP && (now === baked || (now !== 0 && now !== 1));
+    if (!settled(t, this.bakedWarmth) || !settled(k, this.bakedOvercast)) {
       this.bakedWarmth = t;
+      this.bakedOvercast = k;
       this.bakeEnvironment();
     }
+  }
+
+  /**
+   * How overcast it is, 0 (clear) .. 1 (thick cloud, as when it snows hard): see OVERCAST. Takes
+   * effect in the sky's colours at the next setWarmth.
+   */
+  setOvercast(overcast: number): void {
+    this.overcast = THREE.MathUtils.clamp(overcast, 0, 1);
+    this.setStrengths();
+  }
+
+  /** The sun's light, glow, flare and shadows, and the haze, for how overcast it is. */
+  private setStrengths(): void {
+    const O = OVERCAST;
+    const k = this.overcast;
+    const clear = 1 - k;
+    this.sun.intensity = SUN_LIGHT * THREE.MathUtils.lerp(1, O.sunLight, k);
+    this.sun.shadow.radius = THREE.MathUtils.lerp(SHADOW_RADIUS, O.shadowRadius, k);
+    this.scene.environmentIntensity = AMBIENT * THREE.MathUtils.lerp(1, O.ambient, k);
+    this.flare.setStrength(clear * clear * clear);
+    // The glow round the sun, in the sky and in the haze.
+    (this.sky.material as THREE.ShaderMaterial).uniforms.glowColor.value.copy(SUN_GLOW_COLOR).multiplyScalar(clear * clear);
+    fogSun.color.value.copy(SUN_GLOW_COLOR).multiplyScalar(clear * clear);
+    const fog = this.scene.fog as THREE.Fog;
+    if (fog.near !== CLEAR_AIR) fog.far = this.viewDistance * THREE.MathUtils.lerp(1, O.fogFar, k);
   }
 
   private bakeEnvironment(): void {
@@ -269,6 +332,7 @@ export class Stage {
     const fog = this.scene.fog as THREE.Fog;
     fog.near = on ? HAZE_NEAR : CLEAR_AIR;
     fog.far = on ? this.viewDistance : CLEAR_AIR + 1;
+    if (on) this.setStrengths();
   }
 
   follow(target: THREE.Vector3): void {
@@ -288,7 +352,8 @@ export class Stage {
     this.camera.getWorldDirection(_view);
     const toward = THREE.MathUtils.smoothstep(_view.dot(SUN_DIR), Math.cos(G.outer), Math.cos(G.inner));
     const into = toward > 0 && this.sunAbove(groundAt) ? toward : 0;
-    const goal = EXPOSURE * (1 - G.depth * into);
+    // Behind cloud there's no sun to glare.
+    const goal = EXPOSURE * (1 - G.depth * into * (1 - this.overcast));
     const now = this.renderer.toneMappingExposure;
     this.renderer.toneMappingExposure = goal + (now - goal) * Math.exp(-dt / (goal < now ? G.darken : G.recover));
   }
