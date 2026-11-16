@@ -18,11 +18,27 @@ const SLOW_OPEN = 20000;
  * game's sound is mostly low, so this is only a touch). It eases in over `ease` s. All by how hard
  * it snows.
  */
+/**
+ * The storm's wind (the weather's, not the car's own rush of air): noise in two channels, left and
+ * right, for width. Each a broad `roar` (band-pass, Q) and a narrow `howl`, rising with the wind
+ * (Hz at rest plus per m/s), the howl drifting on its own slow wobble. Heard from `from` m/s,
+ * full at `full` m/s; it follows the gusts over `ease` s.
+ */
+const STORM = {
+  from: 3,
+  full: 14,
+  roar: { at: 260, perSpeed: 30, q: 0.6, level: 1 },
+  howl: { at: 360, perSpeed: 22, q: 9, level: 0.35, wobble: 0.12 },
+  ease: 0.25,
+};
+
 const SNOW_HUSH = { rolloff: 3.5, dullOver: 25, dip: -2.5, shelf: 2000, cut: -5, ease: 0.5 };
 const SLOW_FLOOR = 300;
 
 const MIX = {
   master: 0.7,
+  /** The storm's wind at full strength (see STORM). */
+  storm: 0.32,
   engine: 0.28,
   /** AI engines sit under the player's own. */
   aiEngine: 0.45,
@@ -323,6 +339,7 @@ export class GameAudio implements CarEvents {
   private paused = false;
   private enginesOff = false;
   private snow = 0;
+  private wind = 0;
 
   constructor() {
     const start = () => {
@@ -331,6 +348,7 @@ export class GameAudio implements CarEvents {
       this.engine.setMuted(this.muted || this.paused);
       this.engine.setEnginesOff(this.enginesOff);
       this.engine.setSnow(this.snow);
+      this.engine.setWind(this.wind);
     };
     window.addEventListener('keydown', start, { once: true });
     window.addEventListener('pointerdown', start, { once: true });
@@ -362,6 +380,12 @@ export class GameAudio implements CarEvents {
     if (Math.abs(amount - this.snow) < 0.01) return;
     this.snow = amount;
     this.engine?.setSnow(amount);
+  }
+
+  /** The weather's wind speed (m/s), gusts and all: a strong one howls (see STORM). */
+  setWind(speed: number): void {
+    this.wind = speed;
+    this.engine?.setWind(speed);
   }
 
   /** Silences everything while the game is paused (the mute setting is kept apart). */
@@ -420,6 +444,9 @@ class AudioEngine {
   private readonly voices = new Map<Car, CarVoice>();
   private readonly windGain: GainNode;
   private readonly windFilter: BiquadFilterNode;
+  /** The storm's wind (see STORM): its level, and each channel's roar and howl. */
+  private readonly storm: GainNode;
+  private readonly stormBands: { roar: BiquadFilterNode; howl: BiquadFilterNode; seed: number }[] = [];
   /** Engines, tyres and wind; ducked under hits so impacts punch through. */
   private readonly loops: GainNode;
   /** The car the listener is following (first in `update`'s list). */
@@ -470,6 +497,36 @@ class AudioEngine {
     const wind = new AudioBufferSourceNode(this.ctx, { buffer: this.noise, loop: true });
     wind.connect(this.windFilter).connect(this.windGain).connect(this.loops);
     wind.start();
+
+    // The storm: two noise channels, each its own stretch of the noise, spread left and right.
+    const S = STORM;
+    this.storm = new GainNode(this.ctx, { gain: 0 });
+    this.storm.connect(this.loops);
+    for (const side of [-0.7, 0.7]) {
+      const source = new AudioBufferSourceNode(this.ctx, { buffer: this.noise, loop: true });
+      const pan = new StereoPannerNode(this.ctx, { pan: side });
+      const roar = new BiquadFilterNode(this.ctx, { type: 'bandpass', frequency: S.roar.at, Q: S.roar.q });
+      const howl = new BiquadFilterNode(this.ctx, { type: 'bandpass', frequency: S.howl.at, Q: S.howl.q });
+      // A band-pass peaks at 0 dB: make up roughly √Q.
+      source.connect(roar).connect(new GainNode(this.ctx, { gain: S.roar.level * Math.sqrt(S.roar.q) })).connect(pan);
+      source.connect(howl).connect(new GainNode(this.ctx, { gain: S.howl.level * Math.sqrt(S.howl.q) })).connect(pan);
+      pan.connect(this.storm);
+      source.start(0, side < 0 ? 0.3 : 1.1);
+      this.stormBands.push({ roar, howl, seed: side * 13 });
+    }
+  }
+
+  setWind(speed: number): void {
+    const S = STORM;
+    const now = this.ctx.currentTime;
+    const strength = THREE.MathUtils.clamp((speed - S.from) / (S.full - S.from), 0, 1);
+    this.storm.gain.setTargetAtTime(MIX.storm * strength ** 1.5, now, S.ease);
+    for (const b of this.stormBands) {
+      // The howl wanders a little on its own, each channel differently.
+      const wobble = 1 + S.howl.wobble * Math.sin(now * 0.37 + b.seed) * Math.sin(now * 0.11 + b.seed * 2);
+      b.roar.frequency.setTargetAtTime((S.roar.at + S.roar.perSpeed * speed) * this.pitch, now, S.ease);
+      b.howl.frequency.setTargetAtTime((S.howl.at + S.howl.perSpeed * speed) * wobble * this.pitch, now, S.ease);
+    }
   }
 
   setMuted(muted: boolean): void {

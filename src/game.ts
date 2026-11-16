@@ -66,12 +66,18 @@ const NO_HOOD = import.meta.env.DEV && new URLSearchParams(location.search).has(
 
 /**
  * The weather: it snows as hard as `strength` × the biome's snowfall where the camera is (full at
- * the top, easing off toward the thaw: see Biome.snowing); the wind drifts round at `wind` m/s.
+ * the top, easing off toward the thaw: see Biome.snowing). The wind drifts round at `wind` m/s; at
+ * the top a storm blows across the slope instead, at `storm.speed` m/s in gusts (± `storm.gust` of
+ * it, three slow waves of `storm.periods` s), its heading wandering by ± `storm.veer` rad. The
+ * storm holds for the first `storm.hold` m and has eased to the plain wind by `storm.calm` m.
  */
 const WEATHER = {
   strength: 1,
   wind: 1.5,
+  storm: { speed: 14, gust: 0.45, periods: [7.3, 3.1, 1.7] as const, veer: 0.3, hold: 300, calm: 1500 },
 };
+const _breeze = new THREE.Vector3();
+const _gale = new THREE.Vector3();
 /** ?snow=0..1 holds the snowfall at that strength (for looking at it). */
 const SNOW_PARAM = new URLSearchParams(location.search).get('snow');
 const SNOW_FIXED = SNOW_PARAM === null ? null : THREE.MathUtils.clamp(Number(SNOW_PARAM) || 0, 0, 1);
@@ -466,8 +472,20 @@ export class Game {
 
   /** The wind now: slowly turning (see WEATHER). */
   private windNow(): THREE.Vector3 {
-    const a = this.snowClock / 47;
-    return this.wind.set(Math.cos(a), 0, Math.sin(a * 0.7)).multiplyScalar(WEATHER.wind);
+    const W = WEATHER.storm;
+    const t = this.snowClock;
+    const a = t / 47;
+    const breeze = _breeze.set(Math.cos(a), 0, Math.sin(a * 0.7)).multiplyScalar(WEATHER.wind);
+    const d = this.field.biome.distance(this.stage.camera.position.z);
+    const storm = 1 - THREE.MathUtils.smoothstep(d, W.hold, W.calm);
+    const wave = (i: number, phase: number) => Math.sin((t / W.periods[i]) * 2 * Math.PI + phase);
+    const gust = 1 + W.gust * (0.5 * wave(0, 0) + 0.3 * wave(1, 1.3) + 0.2 * wave(2, 2.1));
+    // Across the slope (+x), a little downhill, wandering.
+    const heading = 0.25 + W.veer * Math.sin(t / 23);
+    const gale = _gale.set(Math.cos(heading), 0, -Math.sin(heading)).multiplyScalar(W.speed * gust);
+    this.wind.copy(breeze).lerp(gale, storm);
+    this.audio.setWind(this.wind.length());
+    return this.wind;
   }
 
   /**
