@@ -206,6 +206,7 @@ export class SnowCover {
       if (wind > 0) off += wind * Math.max(0, upward, n.dot(way));
       snow.setX(i, THREE.MathUtils.clamp(snow.getX(i) + add - off, 0, 1));
     });
+    creep(pieces);
   }
 }
 
@@ -257,6 +258,94 @@ function exposureOf(piece: CarPiece, { middle, bottom }: { middle: number; botto
   }
   exposure.set(geometry, out);
   return out;
+}
+
+/**
+ * Snow creeping over an edge onto the top: a top face (see EXPOSED.top) within `reach` m of
+ * faces snow reaches (rest shapes, car-local; across pieces too, e.g. from the rear panel onto
+ * the boot lid) carries their snow, `share` of it, falling off as (1 − distance / reach)^`power`,
+ * from its `sources` strongest neighbours. It follows theirs, so it melts away with it.
+ */
+const CREEP = { reach: 0.25, share: 0.9, power: 1.5, sources: 4 };
+
+/** A top-face vertex carrying the snow of the vertices near it (see CREEP). */
+interface Creep {
+  target: THREE.BufferAttribute;
+  i: number;
+  from: THREE.BufferAttribute[];
+  j: number[];
+  w: number[];
+}
+
+/** Per car (by its pieces): its top-face vertices by an edge, and where their snow comes from. */
+const creeps = new WeakMap<CarPiece[], Creep[]>();
+
+function creepOf(pieces: CarPiece[]): Creep[] {
+  let out = creeps.get(pieces);
+  if (out) return out;
+  const C = CREEP;
+  const E = EXPOSED;
+  const m = middleOf(pieces);
+  type Spot = { snow: THREE.BufferAttribute; i: number; p: THREE.Vector3 };
+  const cell = (p: THREE.Vector3) => `${Math.floor(p.x / C.reach)},${Math.floor(p.y / C.reach)},${Math.floor(p.z / C.reach)}`;
+  const grid = new Map<string, Spot[]>();
+  const tops: Spot[] = [];
+  for (const piece of pieces) {
+    if (piece.rides) continue;
+    const geometry = piece.mesh.geometry;
+    const snow = geometry.getAttribute('aSnow') as THREE.BufferAttribute | undefined;
+    if (!snow) continue;
+    const open = exposureOf(piece, m);
+    const rest = geometry.getAttribute('aRest') as THREE.BufferAttribute;
+    const normals = geometry.getAttribute('normal') as THREE.BufferAttribute;
+    for (let i = 0; i < rest.count; i++) {
+      const p = new THREE.Vector3().fromBufferAttribute(rest, i).add(piece.origin);
+      if (open[i] > 0.5) {
+        const key = cell(p);
+        const list = grid.get(key);
+        if (list) list.push({ snow, i, p });
+        else grid.set(key, [{ snow, i, p }]);
+        continue;
+      }
+      // A top face on the outside (not an inner skin).
+      _n.fromBufferAttribute(normals, i);
+      _d.set(p.x, p.y - m.middle, p.z * E.along);
+      if (_n.y > E.top[0] && _d.lengthSq() > 1e-6 && _n.dot(_d.normalize()) >= E.outside) tops.push({ snow, i, p });
+    }
+  }
+  out = [];
+  for (const t of tops) {
+    const near: { s: Spot; w: number }[] = [];
+    const cx = Math.floor(t.p.x / C.reach);
+    const cy = Math.floor(t.p.y / C.reach);
+    const cz = Math.floor(t.p.z / C.reach);
+    for (let x = cx - 1; x <= cx + 1; x++) {
+      for (let y = cy - 1; y <= cy + 1; y++) {
+        for (let z = cz - 1; z <= cz + 1; z++) {
+          for (const s of grid.get(`${x},${y},${z}`) ?? []) {
+            const d = s.p.distanceTo(t.p);
+            if (d < C.reach) near.push({ s, w: C.share * (1 - d / C.reach) ** C.power });
+          }
+        }
+      }
+    }
+    if (near.length === 0) continue;
+    near.sort((a, b) => b.w - a.w);
+    const best = near.slice(0, C.sources);
+    out.push({ target: t.snow, i: t.i, from: best.map((b) => b.s.snow), j: best.map((b) => b.s.i), w: best.map((b) => b.w) });
+  }
+  creeps.set(pieces, out);
+  return out;
+}
+
+/** Lays the snow creeping over the car's edges onto its top (see CREEP). */
+function creep(pieces: CarPiece[]): void {
+  for (const c of creepOf(pieces)) {
+    let v = 0;
+    for (let k = 0; k < c.from.length; k++) v = Math.max(v, c.from[k].getX(c.j[k]) * c.w[k]);
+    c.target.setX(c.i, v);
+    c.target.needsUpdate = true;
+  }
 }
 
 /**
