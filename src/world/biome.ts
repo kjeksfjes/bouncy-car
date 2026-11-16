@@ -130,6 +130,8 @@ const TREE_SNOW = {
   area: 0.3,
   areaScale: 220,
   tree: 0.12,
+  /** Near the top every tree is weighed down: + `boost`, for the first `from` m, gone by `to` m. */
+  start: { boost: 0.5, from: 1000, to: 2200 },
 };
 
 const COVER = {
@@ -520,10 +522,12 @@ export class Biome {
   treeSnow(x: number, z: number, normal: THREE.Vector3, env: EnvSample, r: number): number {
     if (this.snowCover(x, z, normal, env) <= 0.5) return 0;
     const T = TREE_SNOW;
-    const high = 1 - 2 * smoothstep(0, BIOME.thawEnd, this.distance(z));
+    const d = this.distance(z);
+    const high = 1 - 2 * smoothstep(0, BIOME.thawEnd, d);
+    const start = T.start.boost * (1 - smoothstep(T.start.from, T.start.to, d));
     const shelter = T.hollow * Math.max(0, -env.curvature) + T.floor * env.floor - T.ridge * Math.max(0, env.curvature) - T.sun * Math.max(0, env.exposure);
     const area = this.snowfall(x / T.areaScale, z / T.areaScale);
-    return THREE.MathUtils.clamp(T.base + T.height * high + shelter + T.area * area + T.tree * (2 * r - 1), 0.05, 1);
+    return THREE.MathUtils.clamp(T.base + T.height * high + start + shelter + T.area * area + T.tree * (2 * r - 1), 0.05, 1);
   }
 
   /** 1 where it's all snow, 0 where the snow is gone, patchy through the thaw. */

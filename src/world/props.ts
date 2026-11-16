@@ -127,7 +127,9 @@ const SPRUCE_SNOW = {
  */
 const SNOW_LOADS = [
   { kind: 'spruceSnowMid', upTo: 0.7, edge: 0.4, lip: 0.07, farFrom: 2.9, seed: 2208 },
-  { kind: 'spruceSnowHeavy', upTo: 1, edge: 0.18, lip: 0.1, farFrom: 2.0, seed: 2209 },
+  { kind: 'spruceSnowHeavy', upTo: 0.88, edge: 0.18, lip: 0.1, farFrom: 2.0, seed: 2209 },
+  // Nearly buried: snow almost to the branch tips, a thin band of green below it.
+  { kind: 'spruceSnowFull', upTo: 1, edge: 0.1, lip: 0.11, farFrom: 1.5, seed: 2210 },
 ] as const;
 type SnowLoad = (typeof SNOW_LOADS)[number];
 
@@ -477,6 +479,7 @@ export function buildFarTrees(): Record<TreeKind, THREE.BufferGeometry> {
   return {
     spruceSnowMid: spruce(SNOW_LOADS[0]),
     spruceSnowHeavy: spruce(SNOW_LOADS[1]),
+    spruceSnowFull: spruce(SNOW_LOADS[2]),
     spruce: spruce(null),
     pine: mergeTree([limb(new THREE.Vector3(), new THREE.Vector3(0, 5, 0), 0.25, 0.13, COLORS.pineBark), blob(1.7, 5, 0.55, COLORS.pineNeedles)]),
     broadleaf: mergeTree([limb(new THREE.Vector3(), new THREE.Vector3(0, 2.6, 0), 0.26, 0.16, COLORS.broadTrunk), blob(2, 3.5, 0.85, COLORS.leaves)]),
@@ -499,6 +502,7 @@ export class PropScatter {
   private readonly geometries: Record<TreeKind, THREE.BufferGeometry> = {
     spruceSnowMid: buildSpruce(SNOW_LOADS[0]),
     spruceSnowHeavy: buildSpruce(SNOW_LOADS[1]),
+    spruceSnowFull: buildSpruce(SNOW_LOADS[2]),
     spruce: buildSpruce(null),
     pine: buildPine(),
     broadleaf: buildBroadleaf(),
