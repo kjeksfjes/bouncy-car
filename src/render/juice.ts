@@ -16,6 +16,12 @@ const JUICE = {
   /** Only cars this close to the camera throw particles (m). */
   effectRange: 120,
   /**
+   * A boulder under snow (where the ground round it is snow): a hit throws `buriedRockSnow` puffs
+   * of its snow (more the harder) with the sparks, and a scrape `buriedRockScrape` per spark.
+   */
+  buriedRockSnow: 10,
+  buriedRockScrape: 0.6,
+  /**
    * Thrown-up snow ("føyke"): powder clouds `snowCloud` × the other grounds' powder in size,
    * growing `snowGrow` m/s as they drift, hanging `snowHang` × as long; light enough to float
    * (`snowAir`: the share of gravity it feels and its drag, 1/s); ice crystals glittering in it,
@@ -244,7 +250,9 @@ export class Juice implements CarEvents {
       const k = Math.min(1, severity / 12);
       if (surface === 'metal' || surface === 'rock' || (surface === 'ground' && this.isHard(at))) {
         this.burstSparks(at, car.velocity, JUICE.hitSparks + Math.round(JUICE.hitSparksPerSeverity * severity));
-        if (surface !== 'metal') this.burstDust(at, car.velocity, 6, 1.5, COLOR.rockDust);
+        // A boulder under snow throws its snow too, so a buried rock reads as one.
+        if (surface === 'rock' && this.groundAt(at).snow > 0.5) this.burstSnow(at, car.velocity, JUICE.buriedRockSnow + Math.round(20 * k), 1.5 + 3 * k);
+        else if (surface !== 'metal') this.burstDust(at, car.velocity, 6, 1.5, COLOR.rockDust);
       } else if (surface !== 'tree') {
         this.burstGround(at, car.velocity, 8 + Math.round(40 * k), 2 + 4 * k);
         if (surface === 'ground' && severity > JUICE.gougeFrom && grassy(this.groundAt(at))) this.gouges(car, at, severity);
@@ -429,6 +437,19 @@ export class Juice implements CarEvents {
       // just off the surface.
       _p.copy(grind.at).addScaledVector(_slide, -Math.random() * 0.02).addScaledVector(_out, 0.03);
       this.sparks.emit({ position: _p, velocity: _v, life: 0.25 + Math.random() * 0.45 });
+    }
+    // Scraping a boulder under snow scrapes its snow off as well.
+    if (grind.surface === 'rock' && this.groundAt(grind.at).snow > 0.5) this.burstSnow(grind.at, grind.slide, Math.ceil(n * J.buriedRockScrape), 1);
+  }
+
+  /** A puff of snow (powder and glitter, see emitGround) thrown from `at`. */
+  private burstSnow(at: THREE.Vector3, carry: THREE.Vector3, count: number, spread: number): void {
+    for (let i = 0; i < count; i++) {
+      _v.copy(carry).multiplyScalar(0.3);
+      _v.x += (Math.random() - 0.5) * 2 * spread;
+      _v.y += Math.random() * spread;
+      _v.z += (Math.random() - 0.5) * 2 * spread;
+      this.emitGround('snow', at, _v, 0.3);
     }
   }
 
