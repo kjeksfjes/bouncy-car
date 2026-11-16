@@ -6,9 +6,13 @@ import { SUN_COLOR, SUN_DIR } from './stage';
  * Ice crystals in thrown-up snow: tiny flat plates, each a mirror. One shows only when it tilts so
  * that it throws the sun into the eye, a brief flash as it tumbles, and is invisible between
  * (they're what makes snow glitter). Drawn bigger than real crystals (a few mm) so a flash reads
- * from the chase camera: `size` (min..max, m) across. They hang in the air with the powder
- * (`gravity` of world gravity, `drag` 1/s), tumbling at `spin` (min..max, rad/s), for `life`
- * (min..max) s, the last `fade` of it fading. A flash is `sharp` narrow (the power on how well the
+ * from the chase camera: `size` (min..max, m) across. Thrown up with the powder, they lose the
+ * throw to `drag` (1/s) and then settle out of the cloud, sinking at about `gravity` × g / `drag`
+ * (≈0.4 m/s) and fluttering side to side (`flutter`: m/s, and rad/s round its circle, min..max).
+ * They tumble at `spin` (min..max, rad/s), slowing by `spinDecay` (1/s) to `settleSpin`
+ * (min..max), so a flash lasts long enough to be seen travelling down. They land on the ground
+ * and lie still (one facing the sun keeps glinting). Each lasts `life` (min..max) s, the last
+ * `fade` of it fading. A flash is `sharp` narrow (the power on how well the
  * mirror lines up with the sun: higher is briefer and rarer), at its strongest (`peak` opaque)
  * from `full` of a perfect line-up. On a screen a flash can't outshine white snow, so it shows as a spot painted
  * over it, not light added: white for some crystals, and for `fire` of them a colour, as ice splits
@@ -19,10 +23,13 @@ import { SUN_COLOR, SUN_DIR } from './stage';
 const ICE = {
   capacity: 3000,
   size: [0.04, 0.07] as const,
-  gravity: 0.015,
+  gravity: 0.05,
   drag: 1.4,
+  flutter: { speed: 0.25, turn: [2, 4] as const },
   spin: [4, 12] as const,
-  life: [2.2, 4.4] as const,
+  spinDecay: 0.8,
+  settleSpin: [0.6, 1.8] as const,
+  life: [3, 5.5] as const,
   fade: 0.3,
   sharp: 30,
   full: 0.5,
@@ -80,6 +87,11 @@ interface Crystal {
   life: number;
   /** The colour it flashes. */
   color: THREE.Color;
+  /** The slowest it tumbles once settling (rad/s); its flutter's pace (rad/s) and phase. */
+  settleSpin: number;
+  flutterTurn: number;
+  flutterPhase: number;
+  landed: boolean;
 }
 
 const between = (range: readonly [number, number]) => range[0] + Math.random() * (range[1] - range[0]);
@@ -93,7 +105,11 @@ export class IceGlints {
   private readonly mesh: THREE.InstancedMesh;
   private readonly crystals: Crystal[] = [];
 
-  constructor(scene: THREE.Scene) {
+  /** @param groundAt the ground's height at (x, z), for landing on */
+  constructor(
+    scene: THREE.Scene,
+    private readonly groundAt: (x: number, z: number) => number,
+  ) {
     // A hexagonal plate, 1 m across, lying flat (its faces ±y).
     const plate = new THREE.CircleGeometry(0.5, 6).rotateX(-Math.PI / 2);
     const material = new THREE.ShaderMaterial({
@@ -132,6 +148,10 @@ export class IceGlints {
         age: 0,
         life: between(ICE.life),
         color: Math.random() < ICE.fire ? new THREE.Color().setHSL(between(ICE.hues), ICE.saturation, 0.6) : SUN_COLOR.clone(),
+        settleSpin: between(ICE.settleSpin),
+        flutterTurn: between(ICE.flutter.turn) * (Math.random() < 0.5 ? -1 : 1),
+        flutterPhase: Math.random() * Math.PI * 2,
+        landed: false,
       });
     }
   }
@@ -139,14 +159,27 @@ export class IceGlints {
   update(dt: number): void {
     const g = GRAVITY * ICE.gravity * dt;
     const keep = Math.exp(-ICE.drag * dt);
+    const spinKeep = Math.exp(-ICE.spinDecay * dt);
     let n = 0;
     for (const c of this.crystals) {
       c.age += dt;
       if (c.age >= c.life) continue;
-      c.velocity.multiplyScalar(keep);
-      c.velocity.y -= g;
-      c.position.addScaledVector(c.velocity, dt);
-      c.rotation.multiply(_q.setFromAxisAngle(c.axis, c.spin * dt));
+      if (!c.landed) {
+        c.velocity.multiplyScalar(keep);
+        c.velocity.y -= g;
+        c.position.addScaledVector(c.velocity, dt);
+        // Fluttering round a little circle as it sinks.
+        const a = c.flutterPhase + c.age * c.flutterTurn;
+        c.position.x += Math.cos(a) * ICE.flutter.speed * dt;
+        c.position.z += Math.sin(a) * ICE.flutter.speed * dt;
+        c.spin = Math.max(c.settleSpin, c.spin * spinKeep);
+        c.rotation.multiply(_q.setFromAxisAngle(c.axis, c.spin * dt));
+        const ground = this.groundAt(c.position.x, c.position.z) + 0.02;
+        if (c.position.y < ground) {
+          c.position.y = ground;
+          c.landed = true;
+        }
+      }
       this.mesh.setMatrixAt(n, _m.compose(c.position, c.rotation, _s.setScalar(c.size)));
       const fade = Math.min(1, (c.life - c.age) / (c.life * ICE.fade));
       this.mesh.setColorAt(n, _c.copy(c.color).multiplyScalar(fade));

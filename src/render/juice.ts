@@ -175,7 +175,7 @@ export class Juice implements CarEvents {
     this.powder = new Particles(scene, field, { capacity: 4500, blending: THREE.NormalBlending, ...JUICE.snowAir });
     this.clods = new Particles(scene, field, { capacity: 1500, blending: THREE.NormalBlending, gravity: 1, drag: 0.6 });
     this.sparks = new Sparks(scene, field, 1500);
-    this.ice = new IceGlints(scene);
+    this.ice = new IceGlints(scene, (x, z) => field.height(x, z));
   }
 
   update(dt: number, cars: readonly Car[], halfHeight: number): void {
