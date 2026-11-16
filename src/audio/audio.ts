@@ -9,6 +9,16 @@ import { Squeal, TYRE_ROLL, TYRE_SLIDE, loadLoudness, slideWildness, wilder } fr
 /** Mix levels. Everything is synthesised; these are by-ear starting points. */
 /** The slow-motion low-pass: wide open at normal speed, and the lowest it closes down to (Hz). */
 const SLOW_OPEN = 20000;
+/**
+ * Heavy snow hushes the world: snow in the air and on the ground soaks up sound, so what's further
+ * off fades and dulls quickly while what's close stays much the same. At full snowfall: sounds
+ * fade with distance by `rolloff` (the panners' roll-off, in place of PANNER's) and dull with it,
+ * closing to e^(−distance / `dullOver`) of the full range (a car 50 m off loses everything above
+ * ≈3 kHz); the whole mix dips by `dip` dB, and its treble above `shelf` Hz by `cut` dB more (the
+ * game's sound is mostly low, so this is only a touch). It eases in over `ease` s. All by how hard
+ * it snows.
+ */
+const SNOW_HUSH = { rolloff: 3.5, dullOver: 25, dip: -2.5, shelf: 2000, cut: -5, ease: 0.5 };
 const SLOW_FLOOR = 300;
 
 const MIX = {
@@ -117,6 +127,8 @@ const CRUNCH_GAP = 0.09;
 /** Engine, tyre and scrape loops for one car. */
 class CarVoice {
   readonly panner: PannerNode;
+  /** Dulls the car with distance while it snows (see SNOW_HUSH). */
+  private readonly dull: BiquadFilterNode;
   private readonly engine: AudioWorkletNode;
   private readonly rasp: BiquadFilterNode;
   private readonly muffler: BiquadFilterNode[];
@@ -142,7 +154,8 @@ class CarVoice {
     private readonly level: number,
   ) {
     this.panner = new PannerNode(ctx, PANNER);
-    this.panner.connect(out);
+    this.dull = new BiquadFilterNode(ctx, { type: 'lowpass', frequency: SLOW_OPEN, Q: 0.5 });
+    this.panner.connect(this.dull).connect(out);
 
     // Engine: combustion pulses (worklet) → exhaust resonances → soft saturation → muffler.
     this.engine = new AudioWorkletNode(ctx, ENGINE_PROCESSOR, { numberOfInputs: 0, outputChannelCount: [2] });
@@ -177,6 +190,12 @@ class CarVoice {
     this.squeal = new Squeal(ctx, noise, this.panner);
     this.grind = new GrindChain(ctx, profile, noise, this.panner);
     this.drag = new DragChain(ctx, noise, this.panner);
+  }
+
+  /** How the snow hushes it now: its panner's roll-off and its dulling cutoff (Hz; see SNOW_HUSH). */
+  hush(rolloff: number, cutoff: number): void {
+    this.panner.rolloffFactor = rolloff;
+    this.dull.frequency.setTargetAtTime(cutoff, this.ctx.currentTime, 0.1);
   }
 
   /**
@@ -303,6 +322,7 @@ export class GameAudio implements CarEvents {
   private muted = false;
   private paused = false;
   private enginesOff = false;
+  private snow = 0;
 
   constructor() {
     const start = () => {
@@ -310,6 +330,7 @@ export class GameAudio implements CarEvents {
       this.engine = new AudioEngine();
       this.engine.setMuted(this.muted || this.paused);
       this.engine.setEnginesOff(this.enginesOff);
+      this.engine.setSnow(this.snow);
     };
     window.addEventListener('keydown', start, { once: true });
     window.addEventListener('pointerdown', start, { once: true });
@@ -334,6 +355,13 @@ export class GameAudio implements CarEvents {
   /** Slow motion (game time per real time, 1 = normal): sounds drop in pitch and stretch out. */
   setTimeScale(scale: number): void {
     this.engine?.setTimeScale(scale);
+  }
+
+  /** How hard it snows (0..1): heavy snow muffles everything a little (see SNOW_HUSH). */
+  setSnow(amount: number): void {
+    if (Math.abs(amount - this.snow) < 0.01) return;
+    this.snow = amount;
+    this.engine?.setSnow(amount);
   }
 
   /** Silences everything while the game is paused (the mute setting is kept apart). */
@@ -405,12 +433,18 @@ class AudioEngine {
   private pitch = 1;
   /** Closes down in slow motion for a muffled, underwater feel. */
   private readonly slowFilter: BiquadFilterNode;
+  /** Heavy snow's hush (see SNOW_HUSH): how hard it snows, the whole mix's dip and its treble cut. */
+  private snow = 0;
+  private readonly snowDip: GainNode;
+  private readonly snowShelf: BiquadFilterNode;
+  /** Where the listener is (the camera), for how far off a sound starts. */
+  private readonly ear = new THREE.Vector3();
   /** When the latest rock clacks and thuds started (see ROCK_VOICES). */
   private rockTimes: number[] = [];
   /** When the latest caws start (see ROOKS). */
   private cawTimes: number[] = [];
   /** One-shots following a moving source (see followOut). */
-  private followers: { panner: PannerNode; at: THREE.Vector3; until: number }[] = [];
+  private followers: { panner: PannerNode; dull: AudioNode; at: THREE.Vector3; until: number }[] = [];
   /** Dev: the cars' engines silenced, to hear the rest better. */
   private enginesOff = false;
 
@@ -423,7 +457,9 @@ class AudioEngine {
     const limiter = new DynamicsCompressorNode(this.ctx, { threshold: -4, knee: 4, ratio: 8, attack: 0.002, release: 0.15 });
     this.master = new GainNode(this.ctx, { gain: MIX.master });
     this.slowFilter = new BiquadFilterNode(this.ctx, { type: 'lowpass', frequency: SLOW_OPEN, Q: 0.7 });
-    this.master.connect(this.slowFilter).connect(limiter).connect(this.ctx.destination);
+    this.snowDip = new GainNode(this.ctx, { gain: 1 });
+    this.snowShelf = new BiquadFilterNode(this.ctx, { type: 'highshelf', frequency: SNOW_HUSH.shelf, gain: 0 });
+    this.master.connect(this.slowFilter).connect(this.snowDip).connect(this.snowShelf).connect(limiter).connect(this.ctx.destination);
     this.loops = new GainNode(this.ctx, { gain: 1 });
     this.loops.connect(this.master);
     this.noise = whiteNoise(this.ctx, 2);
@@ -442,6 +478,24 @@ class AudioEngine {
 
   setEnginesOff(off: boolean): void {
     this.enginesOff = off;
+  }
+
+  setSnow(amount: number): void {
+    const H = SNOW_HUSH;
+    const now = this.ctx.currentTime;
+    this.snow = amount;
+    this.snowDip.gain.setTargetAtTime(10 ** ((H.dip * amount) / 20), now, H.ease);
+    this.snowShelf.gain.setTargetAtTime(H.cut * amount, now, H.ease);
+  }
+
+  /** The panners' roll-off now (see SNOW_HUSH). */
+  private rolloff(): number {
+    return THREE.MathUtils.lerp(PANNER.rolloffFactor!, SNOW_HUSH.rolloff, this.snow);
+  }
+
+  /** The dulling cutoff (Hz) for a sound `distance` m off now (see SNOW_HUSH). */
+  private dullAt(distance: number): number {
+    return SLOW_OPEN * Math.exp((-Math.max(0, distance - PANNER.refDistance!) / SNOW_HUSH.dullOver) * this.snow);
   }
 
   setTimeScale(scale: number): void {
@@ -467,6 +521,7 @@ class AudioEngine {
       let voice = this.voices.get(car);
       if (!voice) this.voices.set(car, (voice = new CarVoice(this.ctx, this.loops, this.noise, this.profile, i === 0 ? 1 : MIX.aiEngine)));
       voice.update(dt, car, this.pitch, !this.enginesOff);
+      voice.hush(this.rolloff(), this.dullAt(car.position.distanceTo(this.ear)));
     });
 
     const player = cars[0];
@@ -653,7 +708,7 @@ class AudioEngine {
   private placeListener(camera: THREE.Camera): void {
     const l = this.ctx.listener;
     const now = this.ctx.currentTime;
-    const p = camera.getWorldPosition(new THREE.Vector3());
+    const p = camera.getWorldPosition(this.ear);
     const f = camera.getWorldDirection(new THREE.Vector3());
     const u = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
     l.positionX.setTargetAtTime(p.x, now, 0.02);
@@ -678,9 +733,10 @@ class AudioEngine {
    */
   private followOut(at: THREE.Vector3, level: number, life: number): GainNode {
     const gain = new GainNode(this.ctx, { gain: level });
-    const panner = new PannerNode(this.ctx, { ...PANNER, positionX: at.x, positionY: at.y, positionZ: at.z });
-    gain.connect(panner).connect(this.master);
-    this.followers.push({ panner, at, until: this.ctx.currentTime + life / this.pitch });
+    const panner = new PannerNode(this.ctx, { ...PANNER, rolloffFactor: this.rolloff(), positionX: at.x, positionY: at.y, positionZ: at.z });
+    const dull = this.dulled(at);
+    gain.connect(panner).connect(dull).connect(this.master);
+    this.followers.push({ panner, dull, at, until: this.ctx.currentTime + life / this.pitch });
     return gain;
   }
 
@@ -690,6 +746,7 @@ class AudioEngine {
     this.followers = this.followers.filter((f) => {
       if (now > f.until) {
         f.panner.disconnect();
+        f.dull.disconnect();
         return false;
       }
       f.panner.positionX.setTargetAtTime(f.at.x, now, 0.02);
@@ -701,13 +758,23 @@ class AudioEngine {
 
   private oneShotOut(at: THREE.Vector3, level: number, saturate = false): GainNode {
     const gain = new GainNode(this.ctx, { gain: level });
-    const panner = new PannerNode(this.ctx, { ...PANNER, positionX: at.x, positionY: at.y, positionZ: at.z });
+    const panner = new PannerNode(this.ctx, { ...PANNER, rolloffFactor: this.rolloff(), positionX: at.x, positionY: at.y, positionZ: at.z });
     if (saturate) gain.connect(new WaveShaperNode(this.ctx, { curve: softClip(), oversample: '2x' })).connect(panner);
     else gain.connect(panner);
-    panner.connect(this.master);
+    const dull = this.dulled(at);
+    panner.connect(dull).connect(this.master);
     // Slow motion stretches the one-shots, so they need longer before the panner goes.
-    setTimeout(() => panner.disconnect(), 2000 / this.pitch);
+    setTimeout(() => {
+      panner.disconnect();
+      dull.disconnect();
+    }, 2000 / this.pitch);
     return gain;
+  }
+
+  /** A filter dulling a sound at `at` for how far off it is in the snow (see SNOW_HUSH); a plain pass without snow. */
+  private dulled(at: THREE.Vector3): AudioNode {
+    if (this.snow <= 0.001) return new GainNode(this.ctx, { gain: 1 });
+    return new BiquadFilterNode(this.ctx, { type: 'lowpass', frequency: this.dullAt(at.distanceTo(this.ear)), Q: 0.5 });
   }
 
   private noiseBurst(out: AudioNode, type: BiquadFilterType, freq: number, q: number, peak: number, decay: number, delay = 0): void {

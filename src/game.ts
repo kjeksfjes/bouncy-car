@@ -472,11 +472,13 @@ export class Game {
 
   /**
    * Eases the sky and fog toward the warmth of the biome the car is in (so Shift+B doesn't jump it),
-   * overcast as hard as it snows.
+   * overcast (and the sound hushed) as hard as it snows.
    */
   private updateWarmth(dt: number): void {
-    // Snow falls from cloud: as hard as it snows, the sky is overcast.
-    this.stage.setOvercast(this.snowAmount());
+    // Snow falls from cloud: as hard as it snows, the sky is overcast, and sound muffled.
+    const snow = this.snowAmount();
+    this.stage.setOvercast(snow);
+    this.audio.setSnow(snow);
     const target = this.field.biome.warmth(this.car.position.z);
     this.warmth += (target - this.warmth) * (1 - Math.exp(-WARMTH_EASE * dt));
     if (Math.abs(target - this.warmth) < 0.002) this.warmth = target;
