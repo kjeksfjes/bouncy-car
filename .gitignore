@@ -6,8 +6,9 @@ blob-report/
 playwright/.cache/
 .DS_Store
 
-# Beads issue tracking stays local
+# Beads issue tracking stays local, with the lock files bd keeps beside it
 .beads/
+*.gate.lock
 
 # Reference images (third-party drawings and pictures) stay local; views.json calibrates them for scripts/overlay.mjs
 ref/**/*.png
