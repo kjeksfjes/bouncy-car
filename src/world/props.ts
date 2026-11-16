@@ -13,6 +13,8 @@ export const COLORS = {
   needles: new THREE.Color('#2f5a46'),
   needlesDark: new THREE.Color('#244838'),
   snow: new THREE.Color('#f3f6fa'),
+  /** Snow in its own shade, under a clump. */
+  snowShade: new THREE.Color('#d5dfea'),
   /** Pine: reddish upper bark and a darker, bluer crown. */
   pineBark: new THREE.Color('#8a5a3c'),
   pineNeedles: new THREE.Color('#2c5236'),
@@ -78,8 +80,8 @@ function mergeTree(parts: THREE.BufferGeometry[]): THREE.BufferGeometry {
   return merged;
 }
 
-/** A spruce: three stacked cones, snow on their upper sides if `snowy`. ≈6.1 m tall. */
-function buildSpruce(snowy: boolean): THREE.BufferGeometry {
+/** A spruce: three stacked cones, each under a mantle of snow if it carries a `load`. ≈6.1 m tall. */
+function buildSpruce(load: SnowLoad | null): THREE.BufferGeometry {
   const trunk = new THREE.CylinderGeometry(0.22, 0.32, 1.8, 6).toNonIndexed();
   trunk.translate(0, 0.9, 0);
   paintFaces(trunk, () => COLORS.trunk);
@@ -90,14 +92,99 @@ function buildSpruce(snowy: boolean): THREE.BufferGeometry {
     { r: 1.05, h: 1.9, y: 4.2, color: COLORS.needles },
   ];
   const parts = [trunk];
+  const random = mulberry32(load?.seed ?? 0);
   for (const l of layers) {
-    const cone = new THREE.ConeGeometry(l.r, l.h, 7, 2).toNonIndexed();
+    const cone = new THREE.ConeGeometry(l.r, l.h, SPRUCE_SIDES, 2).toNonIndexed();
     cone.translate(0, l.y + l.h / 2, 0);
-    const snowLine = l.y + l.h * 0.5;
-    paintFaces(cone, (centroid, n) => (snowy && centroid.y > snowLine && n.y > 0 ? COLORS.snow : l.color));
+    paintFaces(cone, () => l.color);
     parts.push(leafy(cone));
+    if (load) parts.push(leafy(snowMantle(l.r, l.h, l.y, load, random)));
   }
   return mergeTree(parts);
+}
+
+/** Faces round a spruce tier's cone. */
+const SPRUCE_SIDES = 7;
+
+/**
+ * The snow on a spruce tier: a mantle lying on its cone from the top down to its load's `edge` of
+ * the way up from the branch tips (0 tips, 1 top; see SNOW_LOADS), its hem waving by ±`wave` round
+ * the tier (`perSide` points per cone face), so the green tips show below it. At the hem it's the
+ * load's `lip` m thick, and its underside tucks back onto the branches `tuck` m lower.
+ */
+const SPRUCE_SNOW = {
+  wave: 0.13,
+  perSide: 3,
+  tuck: 0.1,
+  /** Lifted this far off the cone (m), so the two don't flicker through each other. */
+  lift: 0.02,
+};
+
+/**
+ * The snow loads a snowy spruce is drawn with, by its Tree.snow (up to `upTo`): how far down its
+ * mantles reach and how thick their lip is (see SPRUCE_SNOW); how high the far stand-in's white
+ * starts (`farFrom`, m); and a seed for the hems' waves, so each load hangs differently.
+ */
+const SNOW_LOADS = [
+  { kind: 'spruceSnowMid', upTo: 0.7, edge: 0.4, lip: 0.07, farFrom: 2.9, seed: 2208 },
+  { kind: 'spruceSnowHeavy', upTo: 1, edge: 0.18, lip: 0.1, farFrom: 2.0, seed: 2209 },
+] as const;
+type SnowLoad = (typeof SNOW_LOADS)[number];
+
+/** A spruce tier's snow mantle (see SPRUCE_SNOW) on its cone, `r` m wide at the foot `y` and `h` m tall. */
+function snowMantle(r: number, h: number, y: number, load: SnowLoad, random: () => number): THREE.BufferGeometry {
+  const S = SPRUCE_SNOW;
+  const apex = new THREE.Vector3(0, y + h, 0);
+  // The cone's corners at its foot, placed as ConeGeometry places them (x = r sin θ, z = r cos θ).
+  const corners = Array.from({ length: SPRUCE_SIDES + 1 }, (_, k) => {
+    const a = (k / SPRUCE_SIDES) * Math.PI * 2;
+    return new THREE.Vector3(r * Math.sin(a), y, r * Math.cos(a));
+  });
+  const faceNormals = corners.slice(0, SPRUCE_SIDES).map((c, k) =>
+    new THREE.Vector3().crossVectors(c.clone().sub(apex), corners[k + 1].clone().sub(apex)).normalize(),
+  );
+  // On a ridge between two faces, out along both.
+  const ridgeNormals = faceNormals.map((n, k) => n.clone().add(faceNormals[(k + SPRUCE_SIDES - 1) % SPRUCE_SIDES]).normalize());
+  const p1 = random() * Math.PI * 2;
+  const p2 = random() * Math.PI * 2;
+  const cols = SPRUCE_SIDES * S.perSide;
+
+  /** The point on the cone at column `j` and `up` of the way up from the tips, raised `lift` m off it. */
+  const at = (j: number, up: number, lift: number) => {
+    const k = Math.floor(j / S.perSide) % SPRUCE_SIDES;
+    const s = (j % S.perSide) / S.perSide;
+    const p = corners[k].clone().lerp(corners[k + 1], s).lerp(apex, up);
+    return p.addScaledVector(s === 0 ? ridgeNormals[k] : faceNormals[k], lift);
+  };
+  const positions: number[] = [];
+  const shaded: boolean[] = [];
+  const tri = (a: THREE.Vector3, b: THREE.Vector3, c: THREE.Vector3, shade: boolean) => {
+    positions.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+    shaded.push(shade);
+  };
+  const top = apex.clone().setY(apex.y + S.lift);
+  for (let j = 0; j < cols; j++) {
+    const hem = (i: number) => {
+      const a = (i / cols) * Math.PI * 2;
+      return load.edge + S.wave * (0.65 * Math.sin(3 * a + p1) + 0.35 * Math.sin(5 * a + p2));
+    };
+    const h0 = hem(j);
+    const h1 = hem(j + 1);
+    const lip0 = at(j, h0, load.lip);
+    const lip1 = at(j + 1, h1, load.lip);
+    const under0 = at(j, h0 - S.tuck / h, S.lift);
+    const under1 = at(j + 1, h1 - S.tuck / h, S.lift);
+    // Wound so the faces look out of the cone.
+    tri(top, lip0, lip1, false);
+    tri(lip0, under0, lip1, true);
+    tri(lip1, under0, under1, true);
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  // The lip's underside, turned from the sky, in the snow's shade.
+  let face = 0;
+  paintFaces(geometry, () => (shaded[face++] ? COLORS.snowShade : COLORS.snow));
+  return geometry;
 }
 
 /**
@@ -361,9 +448,13 @@ function buildOak(): { crown: THREE.BufferGeometry; foot: THREE.BufferGeometry }
   return { crown: mergeTree(parts).translate(0, -OAK_SINK, 0), foot: mergeTree([trunk]).translate(0, -OAK_SINK, 0) };
 }
 
-/** The tree meshes: one geometry per kind of tree (spruce with and without snow), and the landmark oak. */
-export type TreeKind = 'spruceSnowy' | 'spruce' | 'pine' | 'broadleaf' | 'oak';
-export const kindOf = (t: Tree): TreeKind => (t.oak ? 'oak' : t.species === 'spruce' ? (t.snowy ? 'spruceSnowy' : 'spruce') : t.species);
+/** The tree meshes: one geometry per kind of tree (spruce bare and under each snow load), and the landmark oak. */
+export type TreeKind = SnowLoad['kind'] | 'spruce' | 'pine' | 'broadleaf' | 'oak';
+export const kindOf = (t: Tree): TreeKind => {
+  if (t.oak) return 'oak';
+  if (t.species !== 'spruce') return t.species;
+  return t.snow > 0 ? SNOW_LOADS.find((l) => t.snow <= l.upTo)!.kind : 'spruce';
+};
 
 /**
  * Far-view stand-ins for the trees (FarTerrain), the same size at scale 1 and in the same colours
@@ -376,15 +467,17 @@ export function buildFarTrees(): Record<TreeKind, THREE.BufferGeometry> {
     paintFaces(g, () => color);
     return g;
   };
-  const spruce = (snowy: boolean) => {
-    const cone = new THREE.ConeGeometry(2, 5.4, 6, 1).toNonIndexed();
+  const spruce = (load: SnowLoad | null) => {
+    const cone = new THREE.ConeGeometry(2, 5.4, 6, 4).toNonIndexed();
     cone.translate(0, 0.7 + 2.7, 0);
-    paintFaces(cone, (c, n) => (snowy && c.y > 3.6 && n.y > 0 ? COLORS.snow : COLORS.needles));
+    // About as much white as the near tree's mantles show (see SNOW_LOADS).
+    paintFaces(cone, (c, n) => (load && c.y > load.farFrom && n.y > 0 ? COLORS.snow : COLORS.needles));
     return mergeTree([cone]);
   };
   return {
-    spruceSnowy: spruce(true),
-    spruce: spruce(false),
+    spruceSnowMid: spruce(SNOW_LOADS[0]),
+    spruceSnowHeavy: spruce(SNOW_LOADS[1]),
+    spruce: spruce(null),
     pine: mergeTree([limb(new THREE.Vector3(), new THREE.Vector3(0, 5, 0), 0.25, 0.13, COLORS.pineBark), blob(1.7, 5, 0.55, COLORS.pineNeedles)]),
     broadleaf: mergeTree([limb(new THREE.Vector3(), new THREE.Vector3(0, 2.6, 0), 0.26, 0.16, COLORS.broadTrunk), blob(2, 3.5, 0.85, COLORS.leaves)]),
     oak: mergeTree([
@@ -404,8 +497,9 @@ export interface ChunkProps {
 export class PropScatter {
   private readonly oak = buildOak();
   private readonly geometries: Record<TreeKind, THREE.BufferGeometry> = {
-    spruceSnowy: buildSpruce(true),
-    spruce: buildSpruce(false),
+    spruceSnowMid: buildSpruce(SNOW_LOADS[0]),
+    spruceSnowHeavy: buildSpruce(SNOW_LOADS[1]),
+    spruce: buildSpruce(null),
     pine: buildPine(),
     broadleaf: buildBroadleaf(),
     oak: this.oak.crown,

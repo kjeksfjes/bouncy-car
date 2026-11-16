@@ -559,7 +559,7 @@ export class Birds {
     const iz = Math.round(tree.z * 10);
     if (tree.oak) return Math.round(between(R.oakBirds, hash2(ix, iz, 71)));
     const kind = R[tree.species];
-    if (tree.snowy || tree.scale < kind.minScale || hash2(ix, iz, 70) >= kind.chance) return 0;
+    if (tree.snow > 0 || tree.scale < kind.minScale || hash2(ix, iz, 70) >= kind.chance) return 0;
     return Math.round(between(kind.birds, hash2(ix, iz, 72)));
   }
 

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GRAVITY } from '../constants';
 import type { Car, ContactSurface } from '../vehicle/car';
-import { COLORS, kindOf, type TreeKind } from './props';
+import { COLORS } from './props';
 import { treeKey, type Tree, type TreeLayout } from './trees';
 
 /**
@@ -52,12 +52,16 @@ const BITS = {
 
 type BitKind = 'twig' | 'cone' | 'snow';
 
+/** What a tree drops, by what it is (a snowy spruce's snow by its load: see Litter.shake). */
+type DropKind = 'broadleaf' | 'oak' | 'pine' | 'spruce' | 'spruceSnowy';
+const dropKind = (t: Tree): DropKind => (t.oak ? 'oak' : t.species === 'spruce' && t.snow > 0 ? 'spruceSnowy' : t.species);
+
 /**
  * What a tree drops when shaken through and through (a scale-1 tree; see Litter.shake), its crown
  * (m above its foot, per unit of scale; `taper` narrows it to the top, as a spruce's), and the
  * leaves' colours. Bark colours come from the tree models (props COLORS).
  */
-const DROPS: Record<TreeKind, {
+const DROPS: Record<DropKind, {
   leaves: number;
   leafColors: THREE.Color[];
   bits: Partial<Record<BitKind, number>>;
@@ -96,7 +100,7 @@ const DROPS: Record<TreeKind, {
   },
 };
 
-const BIT_COLORS: Record<TreeKind, Partial<Record<BitKind, THREE.Color[]>>> = {
+const BIT_COLORS: Record<DropKind, Partial<Record<BitKind, THREE.Color[]>>> = {
   broadleaf: { twig: [COLORS.broadTrunk] },
   oak: { twig: [COLORS.oakBark, COLORS.oakBarkLight] },
   pine: { twig: [COLORS.pineBark], cone: [new THREE.Color('#7d5a3c')] },
@@ -300,7 +304,7 @@ export class Litter {
     this.loose.set(key, state);
     if (take <= 0 || Math.hypot(tree.x - this.eye.x, tree.z - this.eye.z) > SHAKE.seen) return;
 
-    const kind = kindOf(tree);
+    const kind = dropKind(tree);
     const drop = DROPS[kind];
     // A bigger tree holds more: by its crown's spread.
     const share = take * tree.scale * tree.scale;
@@ -308,12 +312,14 @@ export class Litter {
     const strength = Math.min(1, take * 2);
     for (let i = count(drop.leaves * share); i > 0; i--) this.addLeaf(tree, kind, strength);
     for (const bitKind of Object.keys(drop.bits) as BitKind[]) {
-      for (let i = count(drop.bits[bitKind]! * share); i > 0; i--) this.addBit(tree, kind, bitKind, strength);
+      // Snow by the tree's load: DROPS has it for a middling load (0.5).
+      const load = bitKind === 'snow' ? tree.snow / 0.5 : 1;
+      for (let i = count(drop.bits[bitKind]! * share * load); i > 0; i--) this.addBit(tree, kind, bitKind, strength);
     }
   }
 
   /** A point in `tree`'s crown, into `out`. */
-  private inCrown(tree: Tree, kind: TreeKind, out: THREE.Vector3): THREE.Vector3 {
+  private inCrown(tree: Tree, kind: DropKind, out: THREE.Vector3): THREE.Vector3 {
     const c = DROPS[kind].crown;
     const y = between([c.low, c.high], Math.random());
     const reach = c.taper ? c.radius * (c.high + 0.5 - y) / (c.high + 0.5 - c.low) : c.radius;
@@ -336,7 +342,7 @@ export class Litter {
     return Math.min(SHAKE.staggerMax, -Math.log(1 - Math.random()) * SHAKE.stagger);
   }
 
-  private addLeaf(tree: Tree, kind: TreeKind, strength: number): void {
+  private addLeaf(tree: Tree, kind: DropKind, strength: number): void {
     const L = LEAF;
     const vary = () => 1 + (Math.random() * 2 - 1) * L.vary;
     const size = between(L.size, Math.random());
@@ -357,7 +363,7 @@ export class Litter {
     this.leaves.add(leaf, color, this.eye);
   }
 
-  private addBit(tree: Tree, kind: TreeKind, bitKind: BitKind, strength: number): void {
+  private addBit(tree: Tree, kind: DropKind, bitKind: BitKind, strength: number): void {
     const B = BITS[bitKind];
     const length = between(B.length, Math.random());
     const bit: Bit = {

@@ -41,8 +41,8 @@ export interface Tree {
   scale: number;
   yaw: number;
   species: Species;
-  /** Snow on the branches: a spruce standing where the ground is snowy. */
-  snowy: boolean;
+  /** Snow on the branches, 0 (none) .. 1 (weighed down): a spruce standing where the ground is snowy (see Biome.treeSnow). */
+  snow: number;
   /** Collider radius (m). */
   radius: number;
   /** A landmark's great oak (species broadleaf, its own model and collider: see OAK). */
@@ -116,7 +116,7 @@ export class TreeLayout {
         scale,
         yaw: hash2(cellX, cellZ, seed + 15) * Math.PI * 2,
         species,
-        snowy: species === 'spruce' && this.field.biome.snowCover(x, z, _n, env) > 0.5,
+        snow: species === 'spruce' ? this.field.biome.treeSnow(x, z, _n, env, hash2(cellX, cellZ, seed + 18)) : 0,
         radius: SPECIES[species].radius * scale,
         oak: false,
       };

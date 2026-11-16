@@ -232,7 +232,7 @@ export class LandmarkLayout {
     if (!best) return null;
     const { x, z } = best;
     const scale = OAK.scale[0] + (OAK.scale[1] - OAK.scale[0]) * r(2);
-    const tree: Tree = { x, y: f.height(x, z) - 0.3, z, scale, yaw: r(3) * Math.PI * 2, species: 'broadleaf', snowy: false, radius: OAK.radius * scale, oak: true };
+    const tree: Tree = { x, y: f.height(x, z) - 0.3, z, scale, yaw: r(3) * Math.PI * 2, species: 'broadleaf', snow: 0, radius: OAK.radius * scale, oak: true };
     return { kind: 'oak', key, x, z, clear: O.clear, tree };
   }
 

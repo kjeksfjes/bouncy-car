@@ -108,6 +108,24 @@ const BIOME = {
  * are rock above a wobbling line, the lower flanks and floors green. Anywhere, drop walls and very
  * steep ground are rock. Feel values.
  */
+/**
+ * How much snow a snowy spruce carries (see Biome.treeSnow), from `base`: more high on the mountain
+ * (± `height` from the top to the thaw's end), in sheltered hollows and valley floors, less on
+ * ridges the wind strips and on slopes facing the sun; ± `area` in patches `areaScale` m across
+ * (one snowfall left more here than there), and ± `tree` per tree.
+ */
+const TREE_SNOW = {
+  base: 0.5,
+  height: 0.3,
+  hollow: 0.35,
+  floor: 0.15,
+  ridge: 0.35,
+  sun: 0.2,
+  area: 0.3,
+  areaScale: 220,
+  tree: 0.12,
+};
+
 const COVER = {
   /** Rocky and grassy country: noise at `geologyScale` m (stretched along the fall line), rocky past `rockyFrom` (fully by `rockyTo`). */
   geologyScale: 600,
@@ -337,6 +355,7 @@ export class Biome {
   private readonly rhythm: NoiseFunction2D;
   private readonly great: NoiseFunction2D;
   private readonly lanes: NoiseFunction2D;
+  private readonly snowfall: NoiseFunction2D;
   private readonly shifts: Shift[] = [];
 
   constructor(
@@ -353,6 +372,7 @@ export class Biome {
     this.rhythm = makeNoise(seed + 34);
     this.great = makeNoise(seed + 35);
     this.lanes = makeNoise(seed + 36);
+    this.snowfall = makeNoise(seed + 37);
   }
 
   /**
@@ -480,6 +500,19 @@ export class Biome {
     // Through the thaw the new kinds take over gradually; until then it stays spruce.
     const arrived = kind === 'broadleaf' ? smoothstep(B.broadleafFrom, B.thawEnd + 300, d) : kind === 'pine' ? smoothstep(B.pineFrom, B.thawEnd + 600, d) : 1;
     return r < arrived ? kind : 'spruce';
+  }
+
+  /**
+   * How much snow a spruce at (x, z) carries: 0 off the snow (see snowCover), else 0.05 (a dusting)
+   * .. 1 (weighed down), by TREE_SNOW; `r` is a per-tree random in 0..1.
+   */
+  treeSnow(x: number, z: number, normal: THREE.Vector3, env: EnvSample, r: number): number {
+    if (this.snowCover(x, z, normal, env) <= 0.5) return 0;
+    const T = TREE_SNOW;
+    const high = 1 - 2 * smoothstep(0, BIOME.thawEnd, this.distance(z));
+    const shelter = T.hollow * Math.max(0, -env.curvature) + T.floor * env.floor - T.ridge * Math.max(0, env.curvature) - T.sun * Math.max(0, env.exposure);
+    const area = this.snowfall(x / T.areaScale, z / T.areaScale);
+    return THREE.MathUtils.clamp(T.base + T.height * high + shelter + T.area * area + T.tree * (2 * r - 1), 0.05, 1);
   }
 
   /** 1 where it's all snow, 0 where the snow is gone, patchy through the thaw. */
