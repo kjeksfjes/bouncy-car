@@ -37,7 +37,7 @@ const LAYERS = [
  */
 const FLAKES = {
   light: { size: 0.8, fall: [0.35, 0.8] as const, sway: 0.45, flutter: 0.1, flicker: 0.5 },
-  heavy: { size: 2.2, fall: [1.4, 2.2] as const, sway: 0.06, flutter: 0.015, flicker: 0.1 },
+  heavy: { size: 2.2, fall: [2.4, 3.6] as const, sway: 0.06, flutter: 0.015, flicker: 0.1 },
   swayRate: [0.6, 1.4] as const,
   flutterRate: [3, 6] as const,
   shutter: 1 / 45,
