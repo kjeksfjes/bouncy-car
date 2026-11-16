@@ -5,6 +5,7 @@ import type { CarConfig } from './carConfig';
 import type { LightFixtureDef, LightKind } from './lights';
 import { engineParts } from './engine';
 import { addWearAttributes, paintWithWear } from './paintWear';
+import { addSnowAttributes, withSnow } from './snowCover';
 import { Linkage, underbodyParts } from './underbody';
 import { softDotTexture } from '../render/smoke';
 
@@ -321,6 +322,8 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
       plate: std('#e6e1cc', { roughness: 0.6 }),
       alloy: std('#8b8e91', { roughness: 0.45, metalness: 0.5 }),
     };
+    // Snow settles on the outside's other surfaces too (the paint has it built in).
+    for (const outside of [m.glass, m.chrome, m.trim, m.dark, m.plate, m.steel]) withSnow(outside as THREE.MeshStandardMaterial);
     byPaint.set(paint, m);
   }
   return m;
@@ -491,6 +494,9 @@ function hubcapGeometry(radius: number, side: number): THREE.BufferGeometry {
   return merged.rotateZ(side > 0 ? -Math.PI / 2 : Math.PI / 2);
 }
 
+/** Pieces inside the car, by name, that snow never reaches (see snowCover): the cabin, the engine bay's engine and the spare in the boot. */
+const SNOW_INSIDE = /^(interior|engine|spare)/;
+
 /** Builds the car from its blueprint: lofted body parts plus lights, grille, bumpers and wheels. */
 export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
   const mat = materialsFor(cfg, paint);
@@ -520,6 +526,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     const glass = GLASS.test(name) ? planarProjection(geometry) : undefined;
     const original = Float32Array.from(geometry.getAttribute('position').array);
     if (Array.isArray(material) ? material.includes(mat.paint) : material === mat.paint) addWearAttributes(geometry, original);
+    if (!SNOW_INSIDE.test(name)) addSnowAttributes(geometry, original);
     pieces.push({
       name,
       mesh,

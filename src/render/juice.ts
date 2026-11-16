@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Car, CarEvents, ContactSurface, Grind } from '../vehicle/car';
+import { SnowCover } from '../vehicle/snowCover';
 import type { GroundMix } from '../world/biome';
 import { SOD_AREA, type Clods } from '../world/clods';
 import { emptySample } from '../world/environment';
@@ -137,6 +138,8 @@ export class Juice implements CarEvents {
   private readonly powder: Particles;
   /** Ice crystals glittering in the thrown-up snow. */
   private readonly ice: IceGlints;
+  /** Snow building up on the cars' paint. */
+  private readonly carSnow = new SnowCover();
   /** Each car's body box in its own space (see bodyBox). */
   private readonly bodyBoxes = new WeakMap<Car, THREE.Box3>();
   /** Heavy bits that fall straight back: turf, soil clods, stone chips. */
@@ -180,6 +183,7 @@ export class Juice implements CarEvents {
     for (const car of cars) {
       if (car.position.distanceTo(this.camera.position) > JUICE.effectRange) continue;
       this.tyreSpray(dt, car);
+      this.carSnow.update(dt, car, car.model.pieces, car.model.root, car.velocity, car.tyreGround.snow, this.field.biome.warmth(car.position.z));
       this.scrape(dt, car);
       this.tear(dt, car);
     }
@@ -234,6 +238,8 @@ export class Juice implements CarEvents {
   // --- CarEvents
 
   impact(car: Car, at: THREE.Vector3, severity: number, surface: ContactSurface): void {
+    // A hit into snow packs it on round the hit.
+    if (surface === 'ground' && !this.isHard(at) && this.groundAt(at).snow > 0.5) this.carSnow.hit(car.model.pieces, car.model.root, at, severity);
     if (this.near(at)) {
       const k = Math.min(1, severity / 12);
       if (surface === 'metal' || surface === 'rock' || (surface === 'ground' && this.isHard(at))) {
@@ -302,7 +308,8 @@ export class Juice implements CarEvents {
       const rate = (tyre.slip * JUICE.sprayPerSlip + Math.max(0, speed - JUICE.sprayFromSpeed) * JUICE.sprayPerSpeed) * boost;
       const n = this.take(tyre, rate * dt);
       if (n === 0 || this.isRock(tyre.contact)) continue;
-      this.groundAt(tyre.contact);
+      const ground = this.groundAt(tyre.contact);
+      if (ground.snow > 0) this.carSnow.spray(car, car.model.root, tyre.contact, n * ground.snow);
       _p.copy(tyre.contact).setY(tyre.contact.y + 0.1);
       for (let i = 0; i < n; i++) {
         _v.copy(car.velocity).multiplyScalar(0.35);

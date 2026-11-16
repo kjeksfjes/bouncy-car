@@ -13,6 +13,7 @@ import { CarLights, lightWireWarmUp } from './lights';
 import { BodyOutline } from './outline';
 import { applyDent, inwardDirection } from './damage';
 import { grindPaint, wearPaint } from './paintWear';
+import { withSnow } from './snowCover';
 import { HingedPanels, createPanelBody } from './panels';
 import { sample } from './blueprint';
 import { Smoke } from '../render/smoke';
@@ -82,7 +83,9 @@ interface Wheel extends TyreState {
 /** Things a car reports as they happen (e.g. for sound). Positions are world space. */
 /** A cracked pane's material, over its crack pattern. */
 function crackedGlass(map: THREE.Texture): THREE.MeshStandardMaterial {
-  return new THREE.MeshStandardMaterial({ map, transparent: true, roughness: 0.1, metalness: 0.3, flatShading: true });
+  const material = new THREE.MeshStandardMaterial({ map, transparent: true, roughness: 0.1, metalness: 0.3, flatShading: true });
+  withSnow(material);
+  return material;
 }
 
 /**
