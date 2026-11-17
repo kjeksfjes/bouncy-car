@@ -129,14 +129,14 @@ export class HingedPanels {
   /**
    * Moves every hanging panel by a world-space offset, keeping its motion: the car is carried
    * on by its crush mid-crash (see Car.advanceIntoCrush), and the panels go with it so the
-   * hinges aren't yanked.
+   * hinges aren't yanked. Only the latest snapshot moves, so the drawn panels slide there over
+   * the step, as the car does.
    */
   shift(delta: THREE.Vector3): void {
     for (const p of this.panels) {
       const t = p.body.translation();
       p.body.setTranslation({ x: t.x + delta.x, y: t.y + delta.y, z: t.z + delta.z }, true);
       p.currPos.add(delta);
-      p.prevPos.add(delta);
     }
   }
 

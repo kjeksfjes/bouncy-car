@@ -905,11 +905,11 @@ export class Car {
     _shift.set(0, 0, end === 'front' ? -by : by).applyQuaternion(this.currQuat);
     const t = this.body.translation();
     this.body.setTranslation({ x: t.x + _shift.x, y: t.y + _shift.y, z: t.z + _shift.z }, true);
-    // A cut, not a slide: the snapshots both move, so nothing on the car lags behind the body.
+    // A slide, not a cut: only the latest snapshot moves, so the drawn car travels the crush over
+    // the step instead of jumping (in slow motion a step spans several frames). Hanging panels
+    // slide with it; dangling lights follow the drawn car every frame, as they do any move.
     this.currPos.add(_shift);
-    this.prevPos.add(_shift);
     this.panels.shift(_shift);
-    this.lights.shift(_shift);
   }
 
   private damageWheel(wheel: Wheel, amount: number): void {
