@@ -57,8 +57,11 @@ const SANE_SPEED = 400;
 const NOSE_DROP = { height: 15, pitch: (80 * Math.PI) / 180 };
 /** Avoid a spiral of death after a long stall (tab switch, breakpoint). */
 const MAX_STEPS_PER_FRAME = 5;
-/** Chunks built per frame while streaming; the first batch is built up front. */
-const STREAM_BUDGET = 2;
+/**
+ * Chunks built per frame while streaming; the first batch is built up front. One (about 4 ms) keeps
+ * up at full speed (it needs two or three a second at 30 m/s); two in a frame made it a hitch.
+ */
+const STREAM_BUDGET = 1;
 const INITIAL_CHUNKS = 25;
 /** AI cars only need ground under them (they're beyond the fog when far away). */
 const AI_STREAM_RADIUS = 1;

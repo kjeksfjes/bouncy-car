@@ -248,7 +248,7 @@ export class Sparks {
         v[o + k] *= keep;
         p[o + k] += v[o + k] * dt;
       }
-      const ground = this.field.height(p[o], p[o + 2]) + 0.02;
+      const ground = this.field.quickHeight(p[o], p[o + 2]) + 0.02;
       if (p[o + 1] < ground) {
         p[o + 1] = ground;
         v[o] *= S.skid;

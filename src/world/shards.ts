@@ -156,7 +156,7 @@ export class Shards {
       s.velocity.multiplyScalar(Math.exp(-s.drag * dt));
       s.velocity.y -= GRAVITY * dt;
       s.position.addScaledVector(s.velocity, dt);
-      const ground = this.field.height(s.position.x, s.position.z) + 0.01;
+      const ground = this.field.quickHeight(s.position.x, s.position.z) + 0.01;
       if (s.position.y < ground) {
         s.position.y = ground;
         s.velocity.set(s.velocity.x * 0.5, Math.abs(s.velocity.y) * 0.3, s.velocity.z * 0.5);

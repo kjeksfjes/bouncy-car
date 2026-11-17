@@ -150,7 +150,7 @@ export class Particles {
         this.position[o + k] += this.velocity[o + k] * dt;
       }
       // Settle on the snow instead of falling through it.
-      const ground = this.field.height(this.position[o], this.position[o + 2]) + 0.05;
+      const ground = this.field.quickHeight(this.position[o], this.position[o + 2]) + 0.05;
       if (this.position[o + 1] < ground) {
         this.position[o + 1] = ground;
         this.velocity[o] *= 0.3;

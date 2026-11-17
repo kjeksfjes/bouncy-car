@@ -141,6 +141,8 @@ interface CarState {
   sinceSpray: number;
   /** Whether any fallen snow lies on it (see SNOW_FALL). */
   fallen: boolean;
+  /** Whether any snow thrown up lies on it: with none and none arriving, a step has nothing to do. */
+  covered: boolean;
 }
 
 /**
@@ -152,7 +154,7 @@ export class SnowCover {
 
   private state(car: object): CarState {
     let s = this.states.get(car);
-    if (!s) this.states.set(car, (s = { wait: 0, spray: [], sinceSpray: Infinity, fallen: false }));
+    if (!s) this.states.set(car, (s = { wait: 0, spray: [], sinceSpray: Infinity, fallen: false, covered: false }));
     return s;
   }
 
@@ -167,8 +169,9 @@ export class SnowCover {
   }
 
   /** A hit into snow at `at` (world), `severity` m/s over the car's toughness: packs snow round it. */
-  hit(pieces: CarPiece[], root: THREE.Object3D, at: THREE.Vector3, severity: number): void {
+  hit(car: object, pieces: CarPiece[], root: THREE.Object3D, at: THREE.Vector3, severity: number): void {
     const C = SNOW_COVER;
+    this.state(car).covered = true;
     const local = root.worldToLocal(at.clone());
     lay(pieces, (p, n) => {
       const d = p.distanceTo(local);
@@ -214,6 +217,29 @@ export class SnowCover {
     const plough = onSnow > 0.5 && s.sinceSpray < 0.5 ? C.plough * speed * step * onSnow : 0;
     const melt = C.melt * warmth * step;
     const wind = C.wind * Math.max(0, speed - C.windFrom) * step;
+    // Snow is only laid on with spray (plough included), so with none arriving and none lying
+    // there's nothing to do.
+    if (sprayed > 0 || s.covered) s.covered = this.throwUp(pieces, spray, sprayed, groundY, way, up, low, cloud, wake, plough, melt, wind);
+    if (snowfall > 0 || s.fallen) s.fallen = fall(pieces, root, up, way, step, snowfall, melt, wind);
+  }
+
+  /** One step of the snow thrown up (see update and SNOW_COVER); returns whether any is left. */
+  private throwUp(
+    pieces: CarPiece[],
+    spray: { at: THREE.Vector3; amount: number }[],
+    sprayed: number,
+    groundY: number,
+    way: THREE.Vector3,
+    up: THREE.Vector3,
+    low: number,
+    cloud: number,
+    wake: number,
+    plough: number,
+    melt: number,
+    wind: number,
+  ): boolean {
+    const C = SNOW_COVER;
+    let left = false;
     each(pieces, (snow, i, p, n, open) => {
       let add = 0;
       const upward = n.dot(up);
@@ -235,10 +261,12 @@ export class SnowCover {
       add *= open;
       let off = melt;
       if (wind > 0) off += wind * Math.max(0, upward, n.dot(way));
-      snow.setX(i, THREE.MathUtils.clamp(snow.getX(i) + add - off, 0, 1));
+      const now = THREE.MathUtils.clamp(snow.getX(i) + add - off, 0, 1);
+      snow.setX(i, now);
+      if (now > 0) left = true;
     });
     creep(pieces);
-    if (snowfall > 0 || s.fallen) s.fallen = fall(pieces, root, up, way, step, snowfall, melt, wind);
+    return left;
   }
 }
 
@@ -274,6 +302,19 @@ function fall(pieces: CarPiece[], root: THREE.Object3D, up: THREE.Vector3, way: 
   return left;
 }
 
+/**
+ * A car's shape, as a key: its pieces' names and vertex counts. Cars of one model share it, so what
+ * depends only on the shape as built is worked out once per model (see skyOf, exposureOf,
+ * creepOf), not as each car arrives.
+ */
+const shapes = new WeakMap<CarPiece[], string>();
+
+function shapeOf(pieces: CarPiece[]): string {
+  let shape = shapes.get(pieces);
+  if (shape === undefined) shapes.set(pieces, (shape = pieces.map((piece) => `${piece.name}:${piece.original.length}`).join(',')));
+  return shape;
+}
+
 /** Per car (by its pieces): which of each geometry's vertices have open sky above them (1) or not (0). */
 const skies = new WeakMap<CarPiece[], Map<THREE.BufferGeometry, Uint8Array>>();
 /**
@@ -292,7 +333,7 @@ const skiesByShape = new Map<string, Map<string, Uint8Array>>();
 function skyOf(pieces: CarPiece[], root: THREE.Object3D): Map<THREE.BufferGeometry, Uint8Array> {
   let out = skies.get(pieces);
   if (out) return out;
-  const shape = pieces.map((piece) => `${piece.name}:${piece.original.length}`).join(',');
+  const shape = shapeOf(pieces);
   let byName = skiesByShape.get(shape);
   if (!byName) skiesByShape.set(shape, (byName = skyByName(pieces, root)));
   out = new Map();
@@ -383,8 +424,9 @@ const EXPOSED = { inside: -0.35, outside: 0.05, along: 0.4, top: [0.45, 0.65], d
 
 /** Per car (by its pieces): the height of its middle and of its body's bottom (car-local, m). */
 const middles = new WeakMap<CarPiece[], { middle: number; bottom: number }>();
-/** Per geometry: how much each vertex is outside (0..1, see EXPOSED). */
+/** Per geometry: how much each vertex is outside (0..1, see EXPOSED); and the same per car shape by piece name. */
 const exposure = new WeakMap<THREE.BufferGeometry, Float32Array>();
+const exposureByShape = new Map<string, Map<string, Float32Array>>();
 
 function middleOf(pieces: CarPiece[]): { middle: number; bottom: number } {
   let m = middles.get(pieces);
@@ -397,15 +439,27 @@ function middleOf(pieces: CarPiece[]): { middle: number; bottom: number } {
   return m;
 }
 
-function exposureOf(piece: CarPiece, { middle, bottom }: { middle: number; bottom: number }): Float32Array {
+function exposureOf(piece: CarPiece, pieces: CarPiece[]): Float32Array {
   const geometry = piece.mesh.geometry;
   let out = exposure.get(geometry);
   if (out) return out;
+  const shape = shapeOf(pieces);
+  let byName = exposureByShape.get(shape);
+  if (!byName) exposureByShape.set(shape, (byName = new Map()));
+  out = byName.get(piece.name);
+  if (!out) byName.set(piece.name, (out = exposureFrom(piece, middleOf(pieces))));
+  exposure.set(geometry, out);
+  return out;
+}
+
+/** Works out exposureOf's answer from the piece's rest shape. */
+function exposureFrom(piece: CarPiece, { middle, bottom }: { middle: number; bottom: number }): Float32Array {
+  const geometry = piece.mesh.geometry;
   const E = EXPOSED;
   const rest = geometry.getAttribute('aRest') as THREE.BufferAttribute;
   const normals = geometry.getAttribute('normal') as THREE.BufferAttribute;
   const offset = piece.origin;
-  out = new Float32Array(rest.count);
+  const out = new Float32Array(rest.count);
   for (let i = 0; i < rest.count; i++) {
     _p.fromBufferAttribute(rest, i).add(offset);
     _d.set(_p.x, _p.y - middle, _p.z * E.along);
@@ -415,7 +469,6 @@ function exposureOf(piece: CarPiece, { middle, bottom }: { middle: number; botto
     const under = THREE.MathUtils.smoothstep(-_n.y, E.down[0], E.down[1]) * (1 - THREE.MathUtils.smoothstep(_p.y - bottom, E.under[0], E.under[1]));
     out[i] = THREE.MathUtils.smoothstep(away, E.inside, E.outside) * up * (1 - under);
   }
-  exposure.set(geometry, out);
   return out;
 }
 
@@ -436,25 +489,50 @@ interface Creep {
   w: number[];
 }
 
+/** The same by piece name and vertex index, per car shape (see shapeOf): worked out once per model. */
+interface CreepPlan {
+  target: string;
+  i: number;
+  from: string[];
+  j: number[];
+  w: number[];
+}
+
 /** Per car (by its pieces): its top-face vertices by an edge, and where their snow comes from. */
 const creeps = new WeakMap<CarPiece[], Creep[]>();
+const creepPlans = new Map<string, CreepPlan[]>();
 
 function creepOf(pieces: CarPiece[]): Creep[] {
   let out = creeps.get(pieces);
   if (out) return out;
+  const shape = shapeOf(pieces);
+  let plan = creepPlans.get(shape);
+  if (!plan) creepPlans.set(shape, (plan = creepPlan(pieces)));
+  const snows = new Map<string, THREE.BufferAttribute>();
+  for (const piece of pieces) {
+    const snow = piece.mesh.geometry.getAttribute('aSnow') as THREE.BufferAttribute | undefined;
+    if (snow) snows.set(piece.name, snow);
+  }
+  out = plan.map((c) => ({ target: snows.get(c.target)!, i: c.i, from: c.from.map((name) => snows.get(name)!), j: c.j, w: c.w }));
+  creeps.set(pieces, out);
+  return out;
+}
+
+/** Works out creepOf's answer by piece name, from this car's pieces as built. */
+function creepPlan(pieces: CarPiece[]): CreepPlan[] {
   const C = CREEP;
   const E = EXPOSED;
   const m = middleOf(pieces);
-  type Spot = { snow: THREE.BufferAttribute; i: number; p: THREE.Vector3 };
+  type Spot = { snow: string; i: number; p: THREE.Vector3 };
   const cell = (p: THREE.Vector3) => `${Math.floor(p.x / C.reach)},${Math.floor(p.y / C.reach)},${Math.floor(p.z / C.reach)}`;
   const grid = new Map<string, Spot[]>();
   const tops: Spot[] = [];
   for (const piece of pieces) {
     if (piece.rides) continue;
     const geometry = piece.mesh.geometry;
-    const snow = geometry.getAttribute('aSnow') as THREE.BufferAttribute | undefined;
-    if (!snow) continue;
-    const open = exposureOf(piece, m);
+    if (!geometry.hasAttribute('aSnow')) continue;
+    const snow = piece.name;
+    const open = exposureOf(piece, pieces);
     const rest = geometry.getAttribute('aRest') as THREE.BufferAttribute;
     const normals = geometry.getAttribute('normal') as THREE.BufferAttribute;
     for (let i = 0; i < rest.count; i++) {
@@ -472,7 +550,7 @@ function creepOf(pieces: CarPiece[]): Creep[] {
       if (_n.y > E.top[0] && _d.lengthSq() > 1e-6 && _n.dot(_d.normalize()) >= E.outside) tops.push({ snow, i, p });
     }
   }
-  out = [];
+  const out: CreepPlan[] = [];
   for (const t of tops) {
     const near: { s: Spot; w: number }[] = [];
     const cx = Math.floor(t.p.x / C.reach);
@@ -493,7 +571,6 @@ function creepOf(pieces: CarPiece[]): Creep[] {
     const best = near.slice(0, C.sources);
     out.push({ target: t.snow, i: t.i, from: best.map((b) => b.s.snow), j: best.map((b) => b.s.i), w: best.map((b) => b.w) });
   }
-  creeps.set(pieces, out);
   return out;
 }
 
@@ -513,7 +590,6 @@ function creep(pieces: CarPiece[]): void {
  * how much snow reaches it (0..1), and its index. Marks the attributes changed.
  */
 function each(pieces: CarPiece[], visit: (snow: THREE.BufferAttribute, i: number, p: THREE.Vector3, n: THREE.Vector3, open: number) => void): void {
-  const middle = middleOf(pieces);
   for (const piece of pieces) {
     if (piece.rides || piece.state !== 'closed') continue;
     const geometry = piece.mesh.geometry;
@@ -522,7 +598,7 @@ function each(pieces: CarPiece[], visit: (snow: THREE.BufferAttribute, i: number
     const pos = geometry.getAttribute('position') as THREE.BufferAttribute;
     // Rest normals: the mesh's normals aren't recomputed as it deforms.
     const normals = geometry.getAttribute('normal') as THREE.BufferAttribute;
-    const open = exposureOf(piece, middle);
+    const open = exposureOf(piece, pieces);
     const offset = piece.mesh.position;
     for (let i = 0; i < pos.count; i++) {
       if (open[i] <= 0) continue;

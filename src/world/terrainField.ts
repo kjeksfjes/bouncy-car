@@ -5,6 +5,7 @@ import { Biome, treeSuitability, type GroundMix, type Stand } from './biome';
 import type { EnvSample } from './environment';
 import { emptySample, Environment, GRID_STEP } from './environment';
 import { DescentFeatures, type TerrainPreset } from './features';
+import { HeightCache } from './heightCache';
 import { Landform } from './landform';
 import { LandmarkLayout } from './landmarks';
 import { makeNoise, smoothstep } from './noise';
@@ -176,6 +177,17 @@ export class TerrainField {
   height(x: number, z: number): number {
     return this.heightOver(x, z, this.landform(x, z));
   }
+
+  /**
+   * The ground's height, within about 3 cm (see HeightCache) and several times quicker:
+   * for effects that look it up per particle per frame. Physics and anything that must match the
+   * mesh use `height`.
+   */
+  quickHeight(x: number, z: number): number {
+    return this.heights.at(x, z);
+  }
+
+  private readonly heights = new HeightCache((x, z) => this.height(x, z));
 
   /**
    * The ground's height at (x, z) given the landform there (see landform): adds the moguls, kicker

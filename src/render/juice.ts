@@ -181,7 +181,7 @@ export class Juice implements CarEvents {
     this.powder = new Particles(scene, field, { capacity: 4500, blending: THREE.NormalBlending, ...JUICE.snowAir });
     this.clods = new Particles(scene, field, { capacity: 1500, blending: THREE.NormalBlending, gravity: 1, drag: 0.6 });
     this.sparks = new Sparks(scene, field, 1500);
-    this.ice = new IceGlints(scene, (x, z) => field.height(x, z));
+    this.ice = new IceGlints(scene, (x, z) => field.quickHeight(x, z));
   }
 
   /** How hard it snows now (0..1): falling snow settles on the cars (see SNOW_FALL). */
@@ -248,7 +248,7 @@ export class Juice implements CarEvents {
 
   impact(car: Car, at: THREE.Vector3, severity: number, surface: ContactSurface): void {
     // A hit into snow packs it on round the hit.
-    if (surface === 'ground' && !this.isHard(at) && this.groundAt(at).snow > 0.5) this.carSnow.hit(car.model.pieces, car.model.root, at, severity);
+    if (surface === 'ground' && !this.isHard(at) && this.groundAt(at).snow > 0.5) this.carSnow.hit(car, car.model.pieces, car.model.root, at, severity);
     if (this.near(at)) {
       const k = Math.min(1, severity / 12);
       if (surface === 'metal' || surface === 'rock' || (surface === 'ground' && this.isHard(at))) {
