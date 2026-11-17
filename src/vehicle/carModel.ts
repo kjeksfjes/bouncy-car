@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { bendEnds, buildPanels, endShift, sample, sideHalfWidth, type Bumper, type CarBlueprint, type PanelMaterial, type Panels } from './blueprint';
+import { bendEnds, buildPanels, endShift, sample, sideHalfWidth, type Bumper, type CarBlueprint, type Panels } from './blueprint';
 import type { CarConfig } from './carConfig';
 import type { LightFixtureDef, LightKind } from './lights';
 import { engineParts } from './engine';
@@ -168,6 +168,8 @@ interface CarMaterials {
   chrome: THREE.Material;
   steel: THREE.Material;
   dark: THREE.Material;
+  /** Inside the lamp openings (recess walls, side marker sockets, headlight buckets): dark, but snow doesn't settle down there. */
+  recess: THREE.Material;
   tire: THREE.Material;
   headlight: THREE.Material;
   taillight: THREE.Material;
@@ -305,6 +307,7 @@ function materialsFor(cfg: CarConfig, paint: string): CarMaterials {
       chrome: std('#d9dde2', { roughness: 0.2, metalness: 0.9 }),
       steel: std('#4b5056', { roughness: 0.5, metalness: 0.6 }),
       dark: std('#1c1d20', { roughness: 0.7 }),
+      recess: std('#1c1d20', { roughness: 0.7 }),
       tire: std('#1a1a1c', { roughness: 0.9 }),
       headlight: std('#ffffff', { map: headlampTexture(), emissive: '#ffe9bd', emissiveMap: headlampTexture(), emissiveIntensity: 0.7, roughness: 0.25 }),
       taillight: std('#a3121b', { emissive: '#7a0a10', emissiveIntensity: 0.5 }),
@@ -553,8 +556,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
       g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
       g.setAttribute('color', liningShade(bp, positions, m === 'lining'));
       geos.push(g);
-      // Lamp recesses are thin-walled but look like the rest of the dark inner panels.
-      materials.push(m === 'recess' ? mat.dark : mat[m satisfies Exclude<PanelMaterial, 'recess'>]);
+      materials.push(mat[m]);
     }
     const merged = mergeGeometries(geos, true);
     if (!merged) throw new Error(`Body part "${part}" failed to merge`);
@@ -612,7 +614,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
     root.add(group);
     let socket: THREE.Mesh | undefined;
     if (socketGeometry) {
-      socket = new THREE.Mesh(socketGeometry, mat.dark);
+      socket = new THREE.Mesh(socketGeometry, mat.recess);
       socket.position.copy(mount).addScaledVector(normal, 0.003);
       root.add(socket);
     }
@@ -686,7 +688,7 @@ export function buildCarModel(cfg: CarConfig, paint: string): CarModel {
       const x = side * hx;
       const r = head.radius;
       fixture(`headlight-${x}`, 'head', onEnd(x, head.h, bp.front), forward, [
-        [new THREE.CylinderGeometry(r * 1.05, r * 1.05, 0.045, 10).rotateX(Math.PI / 2), mat.dark, new THREE.Vector3(0, 0, 0.035)],
+        [new THREE.CylinderGeometry(r * 1.05, r * 1.05, 0.045, 10).rotateX(Math.PI / 2), mat.recess, new THREE.Vector3(0, 0, 0.035)],
         [new THREE.TorusGeometry(r * 1.08, 0.009, 4, 10), mat.chrome, new THREE.Vector3(0, 0, -0.004)],
         [disc(r * 0.98, 0.03), headLight, new THREE.Vector3(0, 0, 0.01)],
       ]);
