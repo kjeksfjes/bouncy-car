@@ -1026,34 +1026,17 @@ export class Car {
   /** A panel past its hp: hangs on its hinge if it has one, otherwise falls off entirely. */
   private breakLoose(piece: CarPiece, impact: THREE.Vector3): void {
     this.snapRootToPhysics();
-    const box = this.looseBox(piece);
+    const boxes = looseBoxes(piece);
     if (piece.hinge) {
-      this.panels.hinge(piece, piece.hinge, impact, (p) => this.pointVelocity(p), box);
+      this.panels.hinge(piece, piece.hinge, impact, (p) => this.pointVelocity(p), boxes);
       this.justLoose.set(piece, CRUSH_AFTER_HINGE);
       this.events?.clank(this, piece.mesh.position.clone(), 0.5);
       return;
     }
     piece.state = 'gone';
     this.scene.attach(piece.mesh);
-    this.debris.adopt(piece.mesh, createPanelBody(this.world, piece.mesh, piece.mass, this.pointVelocity(piece.mesh.position), box));
+    this.debris.adopt(piece.mesh, createPanelBody(this.world, piece.mesh, piece.mass, this.pointVelocity(piece.mesh.position), boxes));
     if (piece.mass < 10) this.events?.clank(this, piece.mesh.position.clone(), 0.2);
-  }
-
-  /**
-   * Collision box (piece-local) for a panel leaving the car: its build-time bounds, with an end
-   * that lies in a crushed crumple zone cut back by that zone's crush. The panel itself has been
-   * pushed in that far where the crush is deepest; a box reaching out to its less crushed
-   * corners would sit inside whatever crushed it (a tree in the nose's notch) and be shoved out,
-   * yanking the car on the hinge.
-   */
-  private looseBox(piece: CarPiece): THREE.Box3 {
-    const box = piece.bounds.clone().translate(_tmp.copy(piece.origin).negate());
-    const o = piece.origin;
-    const front = this.crush.depth('front');
-    const rear = this.crush.depth('rear');
-    if (front > 0 && this.crush.zoneAt(box.min.z + o.z) === 'front') box.min.z = Math.min(box.min.z + front, box.max.z - 0.03);
-    if (rear > 0 && this.crush.zoneAt(box.max.z + o.z) === 'rear') box.max.z = Math.max(box.max.z - rear, box.min.z + 0.03);
-    return box;
   }
 
   /** Moves a part from the car into the world as a tumbling debris body. */
@@ -1404,6 +1387,37 @@ export class Car {
     this.currPos.set(t.x, t.y, t.z);
     this.currQuat.set(r.x, r.y, r.z, r.w);
   }
+}
+
+/** A loose panel's collision boxes are strips about this wide (m) across its longer side, at most `max` of them. */
+const LOOSE_STRIP = { width: 0.25, max: 8 };
+
+/**
+ * Collision boxes (piece-local) for a panel leaving the car: strips across its longer side (by
+ * where each vertex sat before any crush, so a strip keeps the same part of the panel however it
+ * is bent), each boxed round its vertices as they are now. They follow a bent panel's shape: a
+ * bumper bent round a tree gets boxes along the U, not one box that either leaves the bent-back
+ * ends out (they sink into the ground once it lies there) or fills the notch where the tree is
+ * (shoved out, it would yank the car on the hinge).
+ */
+function looseBoxes(piece: CarPiece): THREE.Box3[] {
+  const rest = piece.original;
+  const now = piece.mesh.geometry.getAttribute('position') as THREE.BufferAttribute;
+  // The build-time bounds, piece-local like the rest positions.
+  const bounds = piece.bounds.clone().translate(new THREE.Vector3().copy(piece.origin).negate());
+  const size = bounds.getSize(new THREE.Vector3());
+  // Along x (0) or z (2), whichever the panel is longer in.
+  const axis = size.x >= size.z ? 0 : 2;
+  const length = Math.max(axis === 0 ? size.x : size.z, 1e-3);
+  const start = axis === 0 ? bounds.min.x : bounds.min.z;
+  const count = THREE.MathUtils.clamp(Math.ceil(length / LOOSE_STRIP.width), 1, LOOSE_STRIP.max);
+  const boxes = Array.from({ length: count }, () => new THREE.Box3());
+  const vertex = new THREE.Vector3();
+  for (let i = 0; i < now.count; i++) {
+    const strip = THREE.MathUtils.clamp(Math.floor(((rest[i * 3 + axis] - start) / length) * count), 0, count - 1);
+    boxes[strip].expandByPoint(vertex.fromBufferAttribute(now, i));
+  }
+  return boxes.filter((box) => !box.isEmpty());
 }
 
 /** Classifies what a contact touched: convex hulls are boulders, other moving bodies cars or debris, cylinders tree trunks. */

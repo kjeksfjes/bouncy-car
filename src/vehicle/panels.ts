@@ -62,9 +62,9 @@ export class HingedPanels {
    * Swings a closed panel open on its hinge. The car's visual root must sit at the
    * physics pose (the panel leaves from where its mesh is).
    * @param impact car-local hit point; a bumper's struck end is the one that breaks free
-   * @param box the panel's collision box (mesh-local; see createPanelBody)
+   * @param boxes the panel's collision boxes (mesh-local; see createPanelBody)
    */
-  hinge(piece: CarPiece, spec: HingeSpec, impact: THREE.Vector3, velocityAt: (world: THREE.Vector3) => THREE.Vector3, box?: THREE.Box3): void {
+  hinge(piece: CarPiece, spec: HingeSpec, impact: THREE.Vector3, velocityAt: (world: THREE.Vector3) => THREE.Vector3, boxes?: readonly THREE.Box3[]): void {
     const hinge = spec.mirrorable && impact.x > 0 ? mirrored(spec) : spec;
     piece.state = 'hinged';
     const mesh = piece.mesh;
@@ -73,7 +73,7 @@ export class HingedPanels {
     const swing = new THREE.Vector3().crossVectors(hinge.axis, mesh.position.clone().sub(hinge.anchor));
     this.scene.attach(mesh);
 
-    const body = createPanelBody(this.world, mesh, hinge.mass, velocityAt(mesh.position), box);
+    const body = createPanelBody(this.world, mesh, hinge.mass, velocityAt(mesh.position), boxes);
     const params = RAPIER.JointData.revolute(hinge.anchor, anchorOnPanel, hinge.axis);
     const joint = this.world.createImpulseJoint(params, this.carBody, body, true) as RAPIER.RevoluteImpulseJoint;
     // Limits must be set on the created joint: JointData.limits is ignored for revolute joints.
@@ -192,12 +192,16 @@ function capture(p: HingedPanel): void {
 }
 
 /**
- * Dynamic body for a panel mesh already in world space, with a box collider from `box`
- * (mesh-local; its geometry's build-time bounds unless given).
+ * Dynamic body for a panel mesh already in world space, with a box collider for each of `boxes`
+ * (mesh-local; its geometry's build-time bounds unless given), sharing its mass.
  */
-export function createPanelBody(world: RAPIER.World, mesh: THREE.Mesh, mass: number, velocity: THREE.Vector3, box = mesh.geometry.boundingBox!): RAPIER.RigidBody {
-  const half = box.getSize(new THREE.Vector3()).multiplyScalar(0.5).max(new THREE.Vector3(0.03, 0.03, 0.03));
-  const center = box.getCenter(new THREE.Vector3());
+export function createPanelBody(
+  world: RAPIER.World,
+  mesh: THREE.Mesh,
+  mass: number,
+  velocity: THREE.Vector3,
+  boxes: readonly THREE.Box3[] = [mesh.geometry.boundingBox!],
+): RAPIER.RigidBody {
   const p = mesh.position;
   const body = world.createRigidBody(
     RAPIER.RigidBodyDesc.dynamic()
@@ -206,10 +210,17 @@ export function createPanelBody(world: RAPIER.World, mesh: THREE.Mesh, mass: num
       .setLinvel(velocity.x, velocity.y, velocity.z)
       .setCcdEnabled(true),
   );
-  world.createCollider(
-    RAPIER.ColliderDesc.cuboid(half.x, half.y, half.z).setTranslation(center.x, center.y, center.z).setMass(mass).setFriction(0.7),
-    body,
-  );
+  for (const box of boxes) {
+    const half = box.getSize(new THREE.Vector3()).multiplyScalar(0.5).max(new THREE.Vector3(0.03, 0.03, 0.03));
+    const center = box.getCenter(new THREE.Vector3());
+    world.createCollider(
+      RAPIER.ColliderDesc.cuboid(half.x, half.y, half.z)
+        .setTranslation(center.x, center.y, center.z)
+        .setMass(mass / boxes.length)
+        .setFriction(0.7),
+      body,
+    );
+  }
   return body;
 }
 
