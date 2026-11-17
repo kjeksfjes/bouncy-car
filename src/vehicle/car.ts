@@ -204,6 +204,11 @@ export class Car {
   private oilLeft: number;
   /** Distance (m) driven since each stream's last drop. */
   private readonly leakDistance = { coolant: 0, oil: 0 };
+  /**
+   * Where each leak drips from, car-local: picked once, somewhere within 15 cm of the radiator or
+   * sump, the first time it drips, so a leak keeps dripping from the same spot.
+   */
+  private readonly leakSpot: { coolant?: THREE.Vector3; oil?: THREE.Vector3 } = {};
   /** The oil puddle growing under a dead, stopped car, and the time (s) to the next drop into it. */
   private puddle: FluidStain | null = null;
   private puddleDrip = 0;
@@ -1253,12 +1258,13 @@ export class Car {
     let lost = 0;
     this.leakDistance[kind] += (speed + d.leakIdle) * dt;
     const spacing = THREE.MathUtils.lerp(d.leakSpacingMax, d.leakSpacingMin, rate);
+    const spot = (this.leakSpot[kind] ??= source.clone().add(_pt.set((Math.random() - 0.5) * 0.3, 0, (Math.random() - 0.5) * 0.3)));
     while (this.leakDistance[kind] >= spacing) {
       this.leakDistance[kind] -= spacing;
       const size = (0.08 + Math.random() * 0.14) * (0.6 + rate);
       lost += d.dropVolume * (size / 0.15) ** 2;
       // Where the radiator or sump is now, after any crush.
-      const from = this.crush.displace(_tmp.copy(source).add(_pt.set((Math.random() - 0.5) * 0.3, 0, (Math.random() - 0.5) * 0.3)));
+      const from = this.crush.displace(_tmp.copy(spot));
       // Slow and upright, it's seen forming under the car and falling, landing where it falls.
       if (speed < d.dropsSeenBelow && this.upright() >= d.dropsUpright) {
         this.debris.fluids.hangDrop(this.model.root, from, kind, size, speed);
