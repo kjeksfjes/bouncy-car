@@ -439,6 +439,7 @@ export class Game {
     this.aiDebug.update(this.ai.debug, this.ai.woodsPath, this.car.model.root, this.stage.camera, this.mapView);
     // Traffic may have despawned cars just now; again use a fresh list.
     const live = this.allCars;
+    this.juice.snowfall = this.snowAmount();
     this.juice.update(gt, live, this.stage.renderer.getDrawingBufferSize(this.bufferSize).y / 2);
     this.audio.update(gt, this.stage.camera, live);
     this.hud.update(this.car, this.autopilot);

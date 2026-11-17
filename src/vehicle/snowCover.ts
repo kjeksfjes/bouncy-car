@@ -45,6 +45,23 @@ export const SNOW_COVER = {
 };
 
 /**
+ * Falling snow settling on the car: on faces turned up (from `facing[0]` of the normal's upward
+ * share, fully from `facing[1]`: roof, bonnet, boot lid, the sloping screens) with open sky above
+ * them (see skyOf), at `rate` × how hard it snows^`power` (so heavy snow piles up much faster than
+ * light), building ever more slowly toward `ceiling`. Only while the car is upright (none when its
+ * up is tipped below `upright[0]` of straight up, all from `upright[1]`). It melts and blows off at
+ * speed as the rest does (SNOW_COVER `melt`, `wind`). It's its own layer, drawn on top of the
+ * snow thrown up (shader: their sum).
+ */
+export const SNOW_FALL = { rate: 0.012, power: 1.5, ceiling: 0.85, facing: [0.2, 0.7], upright: [0.5, 0.9] } as const;
+
+/**
+ * Open sky over a face (see skyOf): the car's shape seen from above, in cells `cell` m across, each
+ * holding the highest point of the car there; a vertex within `below` m of it is on top.
+ */
+const SKY = { cell: 0.04, below: 0.03 };
+
+/**
  * How snow looks on the paint (the shader). Patterns in metres on the panel's rest shape, so they
  * stay put as it crumples. It lies in patches where the patch noise (three octaves, at
  * `patchScale`, × 3.2 and × 9.6 per metre) is lowest, more spreading them until they join; `edge`
@@ -76,12 +93,15 @@ const LOOK = {
 };
 
 /**
- * Gives a piece's geometry the attributes the snow shader reads: its snow (none yet) and, unless
+ * Gives a piece's geometry the attributes the snow shader reads: its snow thrown up and fallen
+ * (none yet) and, unless
  * the paint wear has given it one, its rest shape (`rest`, shared: keep it unchanged), which pins
  * the snow's patterns.
  */
 export function addSnowAttributes(geometry: THREE.BufferGeometry, rest: Float32Array): void {
-  geometry.setAttribute('aSnow', new THREE.BufferAttribute(new Float32Array(geometry.getAttribute('position').count), 1));
+  const count = geometry.getAttribute('position').count;
+  geometry.setAttribute('aSnow', new THREE.BufferAttribute(new Float32Array(count), 1));
+  geometry.setAttribute('aFall', new THREE.BufferAttribute(new Float32Array(count), 1));
   if (!geometry.hasAttribute('aRest')) geometry.setAttribute('aRest', new THREE.BufferAttribute(rest, 3));
 }
 
@@ -119,6 +139,8 @@ interface CarState {
   spray: { at: THREE.Vector3; amount: number }[];
   /** Seconds since its tyres last threw snow. */
   sinceSpray: number;
+  /** Whether any fallen snow lies on it (see SNOW_FALL). */
+  fallen: boolean;
 }
 
 /**
@@ -130,7 +152,7 @@ export class SnowCover {
 
   private state(car: object): CarState {
     let s = this.states.get(car);
-    if (!s) this.states.set(car, (s = { wait: 0, spray: [], sinceSpray: Infinity }));
+    if (!s) this.states.set(car, (s = { wait: 0, spray: [], sinceSpray: Infinity, fallen: false }));
     return s;
   }
 
@@ -156,11 +178,20 @@ export class SnowCover {
   }
 
   /**
-   * Builds up and takes off the car's snow (see SNOW_COVER). `onSnow` is how much of the ground
-   * under it is snow (0..1), `warmth` how warm the air is there (0 in the snow .. 1 in the
-   * grassland, see Biome.warmth).
+   * Builds up and takes off the car's snow (see SNOW_COVER, SNOW_FALL). `onSnow` is how much of
+   * the ground under it is snow (0..1), `warmth` how warm the air is there (0 in the snow .. 1 in
+   * the grassland, see Biome.warmth), `snowfall` how hard it snows (0..1).
    */
-  update(dt: number, car: object, pieces: CarPiece[], root: THREE.Object3D, velocity: THREE.Vector3, onSnow: number, warmth: number): void {
+  update(
+    dt: number,
+    car: object,
+    pieces: CarPiece[],
+    root: THREE.Object3D,
+    velocity: THREE.Vector3,
+    onSnow: number,
+    warmth: number,
+    snowfall: number,
+  ): void {
     const C = SNOW_COVER;
     const s = this.state(car);
     s.sinceSpray += dt;
@@ -207,7 +238,135 @@ export class SnowCover {
       snow.setX(i, THREE.MathUtils.clamp(snow.getX(i) + add - off, 0, 1));
     });
     creep(pieces);
+    if (snowfall > 0 || s.fallen) s.fallen = fall(pieces, root, up, way, step, snowfall, melt, wind);
   }
+}
+
+/**
+ * Lays the falling snow on (see SNOW_FALL) and takes it off by `melt` and `wind` (this step's, as
+ * in SnowCover.update); `up` and `way` car-local. Returns whether any is left.
+ */
+function fall(pieces: CarPiece[], root: THREE.Object3D, up: THREE.Vector3, way: THREE.Vector3, step: number, snowfall: number, melt: number, wind: number): boolean {
+  const F = SNOW_FALL;
+  const sky = skyOf(pieces, root);
+  const rate = F.rate * snowfall ** F.power * THREE.MathUtils.smoothstep(up.y, F.upright[0], F.upright[1]) * step;
+  let left = false;
+  for (const piece of pieces) {
+    if (piece.rides || piece.state !== 'closed') continue;
+    const geometry = piece.mesh.geometry;
+    const fallen = geometry.getAttribute('aFall') as THREE.BufferAttribute | undefined;
+    const open = sky.get(geometry);
+    if (!fallen || !open) continue;
+    const normals = geometry.getAttribute('normal') as THREE.BufferAttribute;
+    for (let i = 0; i < fallen.count; i++) {
+      const was = fallen.getX(i);
+      if (open[i] === 0 && was === 0) continue;
+      _n.fromBufferAttribute(normals, i);
+      const upward = _n.dot(up);
+      const add = open[i] * rate * THREE.MathUtils.smoothstep(upward, F.facing[0], F.facing[1]) * Math.max(0, 1 - was / F.ceiling);
+      const off = melt + (wind > 0 ? wind * Math.max(0, upward, _n.dot(way)) : 0);
+      const now = THREE.MathUtils.clamp(was + add - off, 0, 1);
+      fallen.setX(i, now);
+      if (now > 0) left = true;
+    }
+    fallen.needsUpdate = true;
+  }
+  return left;
+}
+
+/** Per car (by its pieces): which of each geometry's vertices have open sky above them (1) or not (0). */
+const skies = new WeakMap<CarPiece[], Map<THREE.BufferGeometry, Uint8Array>>();
+/**
+ * The same by piece name, per car shape (its pieces' names and vertex counts): cars of one model
+ * share it, so it's worked out once (it takes about a tenth of a second), not as each car arrives.
+ */
+const skiesByShape = new Map<string, Map<string, Uint8Array>>();
+
+/**
+ * Which vertices of the car's snowy pieces have open sky above them (see SKY), from its shape as
+ * built (so they stay the same however it's crushed or what comes off): the whole car, lamps,
+ * glass and inside included, seen from above as the highest point in each cell. A vertex is on
+ * top when it's (nearly) that high: the roof, bonnet, boot lid and screens, not the engine bay
+ * under the bonnet or the boot floor under its lid.
+ */
+function skyOf(pieces: CarPiece[], root: THREE.Object3D): Map<THREE.BufferGeometry, Uint8Array> {
+  let out = skies.get(pieces);
+  if (out) return out;
+  const shape = pieces.map((piece) => `${piece.name}:${piece.original.length}`).join(',');
+  let byName = skiesByShape.get(shape);
+  if (!byName) skiesByShape.set(shape, (byName = skyByName(pieces, root)));
+  out = new Map();
+  for (const piece of pieces) {
+    const open = byName.get(piece.name);
+    if (open) out.set(piece.mesh.geometry, open);
+  }
+  skies.set(pieces, out);
+  return out;
+}
+
+/** Works out skyOf's answer by piece name, from this car's pieces as built. */
+function skyByName(pieces: CarPiece[], root: THREE.Object3D): Map<string, Uint8Array> {
+  root.updateMatrixWorld(true);
+  const toCar = new THREE.Matrix4().copy(root.matrixWorld).invert();
+  // Each piece's rest shape, car-local.
+  const shapes = pieces.map((piece) => {
+    const m = new THREE.Matrix4().multiplyMatrices(toCar, piece.mesh.matrixWorld);
+    const rest = piece.original;
+    const points = new Float32Array(rest.length);
+    for (let k = 0; k < rest.length; k += 3) _p.fromArray(rest, k).applyMatrix4(m).toArray(points, k);
+    return { piece, points };
+  });
+  const box = new THREE.Box3();
+  for (const { points } of shapes) for (let k = 0; k < points.length; k += 3) box.expandByPoint(_p.fromArray(points, k));
+  const cell = SKY.cell;
+  const nx = Math.ceil((box.max.x - box.min.x) / cell) + 1;
+  const nz = Math.ceil((box.max.z - box.min.z) / cell) + 1;
+  const top = new Float32Array(nx * nz).fill(-Infinity);
+  const ix = (x: number) => THREE.MathUtils.clamp(Math.round((x - box.min.x) / cell), 0, nx - 1);
+  const iz = (z: number) => THREE.MathUtils.clamp(Math.round((z - box.min.z) / cell), 0, nz - 1);
+  const raise = (i: number, y: number) => {
+    if (y > top[i]) top[i] = y;
+  };
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  for (const { piece, points } of shapes) {
+    const index = piece.mesh.geometry.getIndex();
+    const corners = index ? index.count : points.length / 3;
+    for (let t = 0; t + 2 < corners; t += 3) {
+      a.fromArray(points, (index ? index.getX(t) : t) * 3);
+      b.fromArray(points, (index ? index.getX(t + 1) : t + 1) * 3);
+      c.fromArray(points, (index ? index.getX(t + 2) : t + 2) * 3);
+      // Its corners always count (a wall seen edge-on covers no cell's middle).
+      raise(ix(a.x) + iz(a.z) * nx, a.y);
+      raise(ix(b.x) + iz(b.z) * nx, b.y);
+      raise(ix(c.x) + iz(c.z) * nx, c.y);
+      const area = (b.x - a.x) * (c.z - a.z) - (c.x - a.x) * (b.z - a.z);
+      if (Math.abs(area) < 1e-9) continue;
+      for (let gx = ix(Math.min(a.x, b.x, c.x)); gx <= ix(Math.max(a.x, b.x, c.x)); gx++) {
+        const x = box.min.x + gx * cell;
+        for (let gz = iz(Math.min(a.z, b.z, c.z)); gz <= iz(Math.max(a.z, b.z, c.z)); gz++) {
+          const z = box.min.z + gz * cell;
+          // Barycentric weights of (x, z) in the triangle seen from above.
+          const wb = ((x - a.x) * (c.z - a.z) - (c.x - a.x) * (z - a.z)) / area;
+          const wc = ((b.x - a.x) * (z - a.z) - (x - a.x) * (b.z - a.z)) / area;
+          if (wb < -1e-6 || wc < -1e-6 || wb + wc > 1 + 1e-6) continue;
+          raise(gx + gz * nx, a.y + wb * (b.y - a.y) + wc * (c.y - a.y));
+        }
+      }
+    }
+  }
+  const out = new Map<string, Uint8Array>();
+  for (const { piece, points } of shapes) {
+    if (!piece.mesh.geometry.hasAttribute('aFall')) continue;
+    const open = new Uint8Array(points.length / 3);
+    for (let i = 0; i < open.length; i++) {
+      const k = i * 3;
+      open[i] = points[k + 1] >= top[ix(points[k]) + iz(points[k + 2]) * nx] - SKY.below ? 1 : 0;
+    }
+    out.set(piece.name, open);
+  }
+  return out;
 }
 
 /**
@@ -387,9 +546,10 @@ const L = LOOK;
 /** Shader additions (see paintWithWear, withSnow): declarations for the vertex shader, and what its main passes on. */
 export const SNOW_VERTEX_DECL = /* glsl */ `
 attribute float aSnow;
+attribute float aFall;
 varying float vSnow;`;
 export const SNOW_VERTEX = /* glsl */ `
-vSnow = aSnow;`;
+vSnow = min( 1.0, aSnow + aFall );`;
 
 /** Fragment declarations; needs the shared noise (NOISE_GLSL) before it. */
 export const SNOW_FRAGMENT_DECL = /* glsl */ `

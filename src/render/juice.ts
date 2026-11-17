@@ -184,12 +184,15 @@ export class Juice implements CarEvents {
     this.ice = new IceGlints(scene, (x, z) => field.height(x, z));
   }
 
+  /** How hard it snows now (0..1): falling snow settles on the cars (see SNOW_FALL). */
+  snowfall = 0;
+
   update(dt: number, cars: readonly Car[], halfHeight: number): void {
     this.time += dt;
     for (const car of cars) {
       if (car.position.distanceTo(this.camera.position) > JUICE.effectRange) continue;
       this.tyreSpray(dt, car);
-      this.carSnow.update(dt, car, car.model.pieces, car.model.root, car.velocity, car.tyreGround.snow, this.field.biome.warmth(car.position.z));
+      this.carSnow.update(dt, car, car.model.pieces, car.model.root, car.velocity, car.tyreGround.snow, this.field.biome.warmth(car.position.z), this.snowfall);
       this.scrape(dt, car);
       this.tear(dt, car);
     }
