@@ -74,6 +74,8 @@ interface Wheel extends TyreState {
   compression: number;
   /** Current spring length, also drives the visual wheel position. */
   suspLen: number;
+  /** The spring length a step ago, for drawing between steps (see syncVisual). */
+  prevSuspLen: number;
   spinSpeed: number;
   contact: THREE.Vector3;
   slip: number;
@@ -223,6 +225,8 @@ export class Car {
   private readonly hullHalf: THREE.Vector3;
 
   steer = 0;
+  /** The steering angle a step ago, for drawing between steps (see syncVisual). */
+  private prevSteer = 0;
   integrity = 1;
   airTime = 0;
   groundedWheels = 0;
@@ -335,6 +339,7 @@ export class Car {
           grounded: false,
           compression: 0,
           suspLen: cfg.suspension.restLength,
+          prevSuspLen: cfg.suspension.restLength,
           spinSpeed: 0,
           contact: new THREE.Vector3(),
           slip: 0,
@@ -362,6 +367,8 @@ export class Car {
   /** Applies suspension, tyre, engine and air-control impulses. Call before world.step(). */
   step(dt: number, input: CarInput): void {
     this.assertLive();
+    this.prevSteer = this.steer;
+    for (const w of this.wheels) w.prevSuspLen = w.suspLen;
     const cfg = this.cfg;
     const t = this.body.translation();
     const r = this.body.rotation();
@@ -1145,14 +1152,17 @@ export class Car {
     const root = this.model.root;
     root.position.lerpVectors(this.prevPos, this.currPos, alpha);
     root.quaternion.slerpQuaternions(this.prevQuat, this.currQuat, alpha);
+    // Springs and steering are drawn between steps too, as the body is: in slow motion a step
+    // lasts several frames, and drawing the latest step's would jerk from one to the next.
+    const steer = THREE.MathUtils.lerp(this.prevSteer, this.steer, alpha);
     for (const w of this.wheels) {
       if (!w.attached) continue;
-      w.visual.pivot.position.y = w.anchor.y - w.suspLen;
-      w.visual.pivot.rotation.y = w.front ? this.steer : 0;
+      w.visual.pivot.position.y = w.anchor.y - THREE.MathUtils.lerp(w.prevSuspLen, w.suspLen, alpha);
+      w.visual.pivot.rotation.y = w.front ? steer : 0;
       w.visual.spin.rotation.x -= w.spinSpeed * frameDt;
     }
     // A lost wheel's last spring length stands in for its hub, so the axle and arms stay put.
-    this.model.linkage.update(this.wheels.map((w) => w.anchor.y - w.suspLen));
+    this.model.linkage.update(this.wheels.map((w) => w.anchor.y - THREE.MathUtils.lerp(w.prevSuspLen, w.suspLen, alpha)));
     this.panels.sync(alpha);
     this.leak(frameDt);
     this.lights.update(frameDt);
