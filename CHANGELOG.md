@@ -3,6 +3,18 @@
 Releases are named plainly after what they bring (the first three after
 game-development milestones).
 
+## v0.12.1 – "Smoother Running" (2026-11-17)
+
+A performance pass, from an audit of what each frame costs.
+
+- **Snow effects:** powder, ice glints, sparks and glass shards find the
+  ground from a cached height grid, halving the effects' cost per frame
+  in the snow.
+- **No more freeze on a new car:** a car arriving (traffic, or N) no
+  longer stalls the game for about a tenth of a second.
+- **Steadier streaming:** the terrain builds one chunk a frame instead
+  of two, so driving fast doesn't spike frames.
+
 ## v0.12.0 – "Settling Snow, Smoother Slow Motion" (2026-11-17)
 
 Falling snow now settles on the cars, and a round of fixes makes crashes
