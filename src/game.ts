@@ -375,6 +375,8 @@ export class Game {
       }
       this.view.update(this.stage.camera, this.stage.viewDistance);
       this.stage.follow(this.car.position);
+      // The camera moves round the frozen smoke: the snow in front of it changes.
+      this.snowfall.smokeAt(this.nearestSmoke());
       // Nothing moves, so this only rebuilds chunks marked stale (e.g. by switching the inspection view).
       this.terrain.update(this.streamCenters(), STREAM_BUDGET);
       this.sight.update(dt, this.stage.camera, this.car.model.root, !this.photoMode && !this.mapView);
@@ -432,6 +434,7 @@ export class Game {
     this.litter.update(gt, this.stage.camera.position, this.allCars);
     this.snowClock += gt;
     this.snowfall.update(gt, this.stage.camera.position, this.snowAmount(), this.windNow());
+    this.snowfall.smokeAt(this.nearestSmoke());
     this.traffic.update(gt, pos, this.view);
     this.stage.follow(pos);
     this.updateWarmth(dt);
@@ -468,6 +471,16 @@ export class Game {
     const name = [...BIOMES].reverse().find((b) => b.from <= biome.distance(z))?.name ?? BIOMES[0].name;
     const woods = biome.greatForest(x, z) > 0.5 ? 'great forest' : biome.woodedStretch(x, z) > 0.5 ? 'wooded' : 'open';
     return `start=${Math.round(-z)} x=${Math.round(x)} · ${name} · ${woods}`;
+  }
+
+  /** How far the camera is from the nearest car smoke (m), or null with none (see Snowfall.smokeAt). */
+  private nearestSmoke(): number | null {
+    let best: number | null = null;
+    for (const car of this.allCars) {
+      const d = car.smokeFrom(this.stage.camera.position);
+      if (d !== null && (best === null || d < best)) best = d;
+    }
+    return best;
   }
 
   /** How hard it snows now, where the camera is (see WEATHER). */

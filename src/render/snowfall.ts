@@ -43,6 +43,11 @@ const FLAKES = {
   shutter: 1 / 45,
   near: [0.35, 1.2] as const,
   edge: 0.2,
+  /**
+   * Into the cars' smoke, flakes sink out of sight over this many m past its near edge (see
+   * Snowfall.smokeAt), so it reads as a cloud they're in, not a sheet they're in front of.
+   */
+  smokeDepth: 3,
   /** Colours: in shade, and lit with the sun behind them (glowing). */
   shade: new THREE.Color('#c9d4e2'),
   lit: new THREE.Color('#ffffff'),
@@ -71,9 +76,11 @@ const VERTEX = /* glsl */ `
   uniform vec2 near;
   uniform float edge;
   uniform float amount;
+  uniform vec3 split;
   varying vec2 vUv;
   varying float vAlpha;
   varying float vToSun;
+  varying float vBehind;
   #include <fog_pars_vertex>
   // A sway round a circle: its offset (amplitude a, angular rate w, phase f) and its velocity.
   vec3 circle( float a, float w, float f ) { return a * vec3( cos( time * w + f ), 0.0, sin( time * w * 0.8 + f ) ); }
@@ -96,6 +103,12 @@ const VERTEX = /* glsl */ `
     // Into the box round the eye, wrapping round.
     vec3 rel = mod( p - eye + 0.5 * box, box ) - 0.5 * box;
     vec3 world = eye + rel;
+    // Drawn in two passes round the smoke (see Snowfall.smokeAt): before it, the flakes from
+    // split.x on (split.y 0), and after it, those nearer than split.x + split.z (split.y 1), the
+    // two shares crossing over that depth so a flake sinks into the smoke. By the distance from
+    // the camera itself, not the snow's box (paused, the camera looks round where it was left).
+    vBehind = split.z > 0.0 ? smoothstep( split.x, split.x + split.z, distance( world, cameraPosition ) ) : 1.0;
+    if ( ( split.y > 0.5 ? 1.0 - vBehind : vBehind ) < 0.002 ) { gl_Position = vec4( 2.0, 2.0, 2.0, 1.0 ); return; }
     // How it moves past the camera: its fall, sway and the wind, less the camera's own motion.
     vec3 v = wind + circleVelocity( swayA, swayW, phase ) + circleVelocity( flutterA, flutterW, phase * 2.3 ) + vec3( 0.0, -speed, 0.0 ) - eyeVelocity;
     vec3 toEye = normalize( cameraPosition - world );
@@ -126,14 +139,21 @@ const FRAGMENT = /* glsl */ `
   uniform vec3 shade;
   uniform vec3 lit;
   uniform float alpha;
+  uniform vec3 split;
   varying vec2 vUv;
   varying float vAlpha;
   varying float vToSun;
+  varying float vBehind;
   #include <fog_pars_fragment>
   void main() {
     // A soft round flake (an ellipse along a streak).
     float d = length( vUv );
     float a = ( 1.0 - smoothstep( 0.35, 1.0, d ) ) * vAlpha * alpha;
+    // Split between the passes round the smoke (see the vertex shader) so that, with no smoke
+    // between them, the two drawn over each other make the whole flake: in front, its share of it;
+    // behind, what's left to make up the rest.
+    float front = ( 1.0 - vBehind ) * a;
+    a = split.y > 0.5 ? front : ( a - front ) / max( 1.0 - front, 1e-3 );
     if ( a < 0.004 ) discard;
     // Looking toward the sun, flakes glow.
     float glow = smoothstep( 0.2, 0.95, vToSun );
@@ -147,6 +167,9 @@ const FRAGMENT = /* glsl */ `
 /** Falling snow round the camera (see LAYERS, FLAKES), its strength set each frame. */
 export class Snowfall {
   private readonly materials: THREE.ShaderMaterial[] = [];
+  /** The passes for the flakes in front of the cars' smoke (see smokeAt): one per layer. */
+  private readonly front: THREE.Mesh[] = [];
+  private amount = 0;
   private readonly lastEye = new THREE.Vector3(NaN, 0, 0);
   private readonly eyeVelocity = new THREE.Vector3();
   private time = 0;
@@ -199,6 +222,7 @@ export class Snowfall {
             shade: { value: F.shade },
             lit: { value: F.lit },
             alpha: { value: layer.alpha },
+            split: { value: new THREE.Vector3(0, 0, 0) },
           },
         ]),
         fog: true,
@@ -207,11 +231,35 @@ export class Snowfall {
       });
       const mesh = new THREE.Mesh(geometry, material);
       mesh.frustumCulled = false;
-      // After the rest of the transparent things (it's in front of most of them).
+      // After the rest of the transparent things (it's in front of most of them); the cars' smoke
+      // goes after it (see Smoke), and the flakes in front of the smoke after that (see smokeAt).
       mesh.renderOrder = 10;
       scene.add(mesh);
       this.materials.push(material);
+      const frontMaterial = material.clone();
+      frontMaterial.uniforms.split.value.set(0, 1, 0);
+      const front = new THREE.Mesh(geometry, frontMaterial);
+      front.frustumCulled = false;
+      front.renderOrder = 12;
+      front.visible = false;
+      scene.add(front);
+      this.materials.push(frontMaterial);
+      this.front.push(front);
     }
+  }
+
+  /**
+   * Where the cars' smoke starts: `distance` m from the camera to the nearest puff's edge, or null
+   * with none. Smoke draws after the snow (see Smoke), so it covers the flakes behind it; the
+   * flakes nearer than that are drawn again after the smoke, so they pass in front of it, fading
+   * over FLAKES.smokeDepth from one to the other as they go deeper.
+   */
+  smokeAt(distance: number | null): void {
+    for (const m of this.materials) {
+      m.uniforms.split.value.x = distance ?? 0;
+      m.uniforms.split.value.z = distance === null ? 0 : FLAKES.smokeDepth;
+    }
+    for (const mesh of this.front) mesh.visible = distance !== null && this.amount > 0.001;
   }
 
   /**
@@ -243,5 +291,6 @@ export class Snowfall {
       u.amount.value = amount;
     }
     for (const m of this.materials) m.visible = amount > 0.001;
+    this.amount = amount;
   }
 }

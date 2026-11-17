@@ -1176,6 +1176,11 @@ export class Car {
     this.emitEngineSmoke(frameDt);
   }
 
+  /** How far `eye` is from the edge of this car's nearest smoke puff (m), or null with none (see Smoke.nearest). */
+  smokeFrom(eye: THREE.Vector3): number | null {
+    return this.smoke.nearest(eye);
+  }
+
   /** Steam once the car is badly hurt, thick dark smoke once the engine has died. */
   private emitEngineSmoke(dt: number): void {
     const d = this.cfg.damage;

@@ -2,6 +2,12 @@ import * as THREE from 'three';
 
 const POOL_SIZE = 40;
 const LIFETIME = 2.2;
+/**
+ * Puffs draw after the falling snow (Snowfall's renderOrder 10), so the flakes behind them don't
+ * show on top; the flakes nearer than the nearest puff are drawn again after them (see
+ * Snowfall.smokeAt).
+ */
+const AFTER_SNOW = 11;
 
 interface Puff {
   sprite: THREE.Sprite;
@@ -39,6 +45,7 @@ export class Smoke {
     for (let i = 0; i < POOL_SIZE; i++) {
       const material = new THREE.SpriteMaterial({ map: softDotTexture(), transparent: true, depthWrite: false, opacity: 0 });
       const sprite = new THREE.Sprite(material);
+      sprite.renderOrder = AFTER_SNOW;
       sprite.visible = false;
       scene.add(sprite);
       this.puffs.push({ sprite, material, velocity: new THREE.Vector3(), age: LIFETIME, size: 1 });
@@ -75,6 +82,17 @@ export class Smoke {
       p.material.opacity = 0.55 * (1 - t) * Math.min(1, t * 8);
       p.sprite.visible = p.age < LIFETIME;
     }
+  }
+
+  /** How far `eye` is from the nearest puff's edge (m, 0 inside one), or null with none showing. */
+  nearest(eye: THREE.Vector3): number | null {
+    let best: number | null = null;
+    for (const p of this.puffs) {
+      if (p.age >= LIFETIME) continue;
+      const d = Math.max(0, p.sprite.position.distanceTo(eye) - p.sprite.scale.x / 2);
+      if (best === null || d < best) best = d;
+    }
+    return best;
   }
 
   dispose(): void {
