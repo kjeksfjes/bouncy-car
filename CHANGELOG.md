@@ -3,6 +3,26 @@
 Releases are named plainly after what they bring (the first three after
 game-development milestones).
 
+## v0.12.0 – "Settling Snow, Smoother Slow Motion" (2026-11-17)
+
+Falling snow now settles on the cars, and a round of fixes makes crashes
+look right, in slow motion especially.
+
+- **Snow on the roof:** while it snows, snow builds up on whatever faces
+  the open sky (roof, bonnet, boot lid, the screens), much faster in
+  heavy snow. It melts from the thaw down, blows off at speed and stays
+  out of the engine bay and cabin.
+- **Snow and smoke:** flakes pass in front of a burning car's smoke and
+  sink into it, instead of showing through it from behind.
+- **Slow motion:** a crash no longer makes the car jump forward, and the
+  wheels and steering move smoothly instead of in steps.
+- **Loose panels:** a bent bumper or crumpled bonnet keeps its whole
+  shape solid, so it no longer sinks into the ground or passes through
+  things.
+- **Leaks** drip steadily from one spot, and **empty lamp sockets**
+  don't fill with snow.
+- **Dev:** Shift+F drops the car on its nose from 15 m.
+
 ## v0.11.0 – "Into the Snowstorm" (2026-11-16)
 
 The top of the mountain gets real weather: a gusting snowstorm under a
