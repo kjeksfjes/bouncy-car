@@ -56,6 +56,10 @@ export interface TyreState {
   readonly contact: THREE.Vector3;
   /** Sideways slip speed (m/s). */
   readonly slip: number;
+  /** Rolling speed along the tyre (m/s, unsigned). */
+  readonly roll: number;
+  /** What this tyre carries, as a share of a quarter of the car's weight: 1 standing still on four wheels. */
+  readonly load: number;
   /** Locked by the handbrake while on the ground: skidding along instead of rolling. */
   readonly locked: boolean;
 }
@@ -79,6 +83,8 @@ interface Wheel extends TyreState {
   spinSpeed: number;
   contact: THREE.Vector3;
   slip: number;
+  roll: number;
+  load: number;
   visual: WheelVisual;
 }
 
@@ -348,6 +354,8 @@ export class Car {
           spinSpeed: 0,
           contact: new THREE.Vector3(),
           slip: 0,
+          roll: 0,
+          load: 0,
           locked: false,
           visual: this.model.wheels[i++],
         });
@@ -521,6 +529,8 @@ export class Car {
       slipSum += Math.abs(vLat);
       wheel.contact.copy(_contact);
       wheel.slip = Math.abs(vLat);
+      wheel.roll = Math.abs(vLong);
+      wheel.load = load / ((cfg.mass * GRAVITY) / 4);
       wheel.locked = handbrake;
     }
 

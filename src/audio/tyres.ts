@@ -104,11 +104,13 @@ export const TYRE_SLIDE = {
 } satisfies Record<string, DragSound>;
 
 /**
- * A tyre squealing on stone: rubber rubbing on a hard, smooth surface (sound designers record it
- * by pressing a hot-water bottle onto concrete), a rough whine. After the driving-game patent
- * US 8078300: the load on the tyres sets loudness and pitch (more load: louder and lower), the
- * slip angle sets its character (small: quiet, medium: loud, large: aggressive), and it's silent
- * when the tyres carry next to nothing or far too much.
+ * A tyre squealing on stone: rubber rubbing on a hard, smooth surface, a rough whistle. The tone is
+ * read from a recording of a real slide: nearly a pure tone (2nd harmonic 11–20 dB down)
+ * whose pitch jitters randomly by a few percent from cycle to cycle, mostly fast (80–500 Hz), with
+ * about 2 dB of loudness shimmer, as the rubber grips and slips a little differently every cycle.
+ * After the driving-game patent US 8078300: the load on the tyres sets loudness and pitch (more
+ * load: louder and lower), the slip angle sets its character (small: quiet, medium: loud, large:
+ * rougher), and it's silent when the tyres carry next to nothing or far too much.
  */
 export const SQUEAL = {
   /** Sideways slip (m/s) below which it's silent, whatever the angle (at a crawl the angle is noise). */
@@ -121,30 +123,61 @@ export const SQUEAL = {
   loadFrom: 0.15,
   loadMax: 3,
   /** Pitch (Hz) at a load of 1, how strongly load lowers it (pitch ∝ load^−loadPitch), and its limits. */
-  pitch: 900,
-  loadPitch: 0.3,
-  pitchRange: [650, 1250] as const,
-  /** Vibrato rate (Hz) and depth (share of the pitch), plus slow random wander. Much vibrato screams. */
-  vibrato: 7,
-  depth: 0.003,
-  wander: 0.012,
+  pitch: 1100,
+  loadPitch: 0.2,
+  pitchRange: [950, 1300] as const,
   /**
-   * How much is rough (noise pulsed at the pitch) rather than clean tone, from loud to aggressive.
-   * All rough loses the whine and turns sandy.
+   * How slowly the squeal follows the load (s): pitch only to a held load (a long corner, a
+   * compression), loudness a little quicker. Following every suspension bounce on rough ground
+   * swoops the pitch up and down like air let out of a balloon.
    */
-  rough: [0.5, 0.65] as const,
-  /** The tread's resonance (Hz), brighter as it turns aggressive. */
-  formant: [1300, 1700] as const,
-  formantQ: 2.5,
-  level: 1.2,
+  loadPitchLag: 0.6,
+  loadLoudLag: 0.2,
   /**
-   * Tyres squealing together (up to 4), each slightly off in pitch (share), so they beat against
-   * each other like a real car's instead of one clean voice.
+   * Vibrato from the wheels' own movement: as the suspension bounces, the load swings around its
+   * held value and the pitch with it, by this share per car weight of swing, at most `wobbleMax`.
+   * Small: a lot of it is the balloon again.
    */
-  voices: 1,
-  detune: 0.015,
-  /** Chance per frame that a tyre's grip catches and the squeal drops out for a moment. */
-  chop: 0,
+  wobble: 0.02,
+  wobbleMax: 0.03,
+  /** Harmonic amplitudes, fundamental first (from the recording: −20, −28, −35 dB). Stronger ones buzz. */
+  harmonics: [1, 0.2, 0.05, 0.02, 0.006],
+  /**
+   * Pitch jitter (share of the pitch, RMS), from a gentle slide to a hard one (fast or at a wild
+   * angle), as random movement below `jitterRate` Hz. None is a clean whistle (a crying dolphin);
+   * this is what makes it rubber.
+   */
+  jitter: [0.035, 0.05] as const,
+  jitterRate: 500,
+  /** Loudness shimmer (share, RMS) below `shimmerRate` Hz: about 2 dB from cycle to cycle. */
+  shimmer: 0.25,
+  shimmerRate: 400,
+  /** Rubbing noise under the tone (share of its level), from a gentle slide to a hard one. */
+  rub: [0.12, 0.4] as const,
+  level: 0.2,
+  /**
+   * Sliding speed (m/s) where the slide is at its hardest. Friction power ∝ sliding speed · load,
+   * heard ∝ its square root (as loadLoudness), so loudness ∝ √(slip / slipFull) up to it. A harder
+   * slide is also rougher (jitter), hissier (rub) and up to `slipPitch` lower: in the recording the
+   * hardest, loudest stretch sits ~20 % below the gentler ones. 8 m/s matches the other grounds'
+   * slides (TYRE_SLIDE `full`).
+   */
+  slipFull: 8,
+  slipPitch: 0.15,
+  /**
+   * How the grip comes and goes (times in seconds, scaled by slow motion):
+   * - The whole squeal swells by up to ± `swellDb` dB every `swell` s.
+   * - At `grips` times a second on average a tyre grips for `gripLength` s and the squeal falls to
+   *   `gripLevel`.
+   * - It builds up over about `attack` s and dies away over about `release` s (time constants).
+   */
+  swell: [0.25, 0.8] as const,
+  swellDb: 5,
+  grips: 0.4,
+  gripLength: [0.15, 0.35] as const,
+  gripLevel: 0.2,
+  attack: 0.1,
+  release: 0.08,
 };
 
 /** How a wilder slide changes the other grounds' slides: brighter, grittier, more grains (shares added at full). */
@@ -176,48 +209,60 @@ export function wilder(slide: DragSound, wild: number): DragSound {
 }
 
 export class Squeal {
-  private readonly oscs: OscillatorNode[] = [];
-  private readonly offsets: number[] = [];
-  private readonly noise: AudioBufferSourceNode;
-  private readonly vibrato: OscillatorNode;
-  private readonly depth: GainNode;
-  private readonly pulsedMix: GainNode;
-  private readonly cleanMix: GainNode;
-  private readonly formant: BiquadFilterNode;
+  private readonly tone: OscillatorNode;
+  private readonly jitterNoise: AudioBufferSourceNode;
+  private readonly jitterDepth: GainNode;
+  private readonly shimmerNoise: AudioBufferSourceNode;
+  private readonly rubNoise: AudioBufferSourceNode;
+  private readonly rubGain: GainNode;
   private readonly gain: GainNode;
+  /** The load followed slowly, for pitch and for loudness (see SQUEAL.loadPitchLag). */
+  private pitchLoad = 1;
+  private loudLoad = 1;
+  private lastAt = -1;
+  /** The slow swell (gain) and when it next changes, until when a tyre grips, and the last target loudness. */
+  private swellGain = 1;
+  private swellNext = 0;
+  private gripUntil = 0;
+  private lastTarget = 0;
 
   constructor(ctx: BaseAudioContext, noise: AudioBuffer, out: AudioNode) {
     const S = SQUEAL;
-    this.vibrato = new OscillatorNode(ctx, { type: 'sine', frequency: S.vibrato });
-    this.depth = new GainNode(ctx, { gain: 0 });
-    this.vibrato.connect(this.depth);
+    const start = (src: AudioBufferSourceNode) => src.start(ctx.currentTime, Math.random() * noise.duration);
     this.gain = new GainNode(ctx, { gain: 0 });
-    // Rough part: noise pulsed by the tone (ring modulation), a buzzy, uneven whine.
-    this.noise = new AudioBufferSourceNode(ctx, { buffer: noise, loop: true });
-    const pulsed = new GainNode(ctx, { gain: 0 });
-    const body = new GainNode(ctx, { gain: 1 });
-    this.pulsedMix = new GainNode(ctx, { gain: 0 });
-    this.cleanMix = new GainNode(ctx, { gain: 0 });
-    this.noise.connect(pulsed).connect(this.pulsedMix).connect(body);
-    this.cleanMix.connect(body);
-    for (let v = 0; v < S.voices; v++) {
-      const osc = new OscillatorNode(ctx, { type: 'sawtooth', frequency: S.pitch });
-      this.depth.connect(osc.frequency);
-      osc.connect(new GainNode(ctx, { gain: 1 / S.voices })).connect(pulsed.gain);
-      osc.connect(new GainNode(ctx, { gain: 1 / Math.sqrt(S.voices) })).connect(this.cleanMix);
-      osc.start(ctx.currentTime);
-      this.oscs.push(osc);
-      // Spread evenly around the pitch: one voice is untouched.
-      this.offsets.push(S.voices === 1 ? 0 : (v / (S.voices - 1) - 0.5) * 2 * S.detune);
-    }
-    this.formant = new BiquadFilterNode(ctx, { type: 'bandpass', frequency: S.formant[0], Q: S.formantQ });
-    body
-      .connect(this.formant)
-      .connect(new BiquadFilterNode(ctx, { type: 'highpass', frequency: 400, Q: -3 }))
-      .connect(this.gain)
-      .connect(out);
-    this.vibrato.start(ctx.currentTime);
-    this.noise.start(ctx.currentTime, Math.random() * noise.duration);
+    this.gain.connect(out);
+    const shimmered = new GainNode(ctx, { gain: 1 });
+    shimmered.connect(this.gain);
+    this.tone = new OscillatorNode(ctx, {
+      frequency: S.pitch,
+      periodicWave: new PeriodicWave(ctx, { real: new Float32Array(S.harmonics.length + 1), imag: new Float32Array([0, ...S.harmonics]) }),
+    });
+    this.tone.connect(shimmered);
+    // Pitch jitter and loudness shimmer: lowpassed noise, scaled to an RMS of about 1 (white noise in
+    // ±1 has an RMS of 0.58; a lowpass at `rate` keeps about √(2·rate/sampleRate) of it), then to depth.
+    const unit = (rate: number) => 1 / (0.58 * Math.sqrt((2 * rate) / ctx.sampleRate));
+    this.jitterNoise = new AudioBufferSourceNode(ctx, { buffer: noise, loop: true });
+    this.jitterDepth = new GainNode(ctx, { gain: 0 });
+    this.jitterNoise
+      .connect(new BiquadFilterNode(ctx, { type: 'lowpass', frequency: S.jitterRate, Q: 0.5 }))
+      .connect(new GainNode(ctx, { gain: unit(S.jitterRate) }))
+      .connect(this.jitterDepth)
+      .connect(this.tone.frequency);
+    this.shimmerNoise = new AudioBufferSourceNode(ctx, { buffer: noise, loop: true });
+    this.shimmerNoise
+      .connect(new BiquadFilterNode(ctx, { type: 'lowpass', frequency: S.shimmerRate, Q: 0.5 }))
+      .connect(new GainNode(ctx, { gain: unit(S.shimmerRate) * S.shimmer }))
+      .connect(shimmered.gain);
+    this.rubNoise = new AudioBufferSourceNode(ctx, { buffer: noise, loop: true });
+    this.rubGain = new GainNode(ctx, { gain: S.rub[0] });
+    this.rubNoise
+      .connect(new BiquadFilterNode(ctx, { type: 'bandpass', frequency: 1800, Q: 0.7 }))
+      .connect(this.rubGain)
+      .connect(this.gain);
+    this.tone.start(ctx.currentTime);
+    start(this.jitterNoise);
+    start(this.shimmerNoise);
+    start(this.rubNoise);
   }
 
   /**
@@ -229,25 +274,45 @@ export class Squeal {
     const angle = Math.atan2(slip, Math.abs(speed));
     const loud = slip < S.from ? 0 : smoothstep(S.angleFrom, S.angleLoud, angle);
     const wild = smoothstep(S.angleLoud, S.angleWild, angle);
-    const loaded = load >= S.loadFrom && load <= S.loadMax ? Math.min(1.5, load) : 0;
-    const f = Math.min(S.pitchRange[1], Math.max(S.pitchRange[0], S.pitch * Math.max(0.05, load) ** -S.loadPitch)) * pitch;
-    this.oscs.forEach((osc, v) => osc.frequency.setTargetAtTime(f * (1 + this.offsets[v] + (Math.random() - 0.5) * S.wander), at, 0.06));
-    this.depth.gain.setTargetAtTime(f * S.depth, at, 0.05);
-    const rough = S.rough[0] + (S.rough[1] - S.rough[0]) * wild;
-    this.pulsedMix.gain.setTargetAtTime(rough * 2, at, 0.05);
-    this.cleanMix.gain.setTargetAtTime(1 - rough, at, 0.05);
-    this.formant.frequency.setTargetAtTime((S.formant[0] + (S.formant[1] - S.formant[0]) * wild) * pitch, at, 0.05);
-    // Grip comes and goes: the loudness flutters (more when aggressive), and may catch and drop out.
-    const caught = Math.random() < S.chop ? 0.15 : 1;
-    const flutter = 1 + (Math.random() - 0.5) * (0.6 + 0.4 * wild);
-    this.gain.gain.setTargetAtTime(loud * loaded * S.level * level * caught * flutter, at, 0.03);
+    // How hard the slide is: by sliding speed, or by a wild angle (see SQUEAL.slipFull).
+    const fast = smoothstep(S.from, S.slipFull, slip);
+    const hard = Math.max(fast, wild);
+    const dt = this.lastAt < 0 ? 0 : Math.max(0, at - this.lastAt);
+    this.lastAt = at;
+    const inRange = load >= S.loadFrom && load <= S.loadMax;
+    const held = Math.min(1.5, Math.max(0.05, load));
+    if (inRange) this.pitchLoad += (held - this.pitchLoad) * (1 - Math.exp(-dt / S.loadPitchLag));
+    this.loudLoad += ((inRange ? held : 0) - this.loudLoad) * (1 - Math.exp(-dt / S.loadLoudLag));
+    const f = Math.min(S.pitchRange[1], Math.max(S.pitchRange[0], S.pitch * this.pitchLoad ** -S.loadPitch)) * (1 - S.slipPitch * fast) * pitch;
+    // More load than held: lower for a moment, less: higher (see SQUEAL.wobble).
+    const swing = inRange ? held - this.pitchLoad : 0;
+    const wobble = 1 - Math.max(-S.wobbleMax, Math.min(S.wobbleMax, swing * S.wobble));
+    this.tone.frequency.setTargetAtTime(f * wobble, at, 0.03);
+    this.jitterDepth.gain.setTargetAtTime(f * (S.jitter[0] + (S.jitter[1] - S.jitter[0]) * hard), at, 0.05);
+    this.rubGain.gain.setTargetAtTime(S.rub[0] + (S.rub[1] - S.rub[0]) * hard, at, 0.05);
+    // Grip comes and goes (see SQUEAL.swell): the whole swells, and now and then a tyre grips.
+    if (at >= this.swellNext) {
+      this.swellNext = at + between(S.swell) / pitch;
+      this.swellGain = 10 ** (between([-S.swellDb, S.swellDb]) / 20);
+    }
+    if (at >= this.gripUntil && Math.random() < S.grips * dt * pitch) this.gripUntil = at + between(S.gripLength) / pitch;
+    const gripped = at < this.gripUntil ? S.gripLevel : 1;
+    const target = loud * Math.sqrt(Math.min(1, slip / S.slipFull)) * this.loudLoad * S.level * level * this.swellGain * gripped;
+    this.gain.gain.setTargetAtTime(target, at, (target > this.lastTarget ? S.attack : S.release) / pitch);
+    this.lastTarget = target;
   }
 
   stop(at: number): void {
-    for (const osc of this.oscs) osc.stop(at);
-    this.vibrato.stop(at);
-    this.noise.stop(at);
+    this.tone.stop(at);
+    this.jitterNoise.stop(at);
+    this.shimmerNoise.stop(at);
+    this.rubNoise.stop(at);
   }
+}
+
+/** A random number in [lo, hi). */
+function between([lo, hi]: readonly [number, number]): number {
+  return lo + Math.random() * (hi - lo);
 }
 
 function smoothstep(a: number, b: number, x: number): number {

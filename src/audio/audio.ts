@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { Car, CarEvents, ContactSurface } from '../vehicle/car';
+import type { Car, CarEvents, ContactSurface, TyreState } from '../vehicle/car';
 import { caw, wingFlutter } from './birdSounds';
 import { glassBreak } from './glass';
 import { ENGINE_PROCESSOR, loadEngineWorklet } from './engineWorklet';
@@ -279,7 +279,12 @@ class CarVoice {
     const slide = wilder(blended, slideWildness(car.slip, speed));
     this.tyreRoll.set(roll, speed, level, pitch, now);
     this.tyreSlide.set(slide, car.slip, level, pitch, now);
-    this.squeal.set(car.slip, speed, car.tyreLoad, base * g.stone, pitch, now);
+    // The squeal follows the tyre sliding hardest, by its own slip and load: one rear wheel
+    // sliding while the others grip squeals as hard as it slides, not averaged down by them.
+    let hardest: TyreState | undefined;
+    for (const tyre of car.tyres) if (tyre.attached && tyre.grounded && tyre.slip > (hardest?.slip ?? -1)) hardest = tyre;
+    if (hardest) this.squeal.set(hardest.slip, hardest.roll, hardest.load, MIX.tyres * this.level * g.stone, pitch, now);
+    else this.squeal.set(0, 0, 0, 0, pitch, now);
     scrapeGrains(this.ctx, this.noise, this.panner, roll.grains, speed, level, pitch, dt, now);
     scrapeGrains(this.ctx, this.noise, this.panner, slide.grains, car.slip, level, pitch, dt, now, slide.full);
   }
