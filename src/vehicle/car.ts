@@ -1124,10 +1124,29 @@ export class Car {
       _tmp.set(x * this.hullHalf.x, 0, z * this.hullHalf.z).applyQuaternion(_q);
       ground = Math.max(ground, field.height(t.x + _tmp.x, t.z + _tmp.z));
     }
+    this.place(_p.set(t.x, ground + 1.5, t.z), _q);
+  }
+
+  /**
+   * Dev key Shift+F: lifts the car, keeping its damage, until its nose is `height` m above the
+   * ground, tipped `pitch` (rad) nose down, and lets it fall from rest (see NOSE_DROP).
+   */
+  dropOnNose(field: TerrainField, height: number, pitch: number): void {
+    const t = this.body.translation();
+    _fwd.set(0, 0, -1).applyQuaternion(this.currQuat).setY(0);
+    const yaw = _fwd.lengthSq() > 1e-4 ? Math.atan2(-_fwd.x, -_fwd.z) : 0;
+    _q.setFromAxisAngle(UP, yaw).multiply(_qInv.setFromAxisAngle(_tmp.set(1, 0, 0), -pitch));
+    // The nose is about the hull's half length below the middle.
+    const middle = field.height(t.x, t.z) + height + this.hullHalf.z * Math.sin(pitch);
+    this.place(_p.set(t.x, middle, t.z), _q);
+  }
+
+  /** Puts the body at `position` facing `quaternion`, at rest, carrying hanging panels and lights along. */
+  private place(position: THREE.Vector3, quaternion: THREE.Quaternion): void {
     const before = new THREE.Matrix4().compose(this.currPos, this.currQuat, _tmp.set(1, 1, 1));
-    this.body.setTranslation({ x: t.x, y: ground + 1.5, z: t.z }, true);
-    this.body.setRotation(_q, true);
-    this.panels.teleport(before, new THREE.Matrix4().compose(_p.set(t.x, ground + 1.5, t.z), _q, _tmp.set(1, 1, 1)));
+    this.body.setTranslation(position, true);
+    this.body.setRotation(quaternion, true);
+    this.panels.teleport(before, new THREE.Matrix4().compose(position, quaternion, _tmp.set(1, 1, 1)));
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true);
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true);
     for (const w of this.wheels) {

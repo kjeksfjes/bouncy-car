@@ -53,6 +53,8 @@ type CameraMode = (typeof CAMERA_MODES)[number];
 
 /** No car legitimately goes this fast (m/s); beyond it the physics has blown up. */
 const SANE_SPEED = 400;
+/** Dev Shift+F drops the car from rest with its nose `height` m up, tipped `pitch` (rad, 80°) nose down. */
+const NOSE_DROP = { height: 15, pitch: (80 * Math.PI) / 180 };
 /** Avoid a spiral of death after a long stall (tab switch, breakpoint). */
 const MAX_STEPS_PER_FRAME = 5;
 /** Chunks built per frame while streaming; the first batch is built up front. */
@@ -285,7 +287,9 @@ export class Game {
       this.setDevMode(!this.devMode);
       for (const c of DEV_WORD) this.input.consume(`Key${c.toUpperCase()}`);
     }
-    const tip = this.devMode && this.input.consume('KeyF');
+    // Shift+F also presses F, so it goes first.
+    const drop = this.devMode && this.input.consume('shift:KeyF');
+    const tip = this.devMode && this.input.consume('KeyF') && !drop;
     if (!this.paused) {
       if (reset) this.resetCar(this.car);
       if (replace || this.autopilotWantsCar) this.replaceCar();
@@ -293,7 +297,8 @@ export class Game {
       if (jumpBiome) this.jumpToNextBiome();
       else if (nextBiome) this.startNextBiome();
       if (autopilot) this.toggleAutopilot(this.input.shift);
-      if (tip) this.car.blast();
+      if (drop) this.car.dropOnNose(this.field, NOSE_DROP.height, NOSE_DROP.pitch);
+      else if (tip) this.car.blast();
       if (headlights) this.car.headlightsOn = !this.car.headlightsOn;
     }
     if (this.input.consume('KeyM')) this.audio.toggleMute();
